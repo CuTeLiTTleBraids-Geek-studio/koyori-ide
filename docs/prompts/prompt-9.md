@@ -565,7 +565,7 @@
 
 ## GOAL P9-G26（P2）：实现 Unified Remote Workspace Host
 
-**现状与证据：** Remote 协议文档不等于远程 IDE；缺少统一 URI/host identity 和 FS、PTY、Git、LSP、DAP、Test 的真实远端执行闭环。
+**现状与证据：** Remote 协议文档不等于远程 IDE；统一 URI/host identity 的 T 级契约和本地 Host Adapter 已建立，但缺少 FS、PTY、Git、LSP、DAP、Test 的真实远端执行闭环。Phase 2 的跨平台原子替换与 symlink/junction TOCTOU 安全门禁仍阻塞，未进入远端实现。
 
 **范围：** host identity、URI、认证、FS/watch、PTY、Git、LSP、DAP、Test、端口转发、断线重连、同步冲突。
 

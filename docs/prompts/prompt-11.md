@@ -134,7 +134,7 @@
 
 ## 5. P9-G26（实现 Unified Remote Workspace Host）按点任务
 
-**现状：Remote 协议文档不等于远程 IDE；缺少统一 URI/host identity 与 FS/PTY/Git/LSP/DAP/Test 的真实远端执行闭环。全部 AC 未勾选（U）。**
+**现状：Remote 协议文档不等于远程 IDE。G26 Phase 1 已完成 T 级统一 URI/host identity/scope 契约；Phase 2 已有本地 Host Adapter、错误脱敏和资源路径编码，但跨平台原子替换与 symlink/junction TOCTOU 安全门禁阻塞。远端 FS/PTY/Git/LSP/DAP/Test、重连和 packaged 证据仍缺失，全部 AC 未勾选（U）。**
 
 **T-G26-1（统一模型）**：workspace URI 明确 scheme/authority/path；host identity、认证、generation 统一；所有服务按 host 路由，本地/远端路径不混用。
 **T-G26-2（远端 agent）**：版本/能力协商、最小权限安装、签名升级与回滚。
