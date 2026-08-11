@@ -235,12 +235,14 @@ jobs:
       - name: Install wails3 CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 
-      - name: Install NSIS
-        run: choco install nsis -y --no-progress
+      - name: Install WiX Toolset v3
+        run: choco install wixtoolset -y --no-progress
 
-      - name: Run Windows build script (exe + NSIS installer)
+      - name: Run Windows build script (exe + MSI installer)
         shell: pwsh
-        run: ./build/scripts/build-windows.ps1 -Arch ${{ matrix.arch }}
+        run: |
+          ./build/scripts/build-windows.ps1 -Arch ${{ matrix.arch }} -SkipNSIS
+          ./build/scripts/build-msi.ps1 -Arch ${{ matrix.arch }}
 
       - name: Verify产物
         shell: pwsh
@@ -258,8 +260,7 @@ jobs:
           name: windows-${{ matrix.arch }}
           path: |
             bin/koyori-ide.exe
-            bin/koyori-ide-*-installer.exe
-            bin/koyori-ide-*.msix
+            bin/koyori-ide-v*-windows-*.msi
           retention-days: 30
 
   # ===========================================================================

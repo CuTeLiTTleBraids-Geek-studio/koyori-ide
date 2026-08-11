@@ -129,7 +129,7 @@ not attached to GitHub Releases.
 
 | Platform | Installer | Produced by |
 |---|---|---|
-| Windows amd64 | `koyori-ide-amd64-installer.exe` (NSIS) | `build/scripts/build-windows.ps1` |
+| Windows amd64 | `koyori-ide-vX.Y.Z-windows-amd64.msi` (WiX v3) | `build/scripts/build-windows.ps1` + `build/scripts/build-msi.ps1` |
 | Linux amd64 / arm64 | `.AppImage` + `.deb` + `.rpm` | `build/scripts/build-linux.sh` |
 | macOS arm64 / amd64 | `.dmg` + `koyori-ide.app` | `build/scripts/build-macos.sh` |
 
@@ -142,7 +142,7 @@ and uploads them to that release with per-asset SHA256 checksums:
 
 | Platform | Release asset added |
 |---|---|
-| Windows amd64 | `koyori-ide-amd64-installer.exe` + `.sha256` |
+| Windows amd64 | `koyori-ide-vX.Y.Z-windows-amd64.msi` + `.sha256` |
 | Linux amd64 / arm64 | `.AppImage` / `.deb` / `.rpm` + `.sha256` |
 | macOS arm64 / amd64 | `.dmg` + `.sha256` |
 
@@ -156,10 +156,10 @@ tar.gz artifacts and their SBOM/provenance set.
 Local build commands mirror the CI jobs:
 
 ```bash
-# Windows (run in PowerShell on Windows; requires Go/Node/wails3/NSIS)
-powershell -ExecutionPolicy Bypass -File build/scripts/build-windows.ps1 -Arch amd64
-#   per-user installer (no UAC prompt):  add -InstallScope user
-#   MSIX package instead of NSIS:        add -Format msix
+# Windows (run in PowerShell on Windows; requires Go/Node/wails3/WiX v3)
+powershell -ExecutionPolicy Bypass -File build/scripts/build-windows.ps1 -Arch amd64 -SkipNSIS
+powershell -ExecutionPolicy Bypass -File build/scripts/build-msi.ps1 -Arch amd64
+#   NSIS (legacy) instead of MSI:        drop -SkipNSIS; do not run build-msi.ps1
 
 # Linux (run on Linux; requires nfpm, linuxdeploy fetched automatically)
 ./build/scripts/build-linux.sh amd64
@@ -168,11 +168,12 @@ powershell -ExecutionPolicy Bypass -File build/scripts/build-windows.ps1 -Arch a
 ./build/scripts/build-macos.sh arm64
 ```
 
-The Windows script delegates to the root Taskfile's `wails3 task build` and
-`wails3 task package` chain, so the icon/version `syso`, the WebView2
-bootstrapper download, and the NSIS compile stay identical to `wails3`'s own
-build pipeline. Installer signing follows the same code-signing secrets policy
-as the tag workflow (`REQUIRE_CODE_SIGN` / `WINDOWS_CERT_*` / `MACOS_CERT_*`).
+The Windows build script produces the GUI executable (icon/version `syso`
+via `wails3 generate syso`, then `go build -tags production -H=windowsgui`).
+The MSI is compiled separately by `build/scripts/build-msi.ps1` with the WiX v3
+toolset (`candle` + `light`); NSIS packaging is skipped with `-SkipNSIS`.
+Installer signing follows the same code-signing secrets policy as the tag
+workflow (`REQUIRE_CODE_SIGN` / `WINDOWS_CERT_*` / `MACOS_CERT_*`).
 
 ## Release steps
 

@@ -34,7 +34,9 @@ param(
     [ValidateSet("machine", "user")]
     [string]$InstallScope = "machine",
 
-    [switch]$SkipDeps
+    [switch]$SkipDeps,
+
+    [switch]$SkipNSIS
 )
 
 $ErrorActionPreference = "Stop"
@@ -123,11 +125,13 @@ if (-not $SkipDeps) {
     }
     Write-Ok "wails3: $((wails3 version 2>$null) -join ' ' | Select-Object -First 1)"
 
-    # NSIS 编译器
-    if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
-        Write-Fail "未安装 NSIS (makensis)。请执行: choco install nsis -y  或从 https://nsis.sourceforge.io/Download 安装并加入 PATH"
+    if (-not $SkipNSIS) {
+        # NSIS 编译器
+        if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            Write-Fail "未安装 NSIS (makensis)。请执行: choco install nsis -y  或从 https://nsis.sourceforge.io/Download 安装并加入 PATH"
+        }
+        Write-Ok "makensis: $((Get-Command makensis).Source)"
     }
-    Write-Ok "makensis: $((Get-Command makensis).Source)"
 }
 
 # ============================================================================
@@ -204,6 +208,7 @@ if ($subsystem -ne 2) {
 }
 Write-Ok "GUI 可执行文件构建完成: $ExePath"
 
+if (-not $SkipNSIS) {
 # ============================================================================
 # 5. 打包 NSIS 安装程序
 # ============================================================================
@@ -238,6 +243,7 @@ if (-not $InstallerPath -or -not (Test-Path $InstallerPath)) {
     Write-Fail "NSIS 安装程序未生成"
 }
 Write-Ok "NSIS 安装程序: $InstallerPath"
+}
 
 # ============================================================================
 # 6. 汇总产物
@@ -253,7 +259,9 @@ Get-ChildItem $BinDir -Filter "$AppName*" | ForEach-Object {
     Write-Info "  $($_.Name)  ($SizeMb MB)"
 }
 Write-Host ""
+if ($InstallerPath) {
 Write-Info "分发: 将 $(Split-Path $InstallerPath -Leaf) 分发给用户，双击安装（$InstallScope 范围）"
 Write-Info "静默安装: $(Split-Path $InstallerPath -Leaf) /S"
 Write-Info "卸载: 控制面板 -> 卸载程序 或 安装目录下 uninstall.exe"
+}
 Write-Ok "构建完成！"

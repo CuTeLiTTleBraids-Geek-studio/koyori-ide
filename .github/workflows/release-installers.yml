@@ -1,13 +1,13 @@
 name: Release Installers
 
-# Attaches native installers (Windows NSIS, Linux AppImage/deb/rpm, macOS DMG)
+# Attaches native installers (Windows MSI via WiX v3, Linux AppImage/deb/rpm, macOS DMG)
 # to an already-published GitHub Release. Runs after the tag-triggered
 # `Release` workflow has published the release, so there is no race on the
 # release object and the portable artifacts (zip / tar.gz) keep their own
 # SBOM/provenance pipeline intact.
 #
 # Signing policy mirrors release.yml (MED-07 / G-SEC-08):
-#   - Windows: Authenticode via signtool (WINDOWS_CERT_PFX + WINDOWS_CERT_PASSWORD).
+#   - Windows: Authenticode via signtool on the .msi (WINDOWS_CERT_PFX + WINDOWS_CERT_PASSWORD).
 #   - macOS:   Developer ID codesign + notarytool notarization + stapling
 #              (MACOS_CERT_P12 + MACOS_CERT_PASSWORD + APPLE_ID +
 #              APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID).
@@ -67,19 +67,21 @@ jobs:
       - name: Install wails3 CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 
-      - name: Install NSIS
-        run: choco install nsis -y --no-progress
+      - name: Install WiX Toolset v3
+        run: choco install wixtoolset -y --no-progress
 
-      - name: Build NSIS installer
+      - name: Build app + MSI installer
         shell: pwsh
-        run: ./build/scripts/build-windows.ps1 -Arch ${{ matrix.arch }}
+        run: |
+          ./build/scripts/build-windows.ps1 -Arch ${{ matrix.arch }} -SkipNSIS
+          ./build/scripts/build-msi.ps1 -Arch ${{ matrix.arch }}
 
-      - name: Sign NSIS installer (Authenticode)
+      - name: Sign MSI installer (Authenticode)
         if: env.WINDOWS_CERT_PFX != '' && env.WINDOWS_CERT_PASSWORD != ''
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path bin -Filter "koyori-ide-*-installer.exe" -File | Select-Object -First 1
-          if (-not $installer) { throw "NSIS installer not found under bin" }
+          $installer = Get-ChildItem -Path bin -Filter "koyori-ide-v*-windows-*.msi" -File | Select-Object -First 1
+          if (-not $installer) { throw "MSI installer not found under bin" }
           $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
           try {
             [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
@@ -119,7 +121,7 @@ jobs:
       - name: Checksum installer
         shell: pwsh
         run: |
-          Get-ChildItem bin/koyori-ide-*-installer.exe | ForEach-Object {
+          Get-ChildItem bin/koyori-ide-v*-windows-*.msi | ForEach-Object {
             (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + "  " + $_.Name | Set-Content "$($_.FullName).sha256"
           }
 
@@ -129,7 +131,7 @@ jobs:
         shell: bash
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            bin/koyori-ide-*-installer.exe bin/koyori-ide-*-installer.exe.sha256 --clobber
+            bin/koyori-ide-v*-windows-*.msi bin/koyori-ide-v*-windows-*.msi.sha256 --clobber
 
   linux:
     name: Installer - Linux (${{ matrix.arch }})
