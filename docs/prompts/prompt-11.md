@@ -134,7 +134,7 @@
 
 ## 5. P9-G26（实现 Unified Remote Workspace Host）按点任务
 
-**现状：Remote 协议文档不等于远程 IDE。G26 Phase 1 已完成 T 级统一 URI/host identity/scope 契约；Phase 2 已有本地 Host Adapter、错误脱敏和资源路径编码，但跨平台原子替换与 symlink/junction TOCTOU 安全门禁阻塞。远端 FS/PTY/Git/LSP/DAP/Test、重连和 packaged 证据仍缺失，全部 AC 未勾选（U）。**
+**现状：Remote 协议文档不等于远程 IDE。G26 Phase 1–3 已完成 T 级统一 URI/Scope、本地 Host Adapter、Linux root-fd + `openat2` no-follow、非 Linux fail-closed、Windows `MoveFileExW` 替换代码，以及 SSH verified HostID/connection nonce/approval scope。真实 Windows NTFS、持续同目录恶意竞争、remote agent、host-issued workspace ID、远端 FS/PTY/Git/LSP/DAP/Test、重连和 packaged 证据仍为 `U`，全部 AC 未勾选。**
 
 **T-G26-1（统一模型）**：workspace URI 明确 scheme/authority/path；host identity、认证、generation 统一；所有服务按 host 路由，本地/远端路径不混用。
 **T-G26-2（远端 agent）**：版本/能力协商、最小权限安装、签名升级与回滚。
@@ -143,6 +143,16 @@
 **T-G26-5（安全隔离）**：本地/远端路径不串用，跨 host token 不可重放；端口转发默认 loopback、显式授权；SSRF、凭据与日志脱敏纳入威胁模型（AC3）。
 **T-G26-6（packaged 证据）**：高延迟、大仓库、端口转发和多根 workspace 的 packaged 证据（AC4）。
 **禁止**：仅完成 broker/mock/协议文档即勾选。最低证据 `I` + `P`。
+
+### 会话交付：P11-T-G26-Foundation（2026-08-11）
+
+- 复核结论：G26 缺口已变化但仍存在，状态为进行中，AC 0/4。
+- T 级基础：新增 canonical `WorkspaceURI`、`WorkspaceRef`、`WorkspaceScope` 和 typed errors；本地 Host Adapter 使用 generation-bound root fd、Linux `openat2` no-follow 和 fd-relative 写入，非 Linux 文件操作 fail-closed；Windows 原子替换代码使用 `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`。
+- SSH 安全边界：HostID 仅在 known_hosts 验证成功后由 SSH public key digest 生成；每次连接生成随机 instance nonce；审批绑定 HostID、nonce、session-only WorkspaceID、generation、argv digest、TTL、single-use 和 HMAC，断连/重连令旧 token 失效。
+- 验证：G26 定向 Go 测试 exit 0；Linux root-handle/concurrency 测试与 `-race` exit 0；Windows build-tag compile-only exit 0；docs links/numbers/encoding 门禁 exit 0。三个阶段均经过 Oracle 门禁，Phase 2/3 的 T 级基础获准结束。
+- 未验证：真实 Windows NTFS 替换行为、非 Linux no-follow 文件能力、持续同目录恶意竞争者命中 `fstatat`→`renameat/unlinkat` 窗口、完整断电持久性、host-issued workspace ID、remote agent、远端 FS/watch/PTY/Git/LSP/Test/DAP、断线收敛、高延迟/大仓库/端口转发/多根 packaged 证据均为 `U`。
+- 结论限制：现有 SSH/SFTP 与本轮 T 级 Host 基础不等于 Unified Remote Workspace Host，不勾选任何 G26 AC，不进入 G27 的完成声明。
+- 版本控制：本轮创建本地 commit，不 push/tag/release；用户现有 MSI/build 脚本改动不纳入提交。
 
 ## 6. P9-G27（建立发布运营、SLO、更新回滚与外部审计）按点任务
 

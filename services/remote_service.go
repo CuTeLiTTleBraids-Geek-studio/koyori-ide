@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -699,10 +700,27 @@ func sftpDir(path string) string {
 
 // SSHSession 封装一个已建立的 SSH+SFTP 会话。
 type SSHSession struct {
-	client     *ssh.Client
-	sftp       *sftp.Client
-	fs         *SSHFileSystem
-	generation uint64
+	client            *ssh.Client
+	sftp              *sftp.Client
+	fs                *SSHFileSystem
+	generation        uint64
+	HostID            string
+	HostInstanceNonce string
+	WorkspaceID       string
+}
+
+// RemoteHostInfo is a read-only snapshot of the verified remote host identity.
+type RemoteHostInfo struct {
+	HostID            string
+	HostInstanceNonce string
+}
+
+// RemoteScope is the complete authorization scope of a remote session.
+type RemoteScope struct {
+	HostID            string
+	HostInstanceNonce string
+	WorkspaceID       string
+	Generation        uint64
 }
 
 // RemoteService 管理多个命名 SSH 会话，注册为 Wails 服务。
@@ -724,7 +742,7 @@ type RemoteService struct {
 type remoteCommandApproval struct {
 	session     string
 	commandHash string
-	generation  uint64
+	scope       RemoteScope
 	expiresAt   time.Time
 	binding     [sha256.Size]byte
 }
@@ -732,6 +750,9 @@ type remoteCommandApproval struct {
 const (
 	remoteCommandApprovalTTL   = 2 * time.Minute
 	remoteCommandApprovalLimit = 128
+	// SSHConfig currently has no remote root. This sentinel produces only a
+	// connection-local session scope; it is not a host-issued workspace ID.
+	remoteWorkspaceRootSentinel = "remote-root-unspecified:session-scope-only"
 )
 
 // NewRemoteService 创建一个空的 RemoteService。
@@ -795,7 +816,7 @@ func (r *RemoteService) Connect(name string, config SSHConfig) error {
 	}
 	r.mu.Unlock()
 
-	client, err := dialSSH(config)
+	client, hostID, err := dialSSHWithHostIdentity(config)
 	if err != nil {
 		return err
 	}
@@ -805,7 +826,16 @@ func (r *RemoteService) Connect(name string, config SSHConfig) error {
 		return fmt.Errorf("open sftp session: %w", err)
 	}
 	fs := &SSHFileSystem{client: client, sftp: sc}
-	session := &SSHSession{client: client, sftp: sc, fs: fs}
+	nonce, err := newRemoteOpaqueID()
+	if err != nil {
+		_ = sc.Close()
+		_ = client.Close()
+		return fmt.Errorf("create remote host instance nonce: %w", err)
+	}
+	session := &SSHSession{
+		client: client, sftp: sc, fs: fs, HostID: hostID,
+		HostInstanceNonce: nonce, WorkspaceID: remoteWorkspaceID(remoteWorkspaceRootSentinel),
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -839,7 +869,7 @@ func (r *RemoteService) Disconnect(name string) error {
 	if ok {
 		delete(r.sessions, name)
 		for token, approval := range r.approvals {
-			if approval.session == name {
+			if approval.scope == session.remoteScope() {
 				delete(r.approvals, token)
 			}
 		}
@@ -856,6 +886,42 @@ func (r *RemoteService) Disconnect(name string) error {
 	}
 	slog.Info("remote ssh disconnected", "name", name)
 	return nil
+}
+
+func (s *SSHSession) remoteScope() RemoteScope {
+	if s == nil {
+		return RemoteScope{}
+	}
+	return RemoteScope{
+		HostID: s.HostID, HostInstanceNonce: s.HostInstanceNonce,
+		WorkspaceID: s.WorkspaceID, Generation: s.generation,
+	}
+}
+
+// HostInfo returns a read-only snapshot and is not a Wails API.
+//
+//wails:ignore
+func (r *RemoteService) HostInfo(name string) (RemoteHostInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session, ok := r.sessions[name]
+	if !ok {
+		return RemoteHostInfo{}, fmt.Errorf("session %q not connected", name)
+	}
+	return RemoteHostInfo{HostID: session.HostID, HostInstanceNonce: session.HostInstanceNonce}, nil
+}
+
+// Scope returns a read-only authorization scope and is not a Wails API.
+//
+//wails:ignore
+func (r *RemoteService) Scope(name string) (RemoteScope, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session, ok := r.sessions[name]
+	if !ok {
+		return RemoteScope{}, fmt.Errorf("session %q not connected", name)
+	}
+	return session.remoteScope(), nil
 }
 
 // IsConnected 报告指定会话是否已连接。
@@ -900,7 +966,7 @@ func (r *RemoteService) RequestCommandApproval(name string, argv []string) (stri
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current, ok := r.sessions[name]
-	if !ok || current != session || current.generation != session.generation {
+	if !ok || current != session || current.remoteScope() != session.remoteScope() {
 		return "", fmt.Errorf("session %q changed while awaiting approval: %w", name, ErrNotAllowed)
 	}
 	if !r.approvalKeyGood {
@@ -924,7 +990,7 @@ func (r *RemoteService) RequestCommandApproval(name string, argv []string) (stri
 			continue
 		}
 		approval := remoteCommandApproval{
-			session: name, commandHash: commandHash, generation: session.generation,
+			session: name, commandHash: commandHash, scope: session.remoteScope(),
 			expiresAt: now.Add(remoteCommandApprovalTTL),
 		}
 		approval.binding = r.bindRemoteCommandApproval(token, approval)
@@ -965,12 +1031,15 @@ func (r *RemoteService) executeCommandContext(ctx context.Context, name string, 
 		securityAudit("remote.command.failure", "failure",
 			"session", name, "command_sha256", commandHash, "command_bytes", commandBytes,
 			"argc", len(argv), "failure_stage", "session_lookup")
+		if approved {
+			return "", fmt.Errorf("approved remote session is no longer connected: %w", ErrNotAllowed)
+		}
 		return "", fmt.Errorf("session %q not connected", name)
 	}
 	if !approved || !isCanonicalRemoteCommandApprovalToken(approvalToken) ||
 		!r.remoteCommandApprovalBindingValid(approvalToken, approval) ||
 		approval.session != name || approval.commandHash != commandHash ||
-		approval.generation != session.generation || !approval.expiresAt.After(r.currentTime()) {
+		approval.scope != session.remoteScope() || !approval.expiresAt.After(r.currentTime()) {
 		securityAudit("remote.command.failure", "failure",
 			"session", name, "command_sha256", commandHash, "command_bytes", commandBytes,
 			"argc", len(argv), "failure_stage", "approval")
@@ -1036,6 +1105,9 @@ type remoteCommandApprovalBinding struct {
 	Token             string `json:"token"`
 	Session           string `json:"session"`
 	CommandHash       string `json:"commandHash"`
+	HostID            string `json:"hostID"`
+	HostInstanceNonce string `json:"hostInstanceNonce"`
+	WorkspaceID       string `json:"workspaceID"`
 	Generation        uint64 `json:"generation"`
 	ExpiresAtUnixNano int64  `json:"expiresAtUnixNano"`
 }
@@ -1043,7 +1115,9 @@ type remoteCommandApprovalBinding struct {
 func (r *RemoteService) bindRemoteCommandApproval(token string, approval remoteCommandApproval) [sha256.Size]byte {
 	payload, _ := json.Marshal(remoteCommandApprovalBinding{
 		Token: token, Session: approval.session, CommandHash: approval.commandHash,
-		Generation: approval.generation, ExpiresAtUnixNano: approval.expiresAt.UnixNano(),
+		HostID: approval.scope.HostID, HostInstanceNonce: approval.scope.HostInstanceNonce,
+		WorkspaceID: approval.scope.WorkspaceID, Generation: approval.scope.Generation,
+		ExpiresAtUnixNano: approval.expiresAt.UnixNano(),
 	})
 	mac := hmac.New(sha256.New, r.approvalKey[:])
 	_, _ = mac.Write(payload)
@@ -1202,26 +1276,61 @@ func validateSSHConfig(c SSHConfig) error {
 //
 // 安全：本函数不打印任何敏感字段。
 func dialSSH(config SSHConfig) (*ssh.Client, error) {
+	client, _, err := dialSSHWithHostIdentity(config)
+	return client, err
+}
+
+func dialSSHWithHostIdentity(config SSHConfig) (*ssh.Client, string, error) {
 	authMethods, err := buildAuthMethods(config)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	hostKeyCallback, err := buildHostKeyCallback(config.KnownHostsPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	var hostID string
+	verifiedHostKeyCallback := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		if err := hostKeyCallback(hostname, remote, key); err != nil {
+			return err
+		}
+		hostID = remoteHostID(key)
+		return nil
 	}
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
 	clientConfig := &ssh.ClientConfig{
 		User:            config.User,
 		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
+		HostKeyCallback: verifiedHostKeyCallback,
 		Timeout:         15 * time.Second,
 	}
 	client, err := ssh.Dial("tcp", addr, clientConfig)
 	if err != nil {
-		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
+		return nil, "", fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
-	return client, nil
+	if hostID == "" {
+		_ = client.Close()
+		return nil, "", errors.New("ssh host identity was not captured after verification")
+	}
+	return client, hostID, nil
+}
+
+func remoteHostID(key ssh.PublicKey) string {
+	digest := sha256.Sum256(key.Marshal())
+	return hex.EncodeToString(digest[:])
+}
+
+func remoteWorkspaceID(canonicalRemoteRoot string) string {
+	digest := sha256.Sum256([]byte("remote-workspace-root-v1\x00" + canonicalRemoteRoot))
+	return hex.EncodeToString(digest[:])
+}
+
+func newRemoteOpaqueID() (string, error) {
+	var raw [32]byte
+	if _, err := crypto_rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 // buildAuthMethods 构造认证方法列表。私钥优先，密码次之。

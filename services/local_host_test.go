@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -238,5 +239,175 @@ func TestLocalWorkspaceHostRejectsEscapeDotAbsoluteAndSymlink(t *testing.T) {
 	}
 	if err := host.WriteFile(uri, scope, []byte("changed")); err == nil {
 		t.Fatal("symlink escape accepted for write")
+	}
+}
+
+func TestLocalWorkspaceHostConcurrentWritesDoNotShareTemporaryNames(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux openat2 implementation required")
+	}
+	host, _, scope := newTestLocalWorkspaceHost(t)
+	uri := localTestURI(t, "concurrent.txt")
+	const writers = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- host.WriteFile(uri, scope, []byte(strings.Repeat(string(rune('a'+i)), 1024)))
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent WriteFile: %v", err)
+		}
+	}
+	data, err := host.ReadFile(uri, scope)
+	if err != nil || len(data) != 1024 {
+		t.Fatalf("ReadFile after concurrent writes = %d bytes, %v", len(data), err)
+	}
+}
+
+func TestLocalWorkspaceHostRootHandleFollowsWorkspaceGeneration(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux root handle implementation required")
+	}
+	host, ctx, scope := newTestLocalWorkspaceHost(t)
+	first := localTestURI(t, "first.txt")
+	if err := host.WriteFile(first, scope, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	oldScope := scope
+	ctx.Clear()
+	newRoot := t.TempDir()
+	if err := ctx.Set(newRoot); err != nil {
+		t.Fatal(err)
+	}
+	newRef, err := host.WorkspaceRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.Stat(first, oldScope); !errors.Is(err, ErrStaleWorkspaceScope) {
+		t.Fatalf("old scope after switch = %v", err)
+	}
+	second := localTestURI(t, "second.txt")
+	if err := host.WriteFile(second, newRef.Scope(), []byte("second")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalWorkspaceHostRootHandleCanBeClosed(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux root handle implementation required")
+	}
+	root := localHostNoFollowBindRoot(t.TempDir())
+	if !localHostNoFollowRootValid(root) {
+		t.Fatal("root handle was not bound")
+	}
+	localHostNoFollowCloseRoot(&root)
+	if !localHostNoFollowRootClosed(root) {
+		t.Fatal("root handle remained open")
+	}
+}
+
+func TestLocalWorkspaceHostZeroRootHandleDoesNotCloseStdin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux root handle implementation required")
+	}
+	if _, err := os.Stdin.Stat(); err != nil {
+		t.Skipf("stdin is unavailable before test: %v", err)
+	}
+	var root localHostNoFollowRoot
+	localHostNoFollowCloseRoot(&root)
+	if _, err := os.Stdin.Stat(); err != nil {
+		t.Fatalf("closing zero root handle affected stdin: %v", err)
+	}
+}
+
+func TestLocalWorkspaceHostRejectsSymlinkRootBinding(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux root handle implementation required")
+	}
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	root := localHostNoFollowBindRoot(link)
+	defer localHostNoFollowCloseRoot(&root)
+	if localHostNoFollowRootValid(root) {
+		t.Fatal("symlink workspace root was bound")
+	}
+}
+
+func TestLocalWorkspaceHostTemporaryNameReplacementFailsClosed(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux openat2 implementation required")
+	}
+	host, ctx, scope := newTestLocalWorkspaceHost(t)
+	restore := localHostNoFollowInstallBeforePublishHook(func(parentFD int, name string) error {
+		return localHostNoFollowReplaceNameForTest(parentFD, name)
+	})
+	defer restore()
+	uri := localTestURI(t, "target.txt")
+	if err := host.WriteFile(uri, scope, []byte("must not publish")); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("WriteFile replacement error = %v, want ErrNotAllowed", err)
+	}
+	if _, err := os.Stat(filepath.Join(ctx.Root(), "target.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target was published: %v", err)
+	}
+	entries, err := os.ReadDir(ctx.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReplacement := false
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".gugacode-tmp-") {
+			foundReplacement = true
+		}
+	}
+	if !foundReplacement {
+		t.Fatal("replacement object was incorrectly unlinked")
+	}
+}
+
+func TestLocalWorkspaceHostRootHandleCloseSwitchRace(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux root handle implementation required")
+	}
+	host, ctx, scope := newTestLocalWorkspaceHost(t)
+	uri := localTestURI(t, "race.txt")
+	if err := host.WriteFile(uri, scope, []byte("initial")); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = host.ReadFile(uri, scope)
+			_ = host.Close()
+		}()
+	}
+	ctx.Clear()
+	if err := ctx.Set(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	newRef, err := host.WorkspaceRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.WriteFile(uri, newRef.Scope(), []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }

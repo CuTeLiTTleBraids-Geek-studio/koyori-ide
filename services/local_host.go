@@ -3,10 +3,11 @@ package services
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -36,6 +37,10 @@ type LocalWorkspaceHost struct {
 	hostID            string
 	workspaceID       string
 	hostInstanceNonce string
+	rootMu            sync.Mutex
+	rootHandle        localHostNoFollowRoot
+	rootPath          string
+	rootGeneration    uint64
 }
 
 // NewLocalWorkspaceHost creates an adapter for one local workspace identity.
@@ -47,12 +52,36 @@ func NewLocalWorkspaceHost(workspaceContext *WorkspaceContext, workspaceID, host
 	if _, err := NewLocalWorkspaceRef(workspaceID, 1, hostInstanceNonce); err != nil {
 		return nil, err
 	}
-	return &LocalWorkspaceHost{
+	host := &LocalWorkspaceHost{
 		workspaceContext:  workspaceContext,
 		hostID:            LocalHostID,
 		workspaceID:       workspaceID,
 		hostInstanceNonce: hostInstanceNonce,
-	}, nil
+	}
+	workspaceContext.mu.RLock()
+	defer workspaceContext.mu.RUnlock()
+	if localHostNoFollowBindingSupported() && workspaceContext.root != "" && workspaceContext.generation != 0 {
+		if err := host.bindNoFollowRootLocked(workspaceContext.root, workspaceContext.generation); err != nil {
+			return nil, safeLocalHostError(err)
+		}
+	}
+	return host, nil
+}
+
+func localHostNoFollowBindingSupported() bool {
+	return runtime.GOOS == "linux"
+}
+
+// Close releases the host's internal root handle. It is not a Wails service.
+func (h *LocalWorkspaceHost) Close() error {
+	if h == nil {
+		return nil
+	}
+	h.rootMu.Lock()
+	defer h.rootMu.Unlock()
+	localHostNoFollowCloseRoot(&h.rootHandle)
+	h.rootPath, h.rootGeneration = "", 0
+	return nil
 }
 
 // RootURI returns the transport-neutral URI for the currently open workspace.
@@ -96,34 +125,14 @@ func (h *LocalWorkspaceHost) ReadFile(uri WorkspaceURI, scope WorkspaceScope) ([
 	}
 	var data []byte
 	err = resolved.lease.withCurrent(func() error {
-		path, err := ValidatePathWithinRoot(resolved.lease.root, resolved.path)
+		var err error
+		root, release, err := h.boundNoFollowRootLocked(resolved.lease)
 		if err != nil {
 			return err
 		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("workspace resource is not a regular file: %w", ErrInvalidInput)
-		}
-		if info.Size() > maxReadableFileBytes {
-			return fmt.Errorf("file exceeds %d byte read limit: %w", maxReadableFileBytes, ErrInvalidInput)
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-		data, err = io.ReadAll(io.LimitReader(file, maxReadableFileBytes+1))
-		if err != nil {
-			return err
-		}
-		if int64(len(data)) > maxReadableFileBytes {
-			data = nil
-			return fmt.Errorf("file exceeds %d byte read limit: %w", maxReadableFileBytes, ErrInvalidInput)
-		}
-		return nil
+		defer release()
+		data, err = localHostNoFollowReadFile(root, resolved.uri.RelativePath(), maxReadableFileBytes)
+		return err
 	})
 	return data, safeLocalHostError(err)
 }
@@ -135,14 +144,15 @@ func (h *LocalWorkspaceHost) WriteFile(uri WorkspaceURI, scope WorkspaceScope, d
 		return safeLocalHostError(err)
 	}
 	err = resolved.lease.withCurrent(func() error {
-		path, err := ValidateMutatingPathWithinRoot(resolved.lease.root, resolved.path)
+		root, release, err := h.boundNoFollowRootLocked(resolved.lease)
 		if err != nil {
 			return err
 		}
-		if sameWorkspaceIdentityPath(path, resolved.lease.root) {
+		defer release()
+		if resolved.uri.RelativePath() == "" {
 			return fmt.Errorf("workspace root cannot be overwritten: %w", ErrNotAllowed)
 		}
-		return atomicWriteFile(path, data, 0o644)
+		return localHostNoFollowWriteFile(root, resolved.uri.RelativePath(), data, 0o644)
 	})
 	return safeLocalHostError(err)
 }
@@ -155,35 +165,28 @@ func (h *LocalWorkspaceHost) ListDirectory(uri WorkspaceURI, scope WorkspaceScop
 	}
 	var result []WorkspaceHostEntry
 	err = resolved.lease.withCurrent(func() error {
-		path, err := ValidatePathWithinRoot(resolved.lease.root, resolved.path)
+		root, release, err := h.boundNoFollowRootLocked(resolved.lease)
 		if err != nil {
 			return err
 		}
-		entries, err := os.ReadDir(path)
+		defer release()
+		entries, err := localHostNoFollowReadDir(root, resolved.uri.RelativePath())
 		if err != nil {
 			return err
 		}
 		result = make([]WorkspaceHostEntry, 0, len(entries))
 		for _, entry := range entries {
-			childPath, err := ValidatePathWithinRoot(resolved.lease.root, filepath.Join(path, entry.Name()))
-			if err != nil {
-				return err
-			}
-			info, err := os.Stat(childPath)
-			if err != nil {
-				return err
-			}
-			childRelative := entry.Name()
+			childRelative := entry.Name
 			if resolved.uri.RelativePath() != "" {
-				childRelative = resolved.uri.RelativePath() + "/" + entry.Name()
+				childRelative = resolved.uri.RelativePath() + "/" + entry.Name
 			}
 			childURI, err := NewLocalWorkspaceURI(h.workspaceID, childRelative)
 			if err != nil {
 				return err
 			}
 			result = append(result, WorkspaceHostEntry{
-				Name: entry.Name(), URI: childURI, IsDir: info.IsDir(),
-				Size: info.Size(), Modified: info.ModTime(),
+				Name: entry.Name, URI: childURI, IsDir: entry.IsDir,
+				Size: entry.Size, Modified: entry.Modified,
 			})
 		}
 		sort.Slice(result, func(i, j int) bool {
@@ -205,11 +208,12 @@ func (h *LocalWorkspaceHost) Stat(uri WorkspaceURI, scope WorkspaceScope) (Works
 	}
 	var stat WorkspaceHostStat
 	err = resolved.lease.withCurrent(func() error {
-		path, err := ValidatePathWithinRoot(resolved.lease.root, resolved.path)
+		root, release, err := h.boundNoFollowRootLocked(resolved.lease)
 		if err != nil {
 			return err
 		}
-		info, err := os.Stat(path)
+		defer release()
+		info, err := localHostNoFollowStat(root, resolved.uri.RelativePath())
 		if err != nil {
 			return err
 		}
@@ -219,6 +223,30 @@ func (h *LocalWorkspaceHost) Stat(uri WorkspaceURI, scope WorkspaceScope) (Works
 		return nil
 	})
 	return stat, safeLocalHostError(err)
+}
+
+// boundNoFollowRootLocked is called only from workspaceLease.withCurrent, while
+// the context read lock already proves lease.root and lease.generation current.
+func (h *LocalWorkspaceHost) boundNoFollowRootLocked(lease workspaceLease) (localHostNoFollowRoot, func(), error) {
+	h.rootMu.Lock()
+	if h.rootPath != lease.root || h.rootGeneration != lease.generation {
+		if err := h.bindNoFollowRootLocked(lease.root, lease.generation); err != nil {
+			h.rootMu.Unlock()
+			return localHostNoFollowRoot{}, nil, err
+		}
+	}
+	return h.rootHandle, h.rootMu.Unlock, nil
+}
+
+func (h *LocalWorkspaceHost) bindNoFollowRootLocked(root string, generation uint64) error {
+	localHostNoFollowCloseRoot(&h.rootHandle)
+	h.rootPath, h.rootGeneration = "", 0
+	h.rootHandle = localHostNoFollowBindRoot(root)
+	if !localHostNoFollowRootValid(h.rootHandle) {
+		return fmt.Errorf("workspace root handle unavailable: %w", ErrNotAllowed)
+	}
+	h.rootPath, h.rootGeneration = root, generation
+	return nil
 }
 
 // localHostPath cannot cross the adapter boundary. Callers only receive its

@@ -565,7 +565,7 @@
 
 ## GOAL P9-G26（P2）：实现 Unified Remote Workspace Host
 
-**现状与证据：** Remote 协议文档不等于远程 IDE；统一 URI/host identity 的 T 级契约和本地 Host Adapter 已建立，但缺少 FS、PTY、Git、LSP、DAP、Test 的真实远端执行闭环。Phase 2 的跨平台原子替换与 symlink/junction TOCTOU 安全门禁仍阻塞，未进入远端实现。
+**现状与证据：** Remote 协议文档不等于远程 IDE；统一 Workspace URI/Scope 契约、本地 Host Adapter、Linux root-fd + `openat2` no-follow 边界、非 Linux fail-closed 路径和 SSH host identity/connection nonce/approval scope 已有 T 级实现。Windows 原子替换使用 `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`，但真实 NTFS 证据仍为 `U`。远端 agent、host-issued workspace ID、PTY、Git、LSP、DAP、Test、断线收敛和 packaged 闭环仍缺失，全部 AC 保持未勾选。
 
 **范围：** host identity、URI、认证、FS/watch、PTY、Git、LSP、DAP、Test、端口转发、断线重连、同步冲突。
 
@@ -727,7 +727,7 @@ npm audit --registry=https://registry.npmjs.org --audit-level=high
 | P9-G23 | 阻塞 | 1/4 | T/I/P/U | 2026-08-09 | Windows x64 packaged artifact `38b7d545c69535b72770f0cf544e95f6ee962db10b390cd580196eebde5cc410`、源码指纹 `0bcd15bea4628ab0cf4e65914deeb9a4d36ab822aee74dd0e6846088852a07f5`，23/23 fixtures 通过；Go/TS Monaco ID、LSP、format/build/test、Delve/Node debug 与 pack source metadata 完整通过，AC1 完成。签名 manifest-only installer、严格 SemVer 降级拒绝、publisher trust、pin、disable/enable、rollback/uninstall 和 hostile archive 矩阵已实现；真实 Python/Rust 本地 LSP/toolchain/DAP 通过，但 packaged probe 未运行其完整 LSP/DAP。服务 payload installer、跨平台 packaged 与 remote language host 仍为 U |
 | P9-G24 | 完成 | 4/4 | T/I/P | 2026-08-11 | packaged manifest `status=passed`，24/24 fixtures；artifact SHA-256 `7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181`，source fingerprint `690aa31cad880bf803037ab734207a9e1f7281d9e05140f65daaef15bd7b6180`，`recordedAt=2026-08-11T03:23:53.760Z`；corpus 11/11，10 包全 blocked；首次本轮 `disabled=true`/`active=true` 失败、lifecycle stop handshake 修复、低内存 Git `0xc0000142` 后 true skip-build 通过均已记录；无 git/CI 声称 |
 | P9-G25 | 进行中 | 0/4 | T/U | 2026-08-10 | ICU plural 解析（Intl.PluralRules 选类，含 ru/pl/ar 真实 few/many/zero/two 验证）、locale 元数据（独立 localeMetadata.test.ts，en/zh/ja 静态 + ru/pl/ar 类别 + RTL 检测 + Intl 缺失 fallback）、formatNumber、missing-key 监测已 T 级实现（i18n 全量 53 测试）；profile 版本化导入导出（schema v1、顶层 aiApiKey + 嵌套 aiProviderConfigs[].apiKey redact、1MiB 限制、非法 JSON/未知版本/原型污染键 fail-closed 拒绝）已 T 级实现（12 个新 Go 测试）；packaged 矩阵与恶意文件跨平台导入 U；AC 0/4 正式勾选 |
-| P9-G26 | 未开始 | 0/4 | U | 2026-08-04 | 依赖 G23/G24 |
+| P9-G26 | 进行中 | 0/4 | T/U | 2026-08-11 | Workspace URI/Scope、Linux no-follow 本地 Host Adapter、非 Linux fail-closed、Windows MoveFileEx 原子替换代码、SSH verified HostID/随机 instance nonce/命令 approval 完整 scope 绑定已 T 级实现；真实 Windows NTFS、remote agent、host-issued workspace、FS/watch/PTY/Git/LSP/Test/DAP、重连和 packaged 证据仍为 U；AC 0/4 |
 | P9-G27 | 未开始 | 0/4 | U | 2026-08-04 | 最终运营 Goal |
 
 ## 9. 每次会话交付模板
