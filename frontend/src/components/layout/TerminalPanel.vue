@@ -71,6 +71,14 @@ const panelHeightPx = computed(() =>
 const terminalContainer = ref<HTMLElement | null>(null);
 const activeView = ref<PanelView>("terminal");
 
+// BUG-TERM-FIT: The main panel has no ResizeObserver, so dragging the panel
+// resize handle (which only updates appState.terminalHeight) never triggers a
+// refit — the xterm screen keeps its old cols/rows and the content appears to
+// "not follow" the new panel height. Watch the terminal body element and refit
+// on any size change. Disposed on unmount to avoid leaks.
+let terminalResizeObserver: ResizeObserver | null = null;
+let terminalResizeTimer: ReturnType<typeof setTimeout> | null = null;
+
 const problemCountSummary = computed(() => {
   const c = problemCounts();
   const parts: string[] = [];
@@ -613,6 +621,22 @@ onMounted(async () => {
     loadTasks(appState.currentProject);
     loadWorkflows(appState.currentProject);
   }
+  // BUG-TERM-FIT: refit every xterm when the terminal body resizes (panel
+  // drag-resize, layout change). Debounced so rapid drag events don't flood
+  // fit() calls. AiTerminalDock already observes its own container, so this
+  // only affects the main panel path (and is harmless when embedded).
+  if (typeof ResizeObserver !== "undefined" && terminalContainer.value) {
+    terminalResizeObserver = new ResizeObserver(() => {
+      if (terminalResizeTimer !== null) {
+        clearTimeout(terminalResizeTimer);
+      }
+      terminalResizeTimer = setTimeout(() => {
+        terminalResizeTimer = null;
+        if (activeView.value === "terminal") fitTerminal();
+      }, 40);
+    });
+    terminalResizeObserver.observe(terminalContainer.value);
+  }
 });
 
 // N-150: track pending setTimeout so it can be cleared on unmount.
@@ -640,6 +664,14 @@ onBeforeUnmount(() => {
   if (fitTimer.value !== null) {
     clearTimeout(fitTimer.value);
     fitTimer.value = null;
+  }
+  if (terminalResizeTimer !== null) {
+    clearTimeout(terminalResizeTimer);
+    terminalResizeTimer = null;
+  }
+  if (terminalResizeObserver !== null) {
+    terminalResizeObserver.disconnect();
+    terminalResizeObserver = null;
   }
   // C-5: only dispose terminals owned by THIS instance. Because
   // terminals.value is now per-instance (not module-level), unmounting
