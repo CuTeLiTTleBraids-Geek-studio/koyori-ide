@@ -275,7 +275,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: frontend-coverage
           path: frontend/coverage/
@@ -383,7 +383,7 @@ jobs:
       # failure, otherwise a red run cannot be audited after the runner is gone.
       - name: Upload E2E evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: packaged-e2e-evidence
           path: build/e2e-evidence/
@@ -422,7 +422,7 @@ jobs:
         run: |
           go test -bench=. -benchmem -count=5 ./services/... 2>&1 | tee benchmark_results.txt
       - name: Store benchmark results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-results
           path: benchmark_results.txt
