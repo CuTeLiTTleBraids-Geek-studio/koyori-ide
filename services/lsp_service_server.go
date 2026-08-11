@@ -18,6 +18,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// lspVersionProbeTimeout bounds version probing of a language server binary
+// during detection. A hung or broken server binary must never wedge the
+// detect flow (and with it the status-bar LSP menu behind lspState.busy).
+const lspVersionProbeTimeout = 5 * time.Second
+
 // rootsToWorkspaceFolders 将根目录列表转换为 LSP WorkspaceFolder[]
 // 形如 [{"uri": "file://...", "name": "<base>"}]。
 func rootsToWorkspaceFolders(roots []string) []map[string]string {
@@ -672,8 +677,13 @@ func workspaceRootsContainFramework(roots []string, framework string) bool {
 }
 
 // tryVersion runs `<exe> <flag>` and returns the trimmed first line of output.
+// A short timeout bounds the probe: a hung language-server binary (broken
+// install, slow first-run) must not block LSP detection indefinitely (which
+// would also wedge the status-bar menu behind lspState.busy).
 func tryVersion(exe string, args ...string) string {
-	cmd := command(exe, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), lspVersionProbeTimeout)
+	defer cancel()
+	cmd := commandContext(ctx, exe, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

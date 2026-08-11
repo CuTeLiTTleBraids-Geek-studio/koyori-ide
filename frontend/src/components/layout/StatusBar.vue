@@ -10,6 +10,8 @@ import {
   lspStatusLabel,
   lspStatusDetail,
   restartLSPServer,
+  detectLSPServers,
+  startLSPServer,
   setLSPEnabled,
 } from "@/stores/lsp";
 import { runtimeVersions, refreshRuntimeVersions } from "@/stores/toolchain";
@@ -66,8 +68,12 @@ async function handleGoTargetCommand(command: string): Promise<void> {
 async function handleLSPCommand(command: string): Promise<void> {
   if (command === "toggle") {
     await setLSPEnabled(!lspState.enabled);
+  } else if (command === "detect") {
+    await detectLSPServers();
   } else if (command.startsWith("restart:")) {
     await restartLSPServer(command.slice("restart:".length));
+  } else if (command.startsWith("start:")) {
+    await startLSPServer(command.slice("start:".length));
   }
 }
 
@@ -220,14 +226,28 @@ watch(activeWorkspaceRoot, (root, previous) => {
               <el-icon aria-hidden="true"><SwitchButton /></el-icon>
               {{ lspState.enabled ? t("statusBar.lspDisable") : t("statusBar.lspEnable") }}
             </el-dropdown-item>
+            <el-dropdown-item command="detect" :disabled="lspState.busy">
+              <el-icon aria-hidden="true"><Refresh /></el-icon>
+              {{ t("statusBar.lspDetect") }}
+            </el-dropdown-item>
+            <el-dropdown-item v-if="lspServers.length === 0" disabled>
+              {{ t("statusBar.lspNone") }}
+            </el-dropdown-item>
             <el-dropdown-item
               v-for="server in lspServers"
               :key="server.language"
-              :command="`restart:${server.language}`"
+              :command="server.running ? `restart:${server.language}` : `start:${server.language}`"
               :disabled="!lspState.enabled || !server.available"
             >
               <el-icon aria-hidden="true"><Refresh /></el-icon>
-              {{ t("statusBar.lspRestart", { server: server.serverKind || server.language }) }}
+              {{ server.running
+                ? t("statusBar.lspRestart", { server: server.serverKind || server.language })
+                : t("statusBar.lspStart", { server: server.serverKind || server.language }) }}
+              <span v-if="server.running" class="statusbar__lsp-state">{{ t("statusBar.lspRunning") }}</span>
+              <span v-else-if="server.available" class="statusbar__lsp-state">{{ t("statusBar.lspAvailable") }}</span>
+              <span v-else-if="server.lastError || server.installHint" class="statusbar__lsp-missing" :title="server.lastError || server.installHint">
+                {{ server.lastError || server.installHint }}
+              </span>
             </el-dropdown-item>
           </el-dropdown-menu>
         </template>
@@ -386,6 +406,24 @@ watch(activeWorkspaceRoot, (root, previous) => {
 
 .statusbar__dot--muted {
   background-color: var(--chrome-text-muted);
+}
+
+/* LSP menu server state badges */
+.statusbar__lsp-state {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--color-success);
+  opacity: 0.9;
+}
+
+.statusbar__lsp-missing {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .statusbar__item--active {
