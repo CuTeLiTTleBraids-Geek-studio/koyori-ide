@@ -72,6 +72,7 @@ import {
   windowStore,
   applyMode,
   resolveSystemMode,
+  loadSettings,
   saveSettings,
   flushSettingsSave,
   initSettingsSyncListener,
@@ -87,6 +88,7 @@ import {
   openProject,
   resetWorkspaceAuthorityForTesting,
 } from "./app";
+import { applyLocaleDirection } from "./appActions";
 import type { AppState } from "./app";
 
 beforeEach(() => {
@@ -136,6 +138,42 @@ describe("Theme Mode", () => {
   it("applyMode updates appState.theme", () => {
     applyMode("light");
     expect(appState.theme).toBe("light");
+  });
+});
+
+describe("Locale direction", () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute("dir");
+    document.documentElement.removeAttribute("lang");
+  });
+
+  it.each([
+    ["ar", "rtl", "ar"],
+    ["he-IL", "rtl", "he-IL"],
+    ["farsi", "rtl", "fa"],
+  ])("applies RTL locale %s to the document", (locale, dir, lang) => {
+    expect(applyLocaleDirection(locale)).toBe(lang);
+    expect(document.documentElement.dir).toBe(dir);
+    expect(document.documentElement.lang).toBe(lang);
+  });
+
+  it.each([
+    ["en", "en"],
+    ["zh", "zh"],
+  ])("restores LTR document state for %s", (locale, lang) => {
+    applyLocaleDirection("ar");
+    applyLocaleDirection(locale);
+    expect(document.documentElement.dir).toBe("ltr");
+    expect(document.documentElement.lang).toBe(lang);
+  });
+
+  it("applies loaded locale settings to the document", async () => {
+    vi.mocked(settingsService.loadSettings).mockResolvedValueOnce({
+      language: "ar-EG",
+    } as AppState);
+    await loadSettings();
+    expect(document.documentElement.dir).toBe("rtl");
+    expect(document.documentElement.lang).toBe("ar-EG");
   });
 });
 
@@ -579,4 +617,3 @@ describe("P4: 多根工作区 Workspace Folders", () => {
     });
   });
 });
-

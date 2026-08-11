@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,6 +36,10 @@ type ProfileService struct {
 	statePath    string                    // <rootDir>/profiles-state.json
 	legacyPath   string                    // <rootDir>/settings.json (pre-profile migration source)
 	onSwitchFunc func(settingsPath string) // callback to redirect SettingsService
+	// writeSettings defaults to atomicWriteFile. It is an internal seam for
+	// deterministic rollback failure tests; implementations must provide atomic
+	// replacement semantics.
+	writeSettings func(path string, data []byte, perm os.FileMode) error
 }
 
 // ProfileInfo is the runtime descriptor for a profile. Pairs the
@@ -111,6 +116,12 @@ var profileSensitiveSettingsFields = []string{
 	"aiApiKey",
 }
 
+var profileReservedSettingsKeys = map[string]struct{}{
+	"__proto__":   {},
+	"constructor": {},
+	"prototype":   {},
+}
+
 // redactProfileSettings removes sensitive fields before a profile leaves the
 // machine. In addition to the top-level sensitive fields, the nested
 // aiProviderConfigs array (AIProviderConfig.apiKey) is redacted element-wise
@@ -130,6 +141,66 @@ func redactProfileSettings(settings map[string]interface{}) map[string]interface
 		settings["aiProviderConfigs"] = redacted
 	}
 	return settings
+}
+
+// validateProfileSettingsValue rejects keys that can mutate prototypes when a
+// settings object is later materialized in JavaScript. Validation is recursive
+// because unknown settings fields are intentionally preserved.
+func validateProfileSettingsValue(value interface{}) error {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		for key, nested := range typed {
+			if _, forbidden := profileReservedSettingsKeys[key]; forbidden {
+				return fmt.Errorf("profile settings contain a reserved key %q", key)
+			}
+			if err := validateProfileSettingsValue(nested); err != nil {
+				return err
+			}
+		}
+	case []interface{}:
+		for _, nested := range typed {
+			if err := validateProfileSettingsValue(nested); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func parseProfileSettings(raw json.RawMessage) (map[string]interface{}, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("profile has no settings payload")
+	}
+	if len(raw) > maxProfileSettingsBytes {
+		return nil, fmt.Errorf("profile settings exceed %d bytes", maxProfileSettingsBytes)
+	}
+	var settings map[string]interface{}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return nil, fmt.Errorf("profile settings are not a valid JSON object: %w", err)
+	}
+	if settings == nil {
+		return nil, fmt.Errorf("profile settings must be a JSON object")
+	}
+	if err := validateProfileSettingsValue(settings); err != nil {
+		return nil, err
+	}
+	return settings, nil
+}
+
+func validateProfileExport(export ProfileExport) (map[string]interface{}, error) {
+	if export.SchemaVersion != profileExportSchemaVersion {
+		return nil, fmt.Errorf(
+			"unsupported profile export schema version %d (supported: %d)",
+			export.SchemaVersion,
+			profileExportSchemaVersion,
+		)
+	}
+	settings, err := parseProfileSettings(export.Settings)
+	if err != nil {
+		return nil, fmt.Errorf("imported %w", err)
+	}
+	redactProfileSettings(settings)
+	return settings, nil
 }
 
 // NewProfileService constructs a ProfileService rooted at
@@ -545,8 +616,116 @@ type ProfileExport struct {
 	ExportedAt    int64           `json:"exportedAt"`
 }
 
+// ProfileImportPreview is a value-free summary of an import. Diff entries are
+// top-level setting names only; secret fields are removed before comparison so
+// neither their values nor their presence are exposed.
+type ProfileImportPreview struct {
+	Name          string   `json:"name"`
+	Description   string   `json:"description,omitempty"`
+	AddedFields   []string `json:"addedFields"`
+	ChangedFields []string `json:"changedFields"`
+	Unchanged     int      `json:"unchanged"`
+}
+
+// PreviewProfileImport parses and validates a complete ProfileExport JSON
+// blob without writing to disk. Imported settings overlay same-named current
+// top-level fields, so existing-only fields are not reported as removed.
+func PreviewProfileImport(blob []byte, currentSettings json.RawMessage) (ProfileImportPreview, error) {
+	var export ProfileExport
+	if err := json.Unmarshal(blob, &export); err != nil {
+		return ProfileImportPreview{}, fmt.Errorf("profile import blob is not valid JSON: %w", err)
+	}
+	imported, err := validateProfileExport(export)
+	if err != nil {
+		return ProfileImportPreview{}, err
+	}
+	current, err := parseProfileSettings(currentSettings)
+	if err != nil {
+		return ProfileImportPreview{}, fmt.Errorf("current %w", err)
+	}
+	redactProfileSettings(current)
+
+	preview := ProfileImportPreview{Name: export.Name, Description: export.Description}
+	for key, importedValue := range imported {
+		currentValue, present := current[key]
+		switch {
+		case !present:
+			preview.AddedFields = append(preview.AddedFields, key)
+		case reflect.DeepEqual(currentValue, importedValue):
+			preview.Unchanged++
+		default:
+			preview.ChangedFields = append(preview.ChangedFields, key)
+		}
+	}
+	sort.Strings(preview.AddedFields)
+	sort.Strings(preview.ChangedFields)
+	return preview, nil
+}
+
+// MergeProfileSettings overlays imported top-level fields on current settings.
+// Objects and arrays are replaced as whole field values; fields present only
+// in either input are preserved. Both inputs are recursively checked for
+// prototype-pollution keys, and all supported credential fields are removed
+// from the result.
+func MergeProfileSettings(currentSettings, importedSettings json.RawMessage) (json.RawMessage, error) {
+	current, err := parseProfileSettings(currentSettings)
+	if err != nil {
+		return nil, fmt.Errorf("current %w", err)
+	}
+	imported, err := parseProfileSettings(importedSettings)
+	if err != nil {
+		return nil, fmt.Errorf("imported %w", err)
+	}
+	for key, value := range imported {
+		current[key] = value
+	}
+	redactProfileSettings(current)
+	merged, err := json.Marshal(current)
+	if err != nil {
+		return nil, fmt.Errorf("encode merged profile settings: %w", err)
+	}
+	return merged, nil
+}
+
+// RollbackProfileSettings atomically replaces only the named profile's
+// settings.json with a validated settings snapshot. It deliberately does not
+// claim to restore workspace files or any other profile state.
+//wails:ignore
+func (s *ProfileService) RollbackProfileSettings(name string, snapshot json.RawMessage) error {
+	if !isValidProfileName(name) {
+		return fmt.Errorf("invalid profile name %q: must be lowercase kebab-case", name)
+	}
+	if err := s.ensureProfilesDir(); err != nil {
+		return err
+	}
+	dir := filepath.Join(s.profilesDir, name)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		if err == nil {
+			err = fmt.Errorf("not a directory")
+		}
+		return fmt.Errorf("profile %q does not exist: %w", name, err)
+	}
+	settings, err := parseProfileSettings(snapshot)
+	if err != nil {
+		return fmt.Errorf("invalid profile settings snapshot: %w", err)
+	}
+	redactProfileSettings(settings)
+	canonical, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("normalize profile settings snapshot: %w", err)
+	}
+	write := s.writeSettings
+	if write == nil {
+		write = atomicWriteFile
+	}
+	if err := write(filepath.Join(dir, "settings.json"), canonical, 0600); err != nil {
+		return fmt.Errorf("rollback profile settings: %w", err)
+	}
+	return nil
+}
+
 func (s *ProfileService) ExportProfile(name string) (ProfileExport, error) {
-	if !profileNameRe.MatchString(name) {
+	if !isValidProfileName(name) {
 		return ProfileExport{}, fmt.Errorf("invalid profile name %q: must be lowercase kebab-case", name)
 	}
 	if err := s.ensureProfilesDir(); err != nil {
@@ -603,43 +782,15 @@ func (s *ProfileService) ImportProfile(export ProfileExport) (string, error) {
 	if err := s.ensureProfilesDir(); err != nil {
 		return "", err
 	}
-	if export.SchemaVersion != profileExportSchemaVersion {
-		return "", fmt.Errorf(
-			"unsupported profile export schema version %d (supported: %d)",
-			export.SchemaVersion,
-			profileExportSchemaVersion,
-		)
-	}
-	if len(export.Settings) == 0 {
-		return "", fmt.Errorf("imported profile has no settings payload")
-	}
-	if len(export.Settings) > maxProfileSettingsBytes {
-		return "", fmt.Errorf(
-			"imported profile settings exceed %d bytes",
-			maxProfileSettingsBytes,
-		)
-	}
-	// The settings payload must be a valid JSON object, not a scalar or a
-	// truncated fragment. Unmarshal into a map to enforce object shape and
-	// forward-compatible field preservation.
-	var settings map[string]interface{}
-	if err := json.Unmarshal(export.Settings, &settings); err != nil {
-		return "", fmt.Errorf("imported profile settings are not valid JSON: %w", err)
-	}
-	// G25: reject prototype-pollution style keys. Go maps treat "__proto__"
-	// as an ordinary key, but the blob is later consumed by JS frontends
-	// where such keys can corrupt object prototypes. Fail closed instead of
-	// persisting them.
-	for _, forbidden := range []string{"__proto__", "constructor", "prototype"} {
-		if _, present := settings[forbidden]; present {
-			return "", fmt.Errorf("imported profile settings contain a reserved key %q", forbidden)
-		}
+	settings, err := validateProfileExport(export)
+	if err != nil {
+		return "", err
 	}
 	name := export.Name
 	if isWindowsReservedDeviceName(name) {
 		return "", fmt.Errorf("profile name %q is a reserved Windows device name", name)
 	}
-	if !profileNameRe.MatchString(name) || name == defaultProfileName {
+	if !isValidProfileName(name) || name == defaultProfileName {
 		name = "imported"
 	}
 	// Avoid collisions by appending -2, -3, etc.

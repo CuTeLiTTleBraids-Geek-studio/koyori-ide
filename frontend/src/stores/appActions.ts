@@ -43,6 +43,10 @@ import {
 import { PROVIDER_PRESETS } from "@/lib/aiProviders";
 import { loadRules, clearRules } from "@/stores/rules";
 import { translate } from "@/lib/i18n";
+import {
+  canonicalizeLocale,
+  localeDirection,
+} from "@/lib/localeMetadata";
 import { notifyError, notifyWarning } from "@/lib/notifications";
 import { loadCustomShortcuts, getCustomShortcuts } from "@/composables/useKeyboard";
 import {
@@ -130,6 +134,17 @@ export function applyUiDensity(density: string): void {
     ? density
     : "comfortable";
   document.documentElement.setAttribute("data-density", valid);
+}
+
+/** Apply the active language to the document without coupling UI components to bidi logic. */
+export function applyLocaleDirection(locale: string): string {
+  const canonicalLocale = canonicalizeLocale(locale);
+  appState.language = canonicalLocale;
+  if (typeof document !== "undefined") {
+    document.documentElement.dir = localeDirection(canonicalLocale);
+    document.documentElement.lang = canonicalLocale;
+  }
+  return canonicalLocale;
 }
 
 export function initThemes(): void {
@@ -241,7 +256,7 @@ export async function loadSettings(
     const settings = await settingsService.loadSettings();
     if (!shouldApply()) return;
     appState.settingsVersion = settings.version ?? 0;
-    appState.language = settings.language;
+    applyLocaleDirection(settings.language);
     appState.theme = settings.theme;
     appState.fontSize = settings.fontSize;
     appState.fontFamily = settings.fontFamily;
@@ -709,6 +724,7 @@ export function setExtensionsSubview(view: ExtensionsSubview): void {
  *
  * 包含：
  *   - theme 变化 → applyMode
+ *   - language 变化 → applyLocaleDirection
  *   - currentProject 变化 → loadRules / clearRules + setActiveWorkspaceRoot
  */
 export function initAppActions(): void {
@@ -720,6 +736,14 @@ export function initAppActions(): void {
     (newMode) => {
       applyMode(newMode as ThemeMode);
     },
+  ));
+
+  appActionWatchStops.push(watch(
+    () => appState.language,
+    (locale) => {
+      applyLocaleDirection(locale);
+    },
+    { immediate: true },
   ));
 
   // Load/clear project-level AI rules when the active project changes.
@@ -740,5 +764,3 @@ export function initAppActions(): void {
     },
   ));
 }
-
-

@@ -2,7 +2,7 @@
 // 喵，这是 Koyori IDE 的 I18N 模块（前端实现）~
 import { computed } from "vue";
 import { appState } from "@/stores/app";
-import { pluralCategories } from "@/lib/localeMetadata";
+import { normalizeLocale, pluralCategories } from "@/lib/localeMetadata";
 import {
   isSecurityMessageKey,
   SECURITY_MESSAGE_KEYS,
@@ -86,7 +86,7 @@ let missingKeyCount = 0;
  * Get the active locale, falling back to "en" for unknown values.
  */
 export function getCurrentLocale(): Locale {
-  const lang = appState.language;
+  const lang = normalizeLocale(appState.language).split("-")[0];
   if (lang === "zh" || lang === "ja") return lang;
   return "en";
 }

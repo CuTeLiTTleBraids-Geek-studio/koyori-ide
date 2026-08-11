@@ -3,6 +3,11 @@ import {
   pluralCategories,
   isRtlLocale,
   normalizeLocale,
+  canonicalizeLocale,
+  localeDirection,
+  BIDI_ISOLATION_CLASS,
+  BIDI_ISOLATION_STYLE,
+  getBidiIsolationAttributes,
 } from "./localeMetadata";
 
 describe("localeMetadata (G25)", () => {
@@ -49,6 +54,22 @@ describe("localeMetadata (G25)", () => {
     expect(isRtlLocale("en")).toBe(false);
     expect(isRtlLocale("zh")).toBe(false);
     expect(isRtlLocale("ru")).toBe(false);
+    expect(isRtlLocale("farsi")).toBe(true);
+  });
+
+  it("canonicalizes document locales and exposes reusable bidi attributes", () => {
+    expect(canonicalizeLocale("en-us")).toBe("en-US");
+    expect(canonicalizeLocale("zh_cn")).toBe("zh-CN");
+    expect(canonicalizeLocale(" ")).toBe("en");
+    expect(localeDirection("ar-EG")).toBe("rtl");
+    expect(localeDirection("en")).toBe("ltr");
+    expect(BIDI_ISOLATION_CLASS).toBe("bidi-isolate");
+    expect(getBidiIsolationAttributes()).toEqual({
+      class: "bidi-isolate",
+      dir: "auto",
+      style: { unicodeBidi: "isolate" },
+    });
+    expect(BIDI_ISOLATION_STYLE).toEqual({ unicodeBidi: "isolate" });
   });
 
   it("falls back to platform ICU for unknown locales", () => {

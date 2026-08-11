@@ -18,7 +18,58 @@
 
 export type LocaleCode = string;
 
-const RTL_LOCALES = new Set(["ar", "he", "fa", "ur", "ps", "yi", "dv"]);
+const RTL_LOCALES = new Set([
+  "ar",
+  "he",
+  "fa",
+  "farsi",
+  "ur",
+  "ps",
+  "yi",
+  "dv",
+]);
+
+export type LocaleDirection = "ltr" | "rtl";
+
+/** Canonical BCP 47 tag for the document lang attribute. */
+export function canonicalizeLocale(locale: LocaleCode): string {
+  if (typeof locale !== "string") return "en";
+  const normalized = normalizeLocale(locale);
+  const languageAlias = normalized === "farsi" ? "fa" : normalized;
+  if (!normalized) return "en";
+  try {
+    return Intl.getCanonicalLocales(languageAlias)[0] ?? languageAlias;
+  } catch {
+    // Keep an unknown but non-empty setting usable and deterministic.
+    return languageAlias;
+  }
+}
+
+export function localeDirection(locale: LocaleCode): LocaleDirection {
+  return isRtlLocale(locale) ? "rtl" : "ltr";
+}
+
+/** Apply to path, filename, and code-fragment elements via Vue `:class`/`:dir`. */
+export const BIDI_ISOLATION_CLASS = "bidi-isolate";
+export const BIDI_ISOLATION_STYLE = Object.freeze({
+  unicodeBidi: "isolate" as const,
+});
+export const BIDI_ISOLATION_ATTRIBUTES = Object.freeze({
+  class: BIDI_ISOLATION_CLASS,
+  dir: "auto" as const,
+  style: BIDI_ISOLATION_STYLE,
+});
+
+export function getBidiIsolationAttributes(): {
+  class: typeof BIDI_ISOLATION_CLASS;
+  dir: "auto";
+  style: typeof BIDI_ISOLATION_STYLE;
+} {
+  return {
+    ...BIDI_ISOLATION_ATTRIBUTES,
+    style: { ...BIDI_ISOLATION_STYLE },
+  };
+}
 
 /**
  * CLDR plural categories that are actually used for a locale. This is the

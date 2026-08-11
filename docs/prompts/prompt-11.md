@@ -267,14 +267,14 @@ node scripts/sync-release-metadata.mjs --check
 - 明确说明没有 commit/push/tag/release（工作区无 `.git`）
 ```
 
-### 会话交付：P11-T-G25（2026-08-11）
+### 会话交付：P11-T-G25（2026-08-11，续作）
 
 - 复核结论：G25 缺口已变化但仍存在；G23 AC2-4 仍为 `U`，G25 不宣称完成，AC 仍为 0/4。
-- 改动文件：`services/profile_service.go`、`services/profile_service_test.go` 增加导入 secret 不落盘、Windows 保留设备名和路径穿越防护；`frontend/src/lib/i18n.ts`、`frontend/src/lib/languagePackRuntime.ts` 增加内置只读 security catalog 和外部语言包覆盖拒绝；新增 `frontend/src/lib/languagePackRuntime.security.test.ts`。
+- 改动文件：`frontend/src/lib/localeMetadata.ts`、`frontend/src/stores/appActions.ts` 及相关测试增加 locale 方向切换、HTML `lang/dir` 同步和 bidi isolation 属性；`services/profile_service.go`、`services/profile_service_test.go` 增加导入预览、逐字段合并、设置快照原子回滚、递归原型污染拒绝，并补齐导出/导入的 Windows 保留设备名校验。回滚方法标记 `//wails:ignore`，保持当前 bindings 导出面不变，尚未接入前端。
 - AC：AC1 `[] U`（packaged en-US/zh-CN/复杂复数/RTL 矩阵未运行）；AC2 `[] T/U`（53/53 T 级基础，真实产物缺键行为未验证）；AC3 `[] T/S/U`（安全 key 保护及绕过测试实现，完整 G23/packaged 语言包证据仍 U）；AC4 `[] T/U`（profile 恶意输入 T 级防护，跨平台 packaged 矩阵未运行）。
-- 验证：`go test ./services -run 'Profile|profile' -count=1` exit 0；`npx vue-tsc --noEmit` 在 120 秒内未完成；`npx vitest run src/lib/languagePackRuntime.security.test.ts` 因本地缺少 `@rolldown/binding-linux-x64-gnu` 在启动前失败。未伪造 I/P/R 证据。
+- 验证：`go test ./services -run 'Profile|profile' -count=1` exit 0；`npx vue-tsc --noEmit` exit 0；文档 links/numbers/encoding 门禁均 exit 0。Vitest 仍因本地缺少 `@rolldown/binding-linux-x64-gnu` 在启动前失败。未伪造 I/P/R 证据。
 - 安全与数据：导入前后均移除顶层和嵌套 API key；profile 名称跨平台 fail-closed；外部语言包无法覆盖安全消息或通过大小写/NFKC 变体绕过，普通消息注册保持原子性。
-- 下一步：先补可用前端原生依赖并完成相关测试，再做 G25 packaged locale/RTL 矩阵；在 G23 AC2-4 有真实证据前不得转入 G26。
+- 下一步：先补可用前端原生依赖并完成相关测试，再接入 bidi isolation 到路径/代码片段组件并做 G25 packaged locale/RTL 矩阵；在 G23 AC2-4 有真实证据前不得转入 G26。
 - SSOT 回写：已同步 prompt-9 G25 AC/进度板、prompt-10 G25 状态和本文件；本轮创建本地 commit，不 push/tag/release。
 
 ## 10. 一键续作词（G24 已完成）

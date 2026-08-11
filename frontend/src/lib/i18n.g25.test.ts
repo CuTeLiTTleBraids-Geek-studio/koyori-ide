@@ -140,4 +140,11 @@ describe("i18n G25 ICU plural", () => {
     expect(translate("test.plural", { count: 1 })).toBe("1 file");
     expect(__getMissingKeyCount()).toBe(0);
   });
+
+  it("keeps regional built-in locales compatible with their base dictionaries", () => {
+    appState.language = "zh-CN";
+    expect(translate("test.plural", { count: 2 })).toBe("共 2 个文件");
+    appState.language = "ja-JP";
+    expect(translate("missing.regional.key")).toBe("missing.regional.key");
+  });
 });

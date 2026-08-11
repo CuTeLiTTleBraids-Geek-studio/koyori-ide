@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -775,5 +776,135 @@ func TestProfileService_NoConfigDir(t *testing.T) {
 	_, err := s.ListProfiles()
 	if err == nil {
 		t.Fatal("expected error when config dir is empty")
+	}
+}
+
+func TestPreviewProfileImport_DoesNotLeakSecrets(t *testing.T) {
+	export := ProfileExport{
+		SchemaVersion: profileExportSchemaVersion,
+		Name:          "preview",
+		Description:   "Preview profile",
+		Settings: []byte(`{"theme":"light","aiApiKey":"import-secret","aiProviderConfigs":[
+			{"id":"openai","apiKey":"provider-import-secret","model":"gpt-4o"}
+		]}`),
+	}
+	blob, err := json.Marshal(export)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := json.RawMessage(`{"theme":"dark","aiApiKey":"current-secret","aiProviderConfigs":[
+		{"id":"openai","apiKey":"provider-current-secret","model":"gpt-4o"}
+	]}`)
+
+	preview, err := PreviewProfileImport(blob, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(preview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{
+		"import-secret",
+		"provider-import-secret",
+		"current-secret",
+		"provider-current-secret",
+		"aiApiKey",
+		"apiKey",
+	} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("preview leaked secret data %q: %s", secret, encoded)
+		}
+	}
+	if len(preview.ChangedFields) != 1 || preview.ChangedFields[0] != "theme" {
+		t.Fatalf("changed fields = %v, want [theme]", preview.ChangedFields)
+	}
+	if preview.Unchanged != 1 {
+		t.Fatalf("unchanged = %d, want 1 for redacted provider config", preview.Unchanged)
+	}
+}
+
+func TestMergeProfileSettings_ConflictUnknownFieldsAndSecrets(t *testing.T) {
+	current := json.RawMessage(`{
+		"theme":"dark",
+		"currentOnly":{"enabled":true},
+		"aiApiKey":"current-secret",
+		"aiProviderConfigs":[{"id":"old","apiKey":"old-secret"}]
+	}`)
+	imported := json.RawMessage(`{
+		"theme":"light",
+		"futureField":{"nested":1},
+		"aiApiKey":"import-secret",
+		"aiProviderConfigs":[{"id":"new","apiKey":"new-secret","model":"gpt-4o"}]
+	}`)
+
+	mergedRaw, err := MergeProfileSettings(current, imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var merged map[string]interface{}
+	if err := json.Unmarshal(mergedRaw, &merged); err != nil {
+		t.Fatal(err)
+	}
+	if merged["theme"] != "light" {
+		t.Fatalf("imported conflict must win, got theme %v", merged["theme"])
+	}
+	if _, ok := merged["currentOnly"].(map[string]interface{}); !ok {
+		t.Fatalf("current-only unknown field was lost: %v", merged)
+	}
+	if _, ok := merged["futureField"].(map[string]interface{}); !ok {
+		t.Fatalf("imported unknown field was lost: %v", merged)
+	}
+	if _, present := merged["aiApiKey"]; present {
+		t.Fatal("merged settings retained top-level aiApiKey")
+	}
+	configs, ok := merged["aiProviderConfigs"].([]interface{})
+	if !ok || len(configs) != 1 {
+		t.Fatalf("imported provider configs did not replace current value: %v", merged["aiProviderConfigs"])
+	}
+	config := configs[0].(map[string]interface{})
+	if config["id"] != "new" || config["model"] != "gpt-4o" {
+		t.Fatalf("provider config fields were not preserved: %v", config)
+	}
+	if _, present := config["apiKey"]; present {
+		t.Fatal("merged provider config retained apiKey")
+	}
+}
+
+func TestMergeProfileSettings_RejectsNestedPrototypePollution(t *testing.T) {
+	_, err := MergeProfileSettings(
+		json.RawMessage(`{"theme":"dark"}`),
+		json.RawMessage(`{"future":{"items":[{"constructor":{"polluted":true}}]}}`),
+	)
+	if err == nil {
+		t.Fatal("expected nested prototype-pollution key to be rejected")
+	}
+}
+
+func TestProfileService_RollbackProfileSettings_WriteFailureKeepsOldFile(t *testing.T) {
+	s := newTestProfileService(t)
+	if err := s.ensureProfilesDir(); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(s.profilesDir, defaultProfileName, "settings.json")
+	old := []byte(`{"theme":"dark","futureField":{"preserve":true}}`)
+	if err := os.WriteFile(settingsPath, old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected atomic write failure")
+	s.writeSettings = func(string, []byte, os.FileMode) error {
+		return injected
+	}
+
+	err := s.RollbackProfileSettings(defaultProfileName, json.RawMessage(`{"theme":"light"}`))
+	if !errors.Is(err, injected) {
+		t.Fatalf("rollback error = %v, want injected write failure", err)
+	}
+	got, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(old) {
+		t.Fatalf("failed rollback changed current settings: got %s, want %s", got, old)
 	}
 }

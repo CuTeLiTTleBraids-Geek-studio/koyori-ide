@@ -547,6 +547,8 @@
 - `services/profile_service_test.go`：在原有 profile 测试上新增导入敏感字段不落盘、路径穿越名称不越界、Windows 保留设备名拒绝覆盖；`go test ./services -run 'Profile|profile' -count=1` 通过。
 - `frontend/src/lib/languagePackRuntime.ts` + `frontend/src/lib/i18n.ts`：增加内置只读 security message catalog；外部 locale 注册遇到安全 key、大小写或 Unicode NFKC 规范化碰撞时整批 fail-closed，普通文案仍可注册；安全 key 的翻译不读取外部运行时字典。
 - `frontend/src/lib/languagePackRuntime.security.test.ts`：覆盖安全 key 覆盖拒绝、普通 key 接受、注册原子性、规范化绕过拒绝、内置 catalog 不可变和外部值无法改变安全翻译。
+- `frontend/src/lib/localeMetadata.ts` + `frontend/src/stores/appActions.ts`：增加 locale 方向纯函数、HTML `lang`/`dir` 同步和可复用 bidi isolation 属性；相关 locale/app 测试覆盖 ar/he/fa 与 LTR 切换。
+- `services/profile_service.go` + `services/profile_service_test.go`：增加不落盘的导入预览、逐字段合并和设置快照原子回滚；递归拒绝原型污染键，回滚写失败保持旧 settings，回滚方法标记 `//wails:ignore` 以维持现有 bindings 导出面。
 - bindings 重新生成并更新 manifest（47 服务模块 / 55 文件，`--accept-export-surface`）。
 
 **范围：** ICU message、lazy locale pack、plural/date/number、fallback、pseudo locale、RTL/bidi、插件翻译、profile/theme/layout/keymap。
@@ -561,7 +563,7 @@
 - [ ] 至少 `en-US`、`zh-CN`、一种复数复杂语言和一种 RTL 语言通过 packaged 矩阵。`U`：locale 元数据与 ICU plural 解析已 T 级实现（en/zh/ja 静态、ru/pl/ar 类别表、RTL 检测），但 packaged 切换矩阵未运行。
 - [ ] 日期/数字/复数无拼接错误，缺键可监测且不显示 raw key。`T`：`formatNumber` ICU 数字格式化、ICU plural 经 `Intl.PluralRules` 选类、missing-key 计数可监测；i18n 全量实测 53/53。真实产物中缺键不显示 raw key 尚未验证，AC 保持未勾选。
 - [ ] 插件/语言包可提供翻译且不能覆盖系统安全提示。`T/S`：内置只读 security catalog、外部注册安全 key/大小写与 Unicode NFKC 碰撞 fail-closed，并有绕过测试；现有语言包完整运行时与 packaged 证据仍依赖 G23，AC 保持未勾选。
-- [ ] profile 跨平台导入，未知字段、冲突和恶意文件安全处理。`T`：schema 版本化导入导出、导入/导出敏感字段 redact、未知字段保留、大小限制、非法 JSON/原型污染/路径穿越/Windows 保留设备名拒绝；恶意文件与跨平台 packaged 导入矩阵 `U`。
+- [ ] profile 跨平台导入，未知字段、冲突和恶意文件安全处理。`T`：schema 版本化导入导出、导入/导出敏感字段 redact、未知字段保留、大小限制、非法 JSON/递归原型污染/路径穿越/Windows 保留设备名拒绝；预览不返回值、逐字段合并和 settings 原子回滚已有定向测试；恶意文件与跨平台 packaged 导入矩阵 `U`。
 
 **最低证据：** `I` + `P`。
 
@@ -728,7 +730,7 @@ npm audit --registry=https://registry.npmjs.org --audit-level=high
 | P9-G22 | 完成 | 4/4 | T/P/S | 2026-08-07 | 编码、格式、类型、lint、文档门禁、全量前端 168 files/2696 tests、生产 build/postbuild、Go 全量 test/vet/build、bindings、Plan editStep/无 echo/后端拒绝空步骤均已通过；外部 release/CI 历史不属于本 Goal，继续按 G21/G07 标为 U |
 | P9-G23 | 阻塞 | 1/4 | T/I/P/U | 2026-08-09 | Windows x64 packaged artifact `38b7d545c69535b72770f0cf544e95f6ee962db10b390cd580196eebde5cc410`、源码指纹 `0bcd15bea4628ab0cf4e65914deeb9a4d36ab822aee74dd0e6846088852a07f5`，23/23 fixtures 通过；Go/TS Monaco ID、LSP、format/build/test、Delve/Node debug 与 pack source metadata 完整通过，AC1 完成。签名 manifest-only installer、严格 SemVer 降级拒绝、publisher trust、pin、disable/enable、rollback/uninstall 和 hostile archive 矩阵已实现；真实 Python/Rust 本地 LSP/toolchain/DAP 通过，但 packaged probe 未运行其完整 LSP/DAP。服务 payload installer、跨平台 packaged 与 remote language host 仍为 U |
 | P9-G24 | 完成 | 4/4 | T/I/P | 2026-08-11 | packaged manifest `status=passed`，24/24 fixtures；artifact SHA-256 `7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181`，source fingerprint `690aa31cad880bf803037ab734207a9e1f7281d9e05140f65daaef15bd7b6180`，`recordedAt=2026-08-11T03:23:53.760Z`；corpus 11/11，10 包全 blocked；首次本轮 `disabled=true`/`active=true` 失败、lifecycle stop handshake 修复、低内存 Git `0xc0000142` 后 true skip-build 通过均已记录；无 git/CI 声称 |
-| P9-G25 | 进行中 | 0/4 | T/U | 2026-08-11 | ICU plural、locale 元数据、formatNumber、missing-key 监测已 T 级实现（i18n 全量 53/53）；profile schema v1 导入导出已补齐导入/导出 secret redact、非法 JSON/未知版本/原型污染/路径穿越/Windows 保留设备名 fail-closed，定向 Go profile 测试通过；新增内置只读 security catalog，外部语言包安全 key、大小写/NFKC 碰撞拒绝及绕过测试。packaged locale/RTL 矩阵、真实产物缺键行为、恶意文件跨平台导入与 G23 依赖仍为 U；AC 0/4 正式勾选 |
+| P9-G25 | 进行中 | 0/4 | T/U | 2026-08-11 | ICU plural、locale 元数据、formatNumber、missing-key 监测已 T 级实现（i18n 全量 53/53）；profile schema v1 导入导出已补齐导入/导出 secret redact、递归原型污染/路径穿越/Windows 保留设备名 fail-closed，导入预览、逐字段合并、settings 原子回滚已有定向 Go 测试；新增内置只读 security catalog，外部语言包安全 key、大小写/NFKC 碰撞拒绝及绕过测试；locale 方向切换同步 HTML `lang/dir`，提供 bidi isolation 属性。packaged locale/RTL 矩阵、真实产物缺键行为、恶意文件跨平台导入与 G23 依赖仍为 U；AC 0/4 正式勾选 |
 | P9-G26 | 未开始 | 0/4 | U | 2026-08-04 | 依赖 G23/G24 |
 | P9-G27 | 未开始 | 0/4 | U | 2026-08-04 | 最终运营 Goal |
 
