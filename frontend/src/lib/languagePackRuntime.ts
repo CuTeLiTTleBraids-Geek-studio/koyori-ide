@@ -6,6 +6,38 @@ export const LANGUAGE_PACK_SCHEMA_VERSION = "1.0" as const;
 export const LANGUAGE_PACK_ENGINE_API_VERSION = "1.0" as const;
 export const LANGUAGE_PACK_LOCAL_HOST_PROTOCOL = "language.local.v1" as const;
 
+/**
+ * Security-sensitive UI messages are owned by the application and may not be
+ * supplied by external language packs. The list is frozen so callers can
+ * inspect, but not extend, the boundary at runtime.
+ */
+export const SECURITY_MESSAGE_KEYS = Object.freeze([
+  "aiChat.riskSafe",
+  "aiChat.riskElevated",
+  "aiChat.riskDangerous",
+  "aiChat.blocked",
+  "aiChat.denylistWarning",
+  "httpClient.privateNetwork",
+  "marketplace.securityTitle",
+  "marketplace.securityText",
+  "extPerm.levelReviewed",
+  "extPerm.confirmLabel",
+  "extensionHost.confirmRuntimeOperation",
+] as const);
+
+function normalizeMessageKey(key: string): string {
+  return key.normalize("NFKC").toLocaleLowerCase("en-US");
+}
+
+const normalizedSecurityMessageKeys = new Set<string>(
+  SECURITY_MESSAGE_KEYS.map(normalizeMessageKey),
+);
+
+/** Detect exact security keys and case/Unicode-normalization collisions. */
+export function isSecurityMessageKey(key: string): boolean {
+  return normalizedSecurityMessageKeys.has(normalizeMessageKey(key));
+}
+
 export interface LanguagePackPlatform {
   os: "windows" | "darwin" | "linux";
   arch: "amd64" | "arm64";

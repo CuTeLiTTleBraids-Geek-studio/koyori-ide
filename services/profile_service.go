@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -62,6 +63,31 @@ type profileMeta struct {
 // they are filesystem-safe across platforms. "default" is reserved
 // and always exists.
 var profileNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// isWindowsReservedDeviceName applies Windows device-name semantics to a
+// profile name, including names with extensions and trailing dots/spaces.
+func isWindowsReservedDeviceName(name string) bool {
+	normalized := strings.TrimRight(strings.ToLower(name), " .")
+	if dot := strings.IndexByte(normalized, '.'); dot >= 0 {
+		normalized = normalized[:dot]
+	}
+	switch normalized {
+	case "con", "nul", "aux", "prn":
+		return true
+	}
+	for _, prefix := range []string{"com", "lpt"} {
+		if len(normalized) == len(prefix)+1 &&
+			strings.HasPrefix(normalized, prefix) &&
+			normalized[len(prefix)] >= '1' && normalized[len(prefix)] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func isValidProfileName(name string) bool {
+	return profileNameRe.MatchString(name) && !isWindowsReservedDeviceName(name)
+}
 
 // defaultProfileName is the name of the auto-created default profile.
 const defaultProfileName = "default"
@@ -227,7 +253,7 @@ func (s *ProfileService) ListProfiles() ([]ProfileInfo, error) {
 			continue
 		}
 		name := entry.Name()
-		if !profileNameRe.MatchString(name) {
+		if !isValidProfileName(name) {
 			continue // skip non-conforming directories
 		}
 		info, err := s.buildProfileInfo(name, active)
@@ -304,7 +330,7 @@ func (s *ProfileService) ActiveSettingsPath() (string, error) {
 // invokes the onSwitch callback (if registered) with the new
 // settings.json path so SettingsService can be redirected.
 func (s *ProfileService) SetActiveProfile(name string) error {
-	if !profileNameRe.MatchString(name) {
+	if !isValidProfileName(name) {
 		return fmt.Errorf("invalid profile name %q: must be lowercase kebab-case", name)
 	}
 	if err := s.ensureProfilesDir(); err != nil {
@@ -327,7 +353,7 @@ func (s *ProfileService) SetActiveProfile(name string) error {
 // true, copies the active profile's settings.json; otherwise writes
 // default settings. Returns an error if the profile already exists.
 func (s *ProfileService) CreateProfile(name string, fromCurrent bool) error {
-	if !profileNameRe.MatchString(name) {
+	if !isValidProfileName(name) {
 		return fmt.Errorf("invalid profile name %q: must be lowercase kebab-case", name)
 	}
 	if name == defaultProfileName {
@@ -382,7 +408,7 @@ func (s *ProfileService) CreateProfile(name string, fromCurrent bool) error {
 // DeleteProfile removes a profile directory. The "default" profile
 // and the currently active profile cannot be deleted.
 func (s *ProfileService) DeleteProfile(name string) error {
-	if !profileNameRe.MatchString(name) {
+	if !isValidProfileName(name) {
 		return fmt.Errorf("invalid profile name %q: must be lowercase kebab-case", name)
 	}
 	if name == defaultProfileName {
@@ -437,10 +463,10 @@ func removeProfileDir(dir string) error {
 // RenameProfile renames a profile. The "default" profile cannot be
 // renamed. The target name must not already exist.
 func (s *ProfileService) RenameProfile(oldName, newName string) error {
-	if !profileNameRe.MatchString(oldName) {
+	if !isValidProfileName(oldName) {
 		return fmt.Errorf("invalid old profile name %q", oldName)
 	}
-	if !profileNameRe.MatchString(newName) {
+	if !isValidProfileName(newName) {
 		return fmt.Errorf("invalid new profile name %q: must be lowercase kebab-case", newName)
 	}
 	if oldName == defaultProfileName {
@@ -478,7 +504,7 @@ func (s *ProfileService) RenameProfile(oldName, newName string) error {
 // SetProfileDescription updates the description metadata for a
 // profile. Creates profile.json if it does not exist.
 func (s *ProfileService) SetProfileDescription(name, description string) error {
-	if !profileNameRe.MatchString(name) {
+	if !isValidProfileName(name) {
 		return fmt.Errorf("invalid profile name %q: must be lowercase kebab-case", name)
 	}
 	if err := s.ensureProfilesDir(); err != nil {
@@ -610,6 +636,9 @@ func (s *ProfileService) ImportProfile(export ProfileExport) (string, error) {
 		}
 	}
 	name := export.Name
+	if isWindowsReservedDeviceName(name) {
+		return "", fmt.Errorf("profile name %q is a reserved Windows device name", name)
+	}
 	if !profileNameRe.MatchString(name) || name == defaultProfileName {
 		name = "imported"
 	}
@@ -634,6 +663,7 @@ func (s *ProfileService) ImportProfile(export ProfileExport) (string, error) {
 	settingsPath := filepath.Join(dir, "settings.json")
 	// Write the validated JSON object (re-marshaled) so the on-disk file is
 	// always canonical JSON rather than a raw untrusted blob.
+	redactProfileSettings(settings)
 	canonical, err := json.Marshal(settings)
 	if err != nil {
 		return "", fmt.Errorf("normalize imported settings: %w", err)

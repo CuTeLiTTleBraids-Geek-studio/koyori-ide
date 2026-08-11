@@ -106,9 +106,9 @@
 **T-G24-9（环境约束与失败处置）**：runner 内存 <2GB 会触发 WindowsTerminal OOM（`Windows.UI.Xaml.dll` 0xc0000005）导致运行中断。若复现，先释放宿主内存或拆分 faults 阶段复跑；每次失败保留 manifest/日志/SHA-256，`U` 不得升级为通过。
 ## 4. P9-G25（实现动态国际化与可移植个性化）按点任务
 
-**后续候选前提：G25 依赖 G23/G24；G24 已闭环，但 G23 AC2-4 仍为 `U`，因此不得宣称依赖全部满足或无条件开工。以下 G25 T 级基础已完成（2026-08-10），不要重复实现；本轮不推进 G25。**
+**当前前提：G25 依赖 G23/G24；G24 已闭环，但 G23 AC2-4 仍为 `U`，因此不得宣称依赖全部满足或 Goal 完成。2026-08-11 已推进不依赖真实 packaged 的 T 级安全加固；packaged/跨平台证据仍保持 `U`。**
 
-已完成的 T 级基础：ICU plural 解析（`Intl.PluralRules` 选类，ru/pl/ar 真实 few/many/zero/two 验证）、locale 元数据（plural categories + RTL 检测 + Intl 缺失 fallback）、`formatNumber`、missing-key 监测（`frontend/src/lib/localeMetadata.ts` + `i18n.ts` + `i18n.g25.test.ts`；i18n 全量 53 测试）；profile 版本化导入导出（schema v1、顶层 `aiApiKey` 与嵌套 `aiProviderConfigs[].apiKey` redact、1 MiB 限制、非法 JSON/未知版本/原型污染键 fail-closed 拒绝；`services/profile_service.go` + 8 个新增导入导出测试，文件共 40 个顶层测试）。
+已完成的 T 级基础与本轮加固：ICU plural 解析（`Intl.PluralRules` 选类，ru/pl/ar 真实 few/many/zero/two 验证）、locale 元数据（plural categories + RTL 检测 + Intl 缺失 fallback）、`formatNumber`、missing-key 监测（`frontend/src/lib/localeMetadata.ts` + `i18n.ts` + `i18n.g25.test.ts`；i18n 全量 53/53）；profile 版本化导入导出（schema v1、导入/导出顶层 `aiApiKey` 与嵌套 `aiProviderConfigs[].apiKey` redact、1 MiB 限制、非法 JSON/未知版本/原型污染/路径穿越/Windows 保留设备名 fail-closed 拒绝；定向 profile 测试通过）；内置只读 security catalog（外部语言包安全 key、大小写/NFKC 碰撞 fail-closed，普通文案允许注册，安全翻译不受外部字典影响；新增绕过测试）。
 
 **T-G25-1（AC1：packaged 矩阵）**：至少 `en-US`、`zh-CN`、一种复数复杂语言（如 ru/pl/ar）和一种 RTL 语言（如 ar/he）通过 packaged 切换矩阵。
 - 现状：全部 `U`（packaged 未运行）。
@@ -266,6 +266,16 @@ node scripts/sync-release-metadata.mjs --check
 - SSOT 回写：更新 prompt-9 AC 与第 8 节进度板、本文件
 - 明确说明没有 commit/push/tag/release（工作区无 `.git`）
 ```
+
+### 会话交付：P11-T-G25（2026-08-11）
+
+- 复核结论：G25 缺口已变化但仍存在；G23 AC2-4 仍为 `U`，G25 不宣称完成，AC 仍为 0/4。
+- 改动文件：`services/profile_service.go`、`services/profile_service_test.go` 增加导入 secret 不落盘、Windows 保留设备名和路径穿越防护；`frontend/src/lib/i18n.ts`、`frontend/src/lib/languagePackRuntime.ts` 增加内置只读 security catalog 和外部语言包覆盖拒绝；新增 `frontend/src/lib/languagePackRuntime.security.test.ts`。
+- AC：AC1 `[] U`（packaged en-US/zh-CN/复杂复数/RTL 矩阵未运行）；AC2 `[] T/U`（53/53 T 级基础，真实产物缺键行为未验证）；AC3 `[] T/S/U`（安全 key 保护及绕过测试实现，完整 G23/packaged 语言包证据仍 U）；AC4 `[] T/U`（profile 恶意输入 T 级防护，跨平台 packaged 矩阵未运行）。
+- 验证：`go test ./services -run 'Profile|profile' -count=1` exit 0；`npx vue-tsc --noEmit` 在 120 秒内未完成；`npx vitest run src/lib/languagePackRuntime.security.test.ts` 因本地缺少 `@rolldown/binding-linux-x64-gnu` 在启动前失败。未伪造 I/P/R 证据。
+- 安全与数据：导入前后均移除顶层和嵌套 API key；profile 名称跨平台 fail-closed；外部语言包无法覆盖安全消息或通过大小写/NFKC 变体绕过，普通消息注册保持原子性。
+- 下一步：先补可用前端原生依赖并完成相关测试，再做 G25 packaged locale/RTL 矩阵；在 G23 AC2-4 有真实证据前不得转入 G26。
+- SSOT 回写：已同步 prompt-9 G25 AC/进度板、prompt-10 G25 状态和本文件；本轮创建本地 commit，不 push/tag/release。
 
 ## 10. 一键续作词（G24 已完成）
 

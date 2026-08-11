@@ -3,6 +3,10 @@
 import { computed } from "vue";
 import { appState } from "@/stores/app";
 import { pluralCategories } from "@/lib/localeMetadata";
+import {
+  isSecurityMessageKey,
+  SECURITY_MESSAGE_KEYS,
+} from "@/lib/languagePackRuntime";
 
 /**
  * Minimal i18n framework (N-12, G25).
@@ -35,6 +39,44 @@ import zh from "./locales/zh";
 import ja from "./locales/ja";
 
 const dictionaries: Record<Locale, MessageDict> = { en, zh, ja };
+
+type SecurityMessageKey = (typeof SECURITY_MESSAGE_KEYS)[number];
+
+/** Immutable snapshot: security translations never consult runtime dictionaries. */
+export const SECURITY_MESSAGE_CATALOG: Readonly<
+  Record<Locale, Readonly<Record<SecurityMessageKey, string>>>
+> = Object.freeze({
+  en: Object.freeze(
+    Object.fromEntries(
+      SECURITY_MESSAGE_KEYS.map((key) => [key, en[key]]),
+    ) as Record<SecurityMessageKey, string>,
+  ),
+  zh: Object.freeze(
+    Object.fromEntries(
+      SECURITY_MESSAGE_KEYS.map((key) => [key, zh[key]]),
+    ) as Record<SecurityMessageKey, string>,
+  ),
+  ja: Object.freeze(
+    Object.fromEntries(
+      SECURITY_MESSAGE_KEYS.map((key) => [key, ja[key]]),
+    ) as Record<SecurityMessageKey, string>,
+  ),
+});
+
+/**
+ * Register external locale messages atomically. Any key colliding with the
+ * built-in security catalog after case folding and NFKC normalization rejects
+ * the complete registration.
+ */
+export function registerLocaleMessages(locale: Locale, messages: MessageDict): void {
+  const blockedKey = Object.keys(messages).find(isSecurityMessageKey);
+  if (blockedKey !== undefined) {
+    throw new Error(
+      `External locale messages cannot register security key "${blockedKey}"`,
+    );
+  }
+  dictionaries[locale] = { ...dictionaries[locale], ...messages };
+}
 
 // G25: missing-key monitor. Incremented for every key that is absent from
 // every dictionary (raw-key fallback). Reset between test runs.
@@ -158,7 +200,10 @@ export function translate(
 ): string {
   const locale = getCurrentLocale();
   const dict = dictionaries[locale] || en;
-  let value = dict[key] ?? en[key];
+  let value = isSecurityMessageKey(key) && key in SECURITY_MESSAGE_CATALOG.en
+    ? SECURITY_MESSAGE_CATALOG[locale][key as SecurityMessageKey] ??
+      SECURITY_MESSAGE_CATALOG.en[key as SecurityMessageKey]
+    : dict[key] ?? en[key];
   if (value === undefined) {
     missingKeyCount += 1;
     return key;

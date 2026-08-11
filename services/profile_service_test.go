@@ -613,6 +613,76 @@ func TestProfileService_ImportProfile_PrototypePollutionKeysRejected(t *testing.
 	}
 }
 
+func TestProfileService_ImportProfile_RedactsSensitiveFields(t *testing.T) {
+	s := newTestProfileService(t)
+	export := ProfileExport{
+		SchemaVersion: profileExportSchemaVersion,
+		Name:          "secrets",
+		Settings: []byte(`{"language":"zh","aiApiKey":"top-secret","aiProviderConfigs":[
+			{"id":"openai","apiKey":"nested-secret","model":"gpt-4o"},
+			{"id":"local","model":"local-model"}
+		]}`),
+	}
+	name, err := s.ImportProfile(export)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(s.profilesDir, name, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]interface{}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := settings["aiApiKey"]; present {
+		t.Fatal("aiApiKey must not be written by import")
+	}
+	configs, ok := settings["aiProviderConfigs"].([]interface{})
+	if !ok || len(configs) != 2 {
+		t.Fatalf("provider configs must be preserved, got %v", settings["aiProviderConfigs"])
+	}
+	for index, raw := range configs {
+		config := raw.(map[string]interface{})
+		if _, present := config["apiKey"]; present {
+			t.Fatalf("provider config %d apiKey must not be written", index)
+		}
+	}
+}
+
+func TestProfileService_ImportProfile_PathTraversalNameDoesNotEscapeProfilesDir(t *testing.T) {
+	s := newTestProfileService(t)
+	export := ProfileExport{
+		SchemaVersion: profileExportSchemaVersion,
+		Name:          "../outside",
+		Settings:      []byte(`{"language":"ja"}`),
+	}
+	name, err := s.ImportProfile(export)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "imported" {
+		t.Fatalf("expected unsafe name to fall back to imported, got %q", name)
+	}
+	if _, err := os.Stat(filepath.Join(s.profilesDir, "..", "outside", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("path traversal escaped profiles directory: %v", err)
+	}
+}
+
+func TestProfileService_ImportProfile_WindowsReservedNamesRejected(t *testing.T) {
+	s := newTestProfileService(t)
+	for _, name := range []string{"con", "NUL.txt", "aux. ", "prn...", "COM1", "com9.log", "LPT1 ", "lpt9."} {
+		export := ProfileExport{
+			SchemaVersion: profileExportSchemaVersion,
+			Name:          name,
+			Settings:      []byte(`{"language":"ja"}`),
+		}
+		if _, err := s.ImportProfile(export); err == nil {
+			t.Fatalf("expected Windows reserved name %q to be rejected", name)
+		}
+	}
+}
+
 func TestProfileService_ImportProfile_UnknownFieldsPreserved(t *testing.T) {
 	s := newTestProfileService(t)
 	export := ProfileExport{

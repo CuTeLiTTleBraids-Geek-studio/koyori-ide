@@ -49,7 +49,7 @@ G24 的实现已通过大量 `T` 级测试；最终真实 packaged manifest `bui
 - 修复 post-G24 edit driver 缺陷：新增 e2e `create-file` 命令（`internal/e2e/server.go`），driver 在 edit 前先按真实产品顺序 `CreateFile` 创建磁盘空文件（`ComputeBaseline` 对缺失文件返回空 hash 导致原断言失败）。
 - 新增 `scripts/g24-corpus-report.mjs` + `scripts/g24-vsix-zip.mjs` + `scripts/g24-corpus-report.test.mjs`（11/11 测试），真实 corpus 报告 10 包全 blocked（缺 `koyoriIde.permissions`），输出 `build/e2e-evidence/p9-g24/corpus-report.json`，满足 AC3。
 - `scripts/packaged-e2e.mjs` 支持 `KOYORI_IDE_E2E_SKIP_BUILD=1` 复用既有 artifact 复跑；manifest goal 字段加入 G24。
-- G25 T 级基础：ICU plural（`Intl.PluralRules` 选类，含 ru/pl/ar 真实 few/many/zero/two 验证）、locale 元数据、`formatNumber`、missing-key 监测；profile 版本化导入导出（schema v1、secret redact、1 MiB 限制、非法 JSON/未知版本/原型污染键 fail-closed 拒绝）。本轮不推进或修改 G25 实现。
+- G25 T 级基础与安全加固：ICU plural（`Intl.PluralRules` 选类，含 ru/pl/ar 真实 few/many/zero/two 验证）、locale 元数据、`formatNumber`、missing-key 监测；profile 版本化导入导出（schema v1、导入/导出 secret redact、1 MiB 限制、非法 JSON/未知版本/原型污染/路径穿越/Windows 保留设备名 fail-closed 拒绝）；内置只读 security catalog 拒绝外部语言包覆盖及规范化碰撞。packaged 与 G23 依赖证据仍为 `U`，G25 AC 未闭环。
 
 ### 3.2 已经完成的代码工作
 
