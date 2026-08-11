@@ -1,0 +1,352 @@
+import { flushPromises, mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  toggleAIWindow: vi.fn().mockResolvedValue(undefined),
+  isAIWindowOpen: vi.fn().mockResolvedValue(true),
+  isAIWindowVisible: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false),
+  openAIWindow: vi.fn(),
+  notifyError: vi.fn(),
+  route: { path: "/editor" },
+  routerPush: vi.fn(),
+}));
+
+vi.mock("vue-router", () => ({
+  useRoute: () => mocks.route,
+  useRouter: () => ({ push: mocks.routerPush }),
+}));
+
+vi.mock("@/lib/i18n", () => ({
+  useI18n: () => ({ t: (key: string) => key }),
+  translate: (key: string) => key,
+}));
+
+vi.mock("@/api/services", () => ({
+  windowService: {
+    toggleAIWindow: mocks.toggleAIWindow,
+    isAIWindowOpen: mocks.isAIWindowOpen,
+    isAIWindowVisible: mocks.isAIWindowVisible,
+  },
+}));
+
+vi.mock("@/stores/aiAssistant", () => ({
+  openAIDesktopWindow: mocks.openAIWindow,
+}));
+
+vi.mock("@/lib/notifications", () => ({ notifyError: mocks.notifyError }));
+
+vi.mock("@/lib/vscodeExtensions", () => ({
+  listAllVscodeExtensionViews: () => ({
+    explorer: [{ id: "test-ext.view1", name: "Test Ext View" }],
+  }),
+}));
+
+import ActivityBar from "./ActivityBar.vue";
+import { appState } from "@/stores/app";
+
+describe("ActivityBar AI window state", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    appState.panelTab = "explorer";
+    appState.sidebarCollapsed = false;
+    mocks.toggleAIWindow.mockClear();
+    mocks.isAIWindowOpen.mockClear();
+    mocks.isAIWindowVisible.mockReset();
+    mocks.isAIWindowVisible.mockResolvedValueOnce(true).mockResolvedValue(false);
+    mocks.openAIWindow.mockClear();
+    mocks.notifyError.mockClear();
+    mocks.route.path = "/editor";
+    mocks.routerPush.mockClear();
+    appState.activeExtensionView = null;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("clears the AI active state after toggling the window hidden", async () => {
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    // F-1: callHierarchy tab 已插入到 extensions 与 ai 之间，按钮索引会变，
+    // 改用 aria-label 定位 AI 按钮以避免索引耦合（i18n mock 返回 key 本身）。
+    const aiButton = wrapper.findAll("button").find(
+      (b) => b.attributes("aria-label") === "activity.ai",
+    )!;
+    expect(aiButton).toBeTruthy();
+    expect(aiButton.classes()).toContain("activity-bar__item--active");
+
+    await aiButton.trigger("click");
+    await flushPromises();
+
+    expect(mocks.toggleAIWindow).toHaveBeenCalledTimes(1);
+    expect(aiButton.classes()).not.toContain("activity-bar__item--active");
+    expect(mocks.openAIWindow).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("clears the AI window polling interval on unmount", async () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    wrapper.unmount();
+
+    expect(clearIntervalSpy).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    clearIntervalSpy.mockRestore();
+  });
+
+  it("exposes the HTTP client as a discoverable side-panel entry", async () => {
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === "activity.httpClient",
+    );
+    expect(button).toBeTruthy();
+
+    await button!.trigger("click");
+    expect(appState.panelTab).toBe("httpClient");
+    expect(appState.sidebarCollapsed).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("exposes the Build tool window as a discoverable side-panel entry", async () => {
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === "activity.build",
+    );
+    expect(button).toBeTruthy();
+
+    await button!.trigger("click");
+    expect(appState.panelTab).toBe("build");
+    expect(appState.sidebarCollapsed).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("exposes the database tool window as a discoverable side-panel entry", async () => {
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === "activity.database",
+    );
+    expect(button).toBeTruthy();
+
+    await button!.trigger("click");
+    expect(appState.panelTab).toBe("database");
+    expect(appState.sidebarCollapsed).toBe(false);
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["activity.debug", "/debug"],
+    ["activity.testExplorer", "/test"],
+  ])("opens %s through its ordinary keyboard-focusable entry", async (label, path) => {
+    const wrapper = mount(ActivityBar, {
+      attachTo: document.body,
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === label,
+    );
+    expect(button).toBeTruthy();
+    expect(button!.attributes("type")).toBe("button");
+    button!.element.focus();
+    expect(document.activeElement).toBe(button!.element);
+
+    await button!.trigger("click");
+    expect(mocks.routerPush).toHaveBeenCalledWith(path);
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["/debug", "activity.debug"],
+    ["/test", "activity.testExplorer"],
+  ])("marks the existing %s view entry active", async (path, label) => {
+    mocks.route.path = path;
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === label,
+    );
+    expect(button?.attributes("aria-pressed")).toBe("true");
+    expect(button?.classes()).toContain("activity-bar__item--active");
+    const explorer = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === "activity.explorer",
+    );
+    expect(explorer?.attributes("aria-pressed")).toBe("false");
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["/debug", "activity.debug"],
+    ["/test", "activity.testExplorer"],
+  ])("returns to the editor when clicking the active %s full-view entry again", async (path, label) => {
+    mocks.route.path = path;
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === label,
+    )!;
+    expect(button.attributes("aria-pressed")).toBe("true");
+    await button.trigger("click");
+
+    expect(mocks.routerPush).toHaveBeenCalledWith("/editor");
+    wrapper.unmount();
+  });
+
+  it("switches from the debug full view to the test explorer full view", async () => {
+    mocks.route.path = "/debug";
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === "activity.testExplorer",
+    )!;
+    await button.trigger("click");
+
+    expect(mocks.routerPush).toHaveBeenCalledWith("/test");
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["/debug", "activity.explorer", "explorer"],
+    ["/test", "activity.search", "search"],
+  ])("opens the %s sidebar and returns to the editor from the %s full view", async (path, label, tab) => {
+    mocks.route.path = path;
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === label,
+    )!;
+    await button.trigger("click");
+
+    expect(appState.panelTab).toBe(tab);
+    expect(appState.sidebarCollapsed).toBe(false);
+    expect(mocks.routerPush).toHaveBeenCalledWith("/editor");
+    wrapper.unmount();
+  });
+
+  it("returns to the editor when clicking an extension view from the debug full view", async () => {
+    mocks.route.path = "/debug";
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+
+    const button = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === "Test Ext View",
+    )!;
+    expect(button).toBeTruthy();
+    await button.trigger("click");
+
+    expect(appState.activeExtensionView).toBe("test-ext.view1");
+    expect(appState.sidebarCollapsed).toBe(false);
+    expect(mocks.routerPush).toHaveBeenCalledWith("/editor");
+    wrapper.unmount();
+  });
+
+  it("uses the localized fallback when toggling the AI window fails with a non-Error value", async () => {
+    mocks.toggleAIWindow.mockRejectedValueOnce("failed");
+    const wrapper = mount(ActivityBar, {
+      global: {
+        stubs: {
+          "el-icon": { template: "<span><slot /></span>" },
+          component: { template: "<span />" },
+        },
+      },
+    });
+    await flushPromises();
+    const aiButton = wrapper.findAll("button").find(
+      (candidate) => candidate.attributes("aria-label") === "activity.ai",
+    )!;
+    await aiButton.trigger("click");
+    await flushPromises();
+
+    expect(mocks.notifyError).toHaveBeenCalledWith("aiWindow.toggleFailed");
+    wrapper.unmount();
+  });
+});

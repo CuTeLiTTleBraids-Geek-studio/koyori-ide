@@ -1,0 +1,292 @@
+name: Package Desktop Apps
+
+# 运行我们的 build/scripts/build-macos.sh 和 build/scripts/build-linux.sh
+# 打包脚本，生成 macOS DMG、Linux AppImage/deb/rpm 安装包。
+#
+# 触发条件：
+#   1. push 到 main/master 分支（打包脚本或构建配置变更时）
+#   2. 手动触发（workflow_dispatch）
+#   3. pull_request（仅验证脚本能跑通，不上传产物）
+#
+# 产物：
+#   macOS: koyori-ide-<version>-macos-<arch>.dmg / koyori-ide.app
+#   Linux: koyori-ide-<version>-linux-<arch>.AppImage / .deb / .rpm
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "build/scripts/build-macos.sh"
+      - "build/scripts/build-linux.sh"
+      - "build/scripts/build-windows.ps1"
+      - "build/darwin/**"
+      - "build/linux/**"
+      - "build/windows/**"
+      - "build/appicon.png"
+      - "build/config.yml"
+      - ".github/workflows/package.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "build/scripts/**"
+  workflow_dispatch:
+    inputs:
+      skip_dmg:
+        description: "跳过 macOS DMG 创建（加快构建）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ===========================================================================
+  # macOS 构建（arm64 + amd64）
+  # ===========================================================================
+  macos:
+    name: macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14          # Apple Silicon (M1)
+          - arch: amd64
+            runner: macos-13          # Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate and verify untracked Wails bindings
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Install create-dmg
+        if: ${{ !inputs.skip_dmg }}
+        run: brew install create-dmg
+
+      - name: Make build script executable
+        run: chmod +x build/scripts/build-macos.sh
+
+      - name: Run macOS build script
+        run: |
+          ARGS="${{ matrix.arch }}"
+          if [ "${{ inputs.skip_dmg }}" = "true" ]; then
+            ARGS="$ARGS --no-dmg"
+          fi
+          ./build/scripts/build-macos.sh $ARGS
+        shell: bash
+
+      - name: Verify产物
+        run: |
+          echo "=== bin 目录内容 ==="
+          ls -lh bin/
+          echo ""
+          echo "=== .app 结构 ==="
+          if [ -d "bin/koyori-ide.app" ]; then
+            find bin/koyori-ide.app -type f | head -20
+          fi
+        shell: bash
+
+      - name: Upload macOS artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            bin/koyori-ide.app
+            bin/koyori-ide*.dmg
+            bin/koyori-ide
+          retention-days: 30
+
+  # ===========================================================================
+  # Linux 构建（amd64 + arm64）
+  # ===========================================================================
+  linux:
+    name: Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate and verify untracked Wails bindings
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Make build script executable
+        run: chmod +x build/scripts/build-linux.sh
+
+      - name: Run Linux build script
+        run: ./build/scripts/build-linux.sh ${{ matrix.arch }}
+        shell: bash
+
+      - name: Verify产物
+        run: |
+          echo "=== bin 目录内容 ==="
+          ls -lh bin/
+          echo ""
+          echo "=== AppImage 信息 ==="
+          if ls bin/*.AppImage 1>/dev/null 2>&1; then
+            file bin/*.AppImage
+          fi
+          echo ""
+          echo "=== deb 包信息 ==="
+          if ls bin/*.deb 1>/dev/null 2>&1; then
+            dpkg-deb -I bin/*.deb 2>/dev/null || true
+          fi
+        shell: bash
+
+      - name: Upload Linux artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            bin/koyori-ide
+            bin/koyori-ide*.AppImage
+            bin/koyori-ide*.deb
+            bin/koyori-ide*.rpm
+          retention-days: 30
+
+  # ===========================================================================
+  # Windows 构建（amd64）
+  # ===========================================================================
+  windows:
+    name: Windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate and verify untracked Wails bindings
+        shell: bash
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Run Windows build script (exe + NSIS installer)
+        shell: pwsh
+        run: ./build/scripts/build-windows.ps1 -Arch ${{ matrix.arch }}
+
+      - name: Verify产物
+        shell: pwsh
+        run: |
+          echo "=== bin 目录内容 ==="
+          Get-ChildItem bin/koyori-ide* | ForEach-Object {
+            $sizeMb = [math]::Round($_.Length / 1MB, 1)
+            Write-Host ("  {0}  ({1} MB)" -f $_.Name, $sizeMb)
+          }
+
+      - name: Upload Windows artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-${{ matrix.arch }}
+          path: |
+            bin/koyori-ide.exe
+            bin/koyori-ide-*-installer.exe
+            bin/koyori-ide-*.msix
+          retention-days: 30
+
+  # ===========================================================================
+  # 汇总产物（仅非 PR 时运行）
+  # ===========================================================================
+  summary:
+    name: Build Summary
+    needs: [windows, macos, linux]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+
+      - name: List all artifacts
+        run: |
+          echo "============================================"
+          echo "  所有构建产物"
+          echo "============================================"
+          find artifacts -type f | sort | while read f; do
+            size=$(du -h "$f" | cut -f1)
+            echo "  $size  $f"
+          done
+          echo ""
+          echo "============================================"
+          echo "  产物总大小"
+          echo "============================================"
+          du -sh artifacts/

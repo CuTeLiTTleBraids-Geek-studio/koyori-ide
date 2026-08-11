@@ -1,0 +1,1925 @@
+//go:build e2e
+
+// Package e2e hosts the packaged-build E2E automation endpoint. The endpoint
+// is compiled ONLY when the explicit `e2e` build tag is present; every normal
+// build compiles the empty stub in stub.go instead. Even in an e2e build the
+// server stays dormant unless KOYORI_IDE_E2E=1 is set, listens on loopback only,
+// and rotates a 256-bit bearer token after every request.
+//
+// The root main package adapts its service bundle to e2e.ServiceSet at the
+// call site (main.go), so this package never depends on package main.
+package e2e
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
+)
+
+const (
+	envOptIn                     = "KOYORI_IDE_E2E"
+	envToken                     = "KOYORI_IDE_E2E_TOKEN"
+	envHandshake                 = "KOYORI_IDE_E2E_HANDSHAKE"
+	windowID                     = "packaged-e2e"
+	httpClientResultEvent        = "e2e:http-client-result"
+	recoveryResultEvent          = "e2e:recovery-result"
+	workspaceResultEvent         = "e2e:g05-workspace-result"
+	runtimeRoleResultEvent       = "e2e:g06-runtime-role-result"
+	monacoResultEvent            = "e2e:g10-monaco-result"
+	extensionAPIResultEvent      = "e2e:g13-extension-api-result"
+	testExplorerResultEvent      = "e2e:g15-test-explorer-result"
+	terminalReconnectResultEvent = "e2e:g16-terminal-reconnect-result"
+	extensionHostG24ResultEvent  = "e2e:g24-extension-host-result"
+	bodyLimit                    = 2 << 20
+)
+
+type handshake struct {
+	URL       string `json:"url"`
+	PID       int    `json:"pid"`
+	StartedAt string `json:"startedAt"`
+}
+
+type command struct {
+	Action             string `json:"action"`
+	Workspace          string `json:"workspace,omitempty"`
+	SecondaryWorkspace string `json:"secondaryWorkspace,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Content            string `json:"content,omitempty"`
+	Marker             string `json:"marker,omitempty"`
+	Replacement        string `json:"replacement,omitempty"`
+	PresetName         string `json:"presetName,omitempty"`
+	BaselineHash       string `json:"baselineHash,omitempty"`
+	WindowID           string `json:"windowId,omitempty"`
+	Command            string `json:"command,omitempty"`
+	Expected           string `json:"expected,omitempty"`
+	Language           string `json:"language,omitempty"`
+	CompletionLine     int    `json:"completionLine,omitempty"`
+	CompletionColumn   int    `json:"completionColumn,omitempty"`
+	HoverLine          int    `json:"hoverLine,omitempty"`
+	HoverColumn        int    `json:"hoverColumn,omitempty"`
+	PrimaryOrigin      string `json:"primaryOrigin,omitempty"`
+	SecondaryOrigin    string `json:"secondaryOrigin,omitempty"`
+	PublicURL          string `json:"publicUrl,omitempty"`
+	ProbeMode          string `json:"probeMode,omitempty"`
+	CrashContent       string `json:"crashContent,omitempty"`
+	PendingContent     string `json:"pendingContent,omitempty"`
+}
+
+type response struct {
+	OK     bool        `json:"ok"`
+	Result interface{} `json:"result,omitempty"`
+	Error  string      `json:"error,omitempty"`
+}
+
+type server struct {
+	services     ServiceSet
+	mu           sync.Mutex
+	token        string
+	probeMu      sync.Mutex
+	probeResults map[string]chan map[string]interface{}
+}
+
+// Start launches the loopback-only E2E automation server when KOYORI_IDE_E2E=1
+// is present, writes the handshake file, and returns a cleanup func. It
+// returns (nil, nil) when the opt-in env var is unset — mirroring the stub's
+// behavior so callers do not need to know which build they run in.
+func Start(set ServiceSet) (func(), error) {
+	if os.Getenv(envOptIn) != "1" {
+		return nil, nil
+	}
+	if set.Project == nil || set.File == nil || set.Terminal == nil ||
+		set.LSP == nil || set.Recovery == nil {
+		return nil, errors.New("E2E automation services are not fully wired")
+	}
+
+	token := os.Getenv(envToken)
+	if err := validateToken(token); err != nil {
+		return nil, err
+	}
+	handshakePath := os.Getenv(envHandshake)
+	if handshakePath == "" || !filepath.IsAbs(handshakePath) {
+		return nil, errors.New("KOYORI_IDE_E2E_HANDSHAKE must be an absolute path")
+	}
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("listen for E2E automation: %w", err)
+	}
+	automation := &server{
+		services:     set,
+		token:        token,
+		probeResults: make(map[string]chan map[string]interface{}),
+	}
+	var removeHTTPProbeListener func()
+	var removeRecoveryProbeListener func()
+	var removeWorkspaceProbeListener func()
+	var removeRuntimeRoleProbeListener func()
+	var removeMonacoProbeListener func()
+	var removeExtensionAPIProbeListener func()
+	var removeTestExplorerProbeListener func()
+	var removeTerminalReconnectProbeListener func()
+	var removeExtensionHostG24ProbeListener func()
+	if app := application.Get(); app != nil {
+		removeHTTPProbeListener = app.Event.On(httpClientResultEvent, automation.receiveRendererProbeResult)
+		removeRecoveryProbeListener = app.Event.On(recoveryResultEvent, automation.receiveRendererProbeResult)
+		removeWorkspaceProbeListener = app.Event.On(workspaceResultEvent, automation.receiveRendererProbeResult)
+		removeRuntimeRoleProbeListener = app.Event.On(runtimeRoleResultEvent, automation.receiveRendererProbeResult)
+		removeMonacoProbeListener = app.Event.On(monacoResultEvent, automation.receiveRendererProbeResult)
+		removeExtensionAPIProbeListener = app.Event.On(extensionAPIResultEvent, automation.receiveRendererProbeResult)
+		removeTestExplorerProbeListener = app.Event.On(testExplorerResultEvent, automation.receiveRendererProbeResult)
+		removeTerminalReconnectProbeListener = app.Event.On(terminalReconnectResultEvent, automation.receiveRendererProbeResult)
+		removeExtensionHostG24ProbeListener = app.Event.On(extensionHostG24ResultEvent, automation.receiveRendererProbeResult)
+	}
+	srv := &http.Server{
+		Handler:           automation,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      180 * time.Second,
+		IdleTimeout:       15 * time.Second,
+	}
+	hs := handshake{
+		URL:       "http://" + listener.Addr().String(),
+		PID:       os.Getpid(),
+		StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := writeHandshake(handshakePath, hs); err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+
+	go func() {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("E2E automation server stopped", "err", err)
+		}
+	}()
+	slog.Info("E2E automation listening on loopback", "address", listener.Addr().String())
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if removeHTTPProbeListener != nil {
+				removeHTTPProbeListener()
+			}
+			if removeRecoveryProbeListener != nil {
+				removeRecoveryProbeListener()
+			}
+			if removeWorkspaceProbeListener != nil {
+				removeWorkspaceProbeListener()
+			}
+			if removeMonacoProbeListener != nil {
+				removeMonacoProbeListener()
+			}
+			if removeExtensionAPIProbeListener != nil {
+				removeExtensionAPIProbeListener()
+			}
+			if removeTestExplorerProbeListener != nil {
+				removeTestExplorerProbeListener()
+			}
+			if removeTerminalReconnectProbeListener != nil {
+				removeTerminalReconnectProbeListener()
+			}
+			if removeRuntimeRoleProbeListener != nil {
+				removeRuntimeRoleProbeListener()
+			}
+			if removeExtensionHostG24ProbeListener != nil {
+				removeExtensionHostG24ProbeListener()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+			_ = os.Remove(handshakePath)
+		})
+	}, nil
+}
+
+func validateToken(token string) error {
+	decoded, err := hex.DecodeString(token)
+	if err != nil || len(decoded) < 32 {
+		return errors.New("KOYORI_IDE_E2E_TOKEN must contain at least 32 random bytes encoded as hex")
+	}
+	return nil
+}
+
+func nextToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate next E2E token: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func writeHandshake(path string, hs handshake) error {
+	data, err := json.Marshal(hs)
+	if err != nil {
+		return fmt.Errorf("encode E2E handshake: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create E2E handshake directory: %w", err)
+	}
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write E2E handshake: %w", err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		_ = os.Remove(temporary)
+		return fmt.Errorf("publish E2E handshake: %w", err)
+	}
+	return nil
+}
+
+func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/command" {
+		writeJSON(w, http.StatusNotFound, response{OK: false, Error: "not found"})
+		return
+	}
+
+	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.mu.Lock()
+	authorized := subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) == 1
+	if !authorized {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusUnauthorized, response{OK: false, Error: "unauthorized"})
+		return
+	}
+	next, err := nextToken()
+	if err != nil {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: err.Error()})
+		return
+	}
+	s.token = next
+	s.mu.Unlock()
+	w.Header().Set("X-Koyori-IDE-E2E-Token", next)
+
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, bodyLimit))
+	decoder.DisallowUnknownFields()
+	var cmd command
+	if err := decoder.Decode(&cmd); err != nil {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "invalid command: " + err.Error()})
+		return
+	}
+	if err := ensureEOF(decoder); err != nil {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: err.Error()})
+		return
+	}
+	result, err := s.execute(cmd)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, response{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{OK: true, Result: result})
+}
+
+func ensureEOF(decoder *json.Decoder) error {
+	var extra interface{}
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("invalid command: multiple JSON values")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, resp response) {
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *server) execute(cmd command) (interface{}, error) {
+	switch cmd.Action {
+	case "open-workspace":
+		return s.services.Project.AddProject(cmd.Workspace)
+	case "open-file":
+		content, err := s.services.File.ReadFile(cmd.Path)
+		return map[string]interface{}{"content": content}, err
+	case "create-file":
+		// P9-G24: post-fault edit/save verification targets a workspace file
+		// that does not exist yet. The real product creates the file on disk
+		// first (CreateFile), then opens it for editing and saves through
+		// WriteFileIfUnchanged against the empty-file baseline. Mirror that
+		// ordering here so the packaged driver exercises the same path.
+		if cmd.Path == "" {
+			return nil, errors.New("create-file requires a path")
+		}
+		if err := s.services.File.CreateFile(cmd.Path); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"created": true}, nil
+	case "edit":
+		return s.recordDirtyBuffer(cmd)
+	case "save":
+		return s.saveBuffer(cmd)
+	case "terminal-command":
+		return s.runTerminalCommand(cmd)
+	case "lsp-hover-completion":
+		return s.runLSPAction(cmd)
+	case "language-pack-g23-probe":
+		return s.runLanguagePackG23Probe(cmd)
+	case "language-pack-builtins-g23-probe":
+		return s.runLanguagePackBuiltinsG23Probe(cmd)
+	case "recovery-scan":
+		return s.services.Recovery.ScanRecoverable()
+	case "recovery-state":
+		return s.services.Recovery.GetRecoveryState(), nil
+	case "recovery-renderer-probe":
+		return s.runRecoveryRendererProbe(cmd)
+	case "recovery-guard-probe":
+		return s.runRecoveryGuardProbe(cmd)
+	case "native-window-close-probe":
+		return s.runNativeWindowCloseProbe()
+	case "http-client-renderer-probe":
+		return s.runHTTPClientRendererProbe(cmd)
+	case "g05-workspace-probe":
+		return s.runG05WorkspaceProbe(cmd)
+	case "g06-runtime-role-probe":
+		return s.runG06RuntimeRoleProbe()
+	case "g10-monaco-probe":
+		return s.runG10MonacoProbe(cmd)
+	case "search-replace":
+		return s.runSearchReplace(cmd)
+	case "git-diff":
+		return s.runGitDiff(cmd)
+	case "ai-fail-cancel":
+		return s.runAIFailCancel(cmd)
+	case "settings-concurrent":
+		return s.runSettingsConcurrent(cmd)
+	case "ai-request-context-probe":
+		return s.runAIRequestContextProbe(cmd)
+	case "extension-api-g13-probe":
+		return s.runExtensionAPIG13Probe(cmd)
+	case "debug-g14-probe":
+		return s.runDebugG14Probe(cmd)
+	case "test-explorer-g15-probe":
+		return s.runTestExplorerG15Probe(cmd)
+	case "terminal-exit-probe":
+		return s.runTerminalExitProbe(cmd)
+	case "terminal-reconnect-probe":
+		return s.runTerminalReconnectProbe(cmd)
+	case "extension-host-g24-probe":
+		return s.runExtensionHostG24Probe(cmd)
+	case "git-worktree-probe":
+		return s.runGitWorktreeProbe(cmd)
+	case "git-rebase-probe":
+		return s.runGitRebaseProbe(cmd)
+	case "ai-diff-receipt-probe":
+		return s.runAIDiffReceiptProbe(cmd)
+	case "ai-diff-receipt-recovery-probe":
+		return s.runAIDiffReceiptRecoveryProbe(cmd)
+	default:
+		return nil, fmt.Errorf("unsupported E2E action %q", cmd.Action)
+	}
+}
+
+func (s *server) runG05WorkspaceProbe(cmd command) (interface{}, error) {
+	if s.services.Project == nil || s.services.Search == nil || s.services.AI == nil ||
+		s.services.Terminal == nil || s.services.Window == nil || s.services.ExecJS == nil ||
+		s.services.ExecAIJS == nil {
+		return nil, errors.New("G05 workspace automation is not fully wired")
+	}
+	if cmd.Workspace == "" || cmd.SecondaryWorkspace == "" || cmd.Marker == "" || cmd.PresetName == "" {
+		return nil, errors.New("G05 workspace probe requires two workspaces, marker, and presetName")
+	}
+	first, err := s.services.Project.AddProject(cmd.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("open primary workspace: %w", err)
+	}
+	firstSnapshot := s.services.Project.GetWorkspaceSnapshot()
+	if err := waitForRecoveryResolved(s.services.Recovery, firstSnapshot.Generation); err != nil {
+		return nil, err
+	}
+	s.services.Window.OpenAIWindow()
+	deadline := time.Now().Add(15 * time.Second)
+	for !s.services.Window.IsAIWindowVisible() && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !s.services.Window.IsAIWindowOpen() {
+		return nil, errors.New("AI companion window did not open")
+	}
+	second, err := s.services.Project.AddProject(cmd.SecondaryWorkspace)
+	if err != nil {
+		return nil, fmt.Errorf("switch secondary workspace: %w", err)
+	}
+	secondSnapshot := s.services.Project.GetWorkspaceSnapshot()
+	if err := waitForRecoveryResolved(s.services.Recovery, secondSnapshot.Generation); err != nil {
+		return nil, err
+	}
+	mainResult, err := s.runWorkspaceRendererProbe("main", s.services.ExecJS, cmd)
+	if err != nil {
+		return nil, err
+	}
+	aiResult, err := s.runWorkspaceRendererProbe("ai", s.services.ExecAIJS, cmd)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"primaryProject":    first,
+		"secondaryProject":  second,
+		"primarySnapshot":   firstSnapshot,
+		"secondarySnapshot": secondSnapshot,
+		"aiWindowOpen":      s.services.Window.IsAIWindowOpen(),
+		"aiWindowVisible":   s.services.Window.IsAIWindowVisible(),
+		"mainRenderer":      mainResult,
+		"aiRenderer":        aiResult,
+	}, nil
+}
+
+func (s *server) runG06RuntimeRoleProbe() (interface{}, error) {
+	if s.services.Window == nil || s.services.ExecJS == nil || s.services.ExecAIJS == nil {
+		return nil, errors.New("G06 runtime-role automation is not fully wired")
+	}
+	forgedToken, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	mainResult, err := s.runRuntimeRoleRendererProbe("main", s.services.ExecJS, forgedToken)
+	if err != nil {
+		return nil, err
+	}
+	s.services.Window.OpenAIWindow()
+	if err := waitForAIWindowState(s.services.Window, true); err != nil {
+		return nil, err
+	}
+	aiFirst, err := s.runRuntimeRoleRendererProbe("ai", s.services.ExecAIJS, forgedToken)
+	if err != nil {
+		return nil, err
+	}
+
+	s.services.Window.CloseAIWindow()
+	if err := waitForAIWindowState(s.services.Window, false); err != nil {
+		return nil, fmt.Errorf("AI close did not settle: %w", err)
+	}
+	s.services.Window.OpenAIWindow()
+	if err := waitForAIWindowState(s.services.Window, true); err != nil {
+		return nil, fmt.Errorf("AI reopen did not settle: %w", err)
+	}
+	aiReopen, err := s.runRuntimeRoleRendererProbe("ai", s.services.ExecAIJS, forgedToken)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"main":        mainResult,
+		"aiFirst":     aiFirst,
+		"aiReopen":    aiReopen,
+		"runtimeRole": services.RuntimeRoleStatsForE2E(s.services.Window),
+		"aiOpen":      s.services.Window.IsAIWindowOpen(),
+		"aiVisible":   s.services.Window.IsAIWindowVisible(),
+	}, nil
+}
+
+func waitForAIWindowState(window *services.WindowService, open bool) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if window.IsAIWindowOpen() == open && (!open || window.IsAIWindowVisible()) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("AI window state did not settle: open=%t actual=%t", open, window.IsAIWindowOpen())
+}
+
+func (s *server) runRuntimeRoleRendererProbe(role string, execute func(string), forgedToken string) (interface{}, error) {
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]string{
+		"runId":        runID,
+		"expectedRole": role,
+		"forgedToken":  forgedToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode G06 runtime-role probe configuration: %w", err)
+	}
+	return s.runRendererProbeWithExecutor(
+		execute,
+		"__koyoriIdeRunG06RuntimeRoleProbe",
+		runtimeRoleResultEvent,
+		"G06 runtime role",
+		configuration,
+	)
+}
+
+func waitForRecoveryResolved(recovery *services.RecoveryService, generation uint64) error {
+	if recovery == nil {
+		return errors.New("G05 workspace automation has no RecoveryService")
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		state := recovery.GetRecoveryState()
+		if state.Generation == generation && state.Phase == services.RecoveryPhaseResolved {
+			return nil
+		}
+		if state.Generation == generation && state.Phase == services.RecoveryPhaseFailed {
+			return fmt.Errorf("recovery scan failed for workspace generation %d: %s", generation, state.Error)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	state := recovery.GetRecoveryState()
+	return fmt.Errorf("recovery scan did not settle for workspace generation %d: phase=%s currentGeneration=%d", generation, state.Phase, state.Generation)
+}
+
+func (s *server) runWorkspaceRendererProbe(role string, execute func(string), cmd command) (interface{}, error) {
+	if execute == nil {
+		return nil, fmt.Errorf("%s renderer executor is unavailable", role)
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]string{
+		"runId":      runID,
+		"role":       role,
+		"workspace":  cmd.SecondaryWorkspace,
+		"marker":     cmd.Marker,
+		"presetName": cmd.PresetName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode G05 workspace probe configuration: %w", err)
+	}
+	return s.runRendererProbeWithExecutor(execute, "__koyoriIdeRunG05WorkspaceProbe", workspaceResultEvent, "G05 workspace", configuration)
+}
+
+func (s *server) receiveRendererProbeResult(event *application.CustomEvent) {
+	encoded, err := json.Marshal(event.Data)
+	if err != nil {
+		return
+	}
+	var result map[string]interface{}
+	if json.Unmarshal(encoded, &result) != nil {
+		return
+	}
+	runID, _ := result["runId"].(string)
+	if runID == "" {
+		return
+	}
+	s.probeMu.Lock()
+	resultChannel := s.probeResults[runID]
+	s.probeMu.Unlock()
+	if resultChannel == nil {
+		return
+	}
+	select {
+	case resultChannel <- result:
+	default:
+	}
+}
+
+func (s *server) runRendererProbe(
+	globalHook,
+	resultEvent,
+	label string,
+	configuration []byte,
+) (interface{}, error) {
+	runID := ""
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(configuration, &decoded); err != nil {
+		return nil, fmt.Errorf("decode %s renderer probe configuration: %w", label, err)
+	}
+	if value, ok := decoded["runId"].(string); ok {
+		runID = value
+	}
+	if runID == "" {
+		return nil, fmt.Errorf("%s renderer probe configuration has no run ID", label)
+	}
+
+	resultChannel := make(chan map[string]interface{}, 1)
+	s.probeMu.Lock()
+	if s.probeResults == nil {
+		s.probeResults = make(map[string]chan map[string]interface{})
+	}
+	s.probeResults[runID] = resultChannel
+	s.probeMu.Unlock()
+	defer func() {
+		s.probeMu.Lock()
+		delete(s.probeResults, runID)
+		s.probeMu.Unlock()
+	}()
+
+	script := fmt.Sprintf(`(() => {
+	const config = %s;
+	const deadline = Date.now() + 30000;
+	const start = () => {
+		const probe = globalThis[%q];
+		if (typeof probe === "function") {
+			void probe(config);
+			return;
+		}
+		if (Date.now() >= deadline) {
+			import("/wails/runtime.js").then(({ Events }) => Events.Emit(%q, {
+				runId: config.runId,
+				ok: false,
+				error: %q,
+			}));
+			return;
+		}
+		setTimeout(start, 100);
+	};
+	start();
+})()`, configuration, globalHook, resultEvent, label+" renderer probe hook was not installed")
+	s.services.ExecJS(script)
+
+	select {
+	case result := <-resultChannel:
+		return result, nil
+	case <-time.After(60 * time.Second):
+		return nil, fmt.Errorf("timed out waiting for %s renderer probe result", label)
+	}
+}
+
+func (s *server) runRendererProbeWithExecutor(
+	execute func(string),
+	globalHook,
+	resultEvent,
+	label string,
+	configuration []byte,
+) (interface{}, error) {
+	runID := ""
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(configuration, &decoded); err != nil {
+		return nil, fmt.Errorf("decode %s renderer probe configuration: %w", label, err)
+	}
+	if value, ok := decoded["runId"].(string); ok {
+		runID = value
+	}
+	if runID == "" {
+		return nil, fmt.Errorf("%s renderer probe configuration has no run ID", label)
+	}
+	resultChannel := make(chan map[string]interface{}, 1)
+	s.probeMu.Lock()
+	if s.probeResults == nil {
+		s.probeResults = make(map[string]chan map[string]interface{})
+	}
+	s.probeResults[runID] = resultChannel
+	s.probeMu.Unlock()
+	defer func() {
+		s.probeMu.Lock()
+		delete(s.probeResults, runID)
+		s.probeMu.Unlock()
+	}()
+
+	script := fmt.Sprintf(`(() => {
+	const config = %s;
+	const deadline = Date.now() + 30000;
+	const start = () => {
+		const probe = globalThis[%q];
+		if (typeof probe === "function") {
+			void probe(config);
+			return;
+		}
+		if (Date.now() >= deadline) {
+			import("/wails/runtime.js").then(({ Events }) => Events.Emit(%q, {
+				runId: config.runId,
+				ok: false,
+				error: %q,
+			}));
+			return;
+		}
+		setTimeout(start, 100);
+	};
+	start();
+})()`, configuration, globalHook, resultEvent, label+" renderer probe hook was not installed")
+	execute(script)
+
+	select {
+	case result := <-resultChannel:
+		return result, nil
+	case <-time.After(60 * time.Second):
+		return nil, fmt.Errorf("timed out waiting for %s renderer probe result", label)
+	}
+}
+
+func (s *server) runHTTPClientRendererProbe(cmd command) (interface{}, error) {
+	if s.services.HTTPClient == nil || s.services.ExecJS == nil {
+		return nil, errors.New("HTTP-client renderer automation is not wired")
+	}
+	if cmd.PrimaryOrigin == "" || cmd.SecondaryOrigin == "" || cmd.PublicURL == "" {
+		return nil, errors.New("HTTP-client renderer probe requires primaryOrigin, secondaryOrigin, and publicUrl")
+	}
+
+	const expiredRequestID = "packaged-expired-token"
+	expiredToken, err := services.IssueExpiredHTTPClientE2EToken(
+		s.services.HTTPClient,
+		cmd.PrimaryOrigin,
+		expiredRequestID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	restoreApprover := services.ConfigureHTTPClientE2EApprovalSequence(
+		s.services.HTTPClient,
+		[]bool{false, true, true, true, true, true},
+	)
+	defer restoreApprover()
+
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]string{
+		"runId":            runID,
+		"primaryOrigin":    cmd.PrimaryOrigin,
+		"secondaryOrigin":  cmd.SecondaryOrigin,
+		"publicUrl":        cmd.PublicURL,
+		"expiredToken":     expiredToken,
+		"expiredRequestId": expiredRequestID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode HTTP-client renderer probe configuration: %w", err)
+	}
+	return s.runRendererProbe(
+		"__koyoriIdeRunHTTPClientProbe",
+		httpClientResultEvent,
+		"HTTP-client",
+		configuration,
+	)
+}
+
+func (s *server) runRecoveryRendererProbe(cmd command) (interface{}, error) {
+	if s.services.ExecJS == nil {
+		return nil, errors.New("recovery renderer automation is not wired")
+	}
+	if cmd.ProbeMode == "" || cmd.Path == "" {
+		return nil, errors.New("recovery renderer probe requires probeMode and path")
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]string{
+		"runId":          runID,
+		"mode":           cmd.ProbeMode,
+		"path":           cmd.Path,
+		"diskContent":    cmd.Expected,
+		"crashContent":   cmd.CrashContent,
+		"pendingContent": cmd.PendingContent,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode recovery renderer probe configuration: %w", err)
+	}
+	return s.runRendererProbe(
+		"__koyoriIdeRunRecoveryProbe",
+		recoveryResultEvent,
+		"recovery",
+		configuration,
+	)
+}
+
+func requireE2ENotAllowed(label string, operation func() error) (string, error) {
+	err := operation()
+	if !errors.Is(err, services.ErrNotAllowed) {
+		return "", fmt.Errorf("%s returned %v, want ErrNotAllowed", label, err)
+	}
+	return err.Error(), nil
+}
+
+func (s *server) runRecoveryGuardProbe(cmd command) (interface{}, error) {
+	if s.services.Window == nil {
+		return nil, errors.New("recovery window guard automation is not wired")
+	}
+	if cmd.Workspace == "" || cmd.WindowID == "" || cmd.Path == "" {
+		return nil, errors.New("recovery guard probe requires workspace, windowId, and path")
+	}
+	results := make(map[string]string)
+	checks := []struct {
+		label string
+		run   func() error
+	}{
+		{label: "titlebar close", run: s.services.Window.Close},
+		{label: "workspace switch", run: func() error {
+			_, err := s.services.Project.AddProject(cmd.Workspace)
+			return err
+		}},
+		{label: "clear pending record", run: func() error {
+			return s.services.Recovery.ClearDirtyBuffer(cmd.WindowID, cmd.Path)
+		}},
+		{label: "clear pending window", run: func() error {
+			return s.services.Recovery.ClearWindowJournal(cmd.WindowID)
+		}},
+		{label: "discard pending session", run: func() error {
+			return s.services.Recovery.DiscardRecoveredSession(cmd.WindowID)
+		}},
+		{label: "clear pending workspace", run: s.services.Recovery.ClearWorkspaceJournal},
+		{label: "disable journal", run: func() error {
+			return s.services.Recovery.SetJournalEnabled(false)
+		}},
+	}
+	for _, check := range checks {
+		detail, err := requireE2ENotAllowed(check.label, check.run)
+		if err != nil {
+			return nil, err
+		}
+		results[check.label] = detail
+	}
+	state := s.services.Recovery.GetRecoveryState()
+	if state.Phase != services.RecoveryPhasePending || !s.services.Recovery.IsJournalEnabled() {
+		return nil, fmt.Errorf("recovery guard state changed unexpectedly: %+v", state)
+	}
+	return map[string]interface{}{
+		"rejections":     results,
+		"state":          state,
+		"journalEnabled": true,
+	}, nil
+}
+
+func (s *server) runNativeWindowCloseProbe() (interface{}, error) {
+	if s.services.CloseWindow == nil {
+		return nil, errors.New("native window close automation is not wired")
+	}
+	state := s.services.Recovery.GetRecoveryState()
+	if state.Phase != services.RecoveryPhasePending {
+		return nil, fmt.Errorf("native close probe requires pending recovery, got %s", state.Phase)
+	}
+	s.services.CloseWindow()
+	time.Sleep(250 * time.Millisecond)
+	after := s.services.Recovery.GetRecoveryState()
+	if after.Phase != services.RecoveryPhasePending {
+		return nil, fmt.Errorf("native close changed recovery state to %s", after.Phase)
+	}
+	return map[string]interface{}{
+		"hookInvoked": true,
+		"state":       after,
+	}, nil
+}
+
+func (s *server) recordDirtyBuffer(cmd command) (interface{}, error) {
+	window := cmd.WindowID
+	if window == "" {
+		window = windowID
+	}
+	baseline, err := s.services.Recovery.ComputeBaseline(cmd.Path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.services.Recovery.SaveDirtyBuffer(
+		window,
+		cmd.Path,
+		cmd.Content,
+		"utf-8",
+		"lf",
+		baseline.Mtime,
+		baseline.Hash,
+	); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"baselineHash":  baseline.Hash,
+		"baselineMtime": baseline.Mtime,
+		"exists":        baseline.Exists,
+	}, nil
+}
+
+func (s *server) saveBuffer(cmd command) (interface{}, error) {
+	if cmd.BaselineHash == "" {
+		return nil, errors.New("save requires baselineHash")
+	}
+	if err := s.services.File.WriteFileIfUnchanged(cmd.Path, cmd.Content, cmd.BaselineHash); err != nil {
+		return nil, err
+	}
+	window := cmd.WindowID
+	if window == "" {
+		window = windowID
+	}
+	if err := s.services.Recovery.ClearDirtyBuffer(window, cmd.Path); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"saved": true}, nil
+}
+
+func (s *server) runTerminalCommand(cmd command) (interface{}, error) {
+	if cmd.Command == "" || cmd.Expected == "" {
+		return nil, errors.New("terminal-command requires command and expected output")
+	}
+	if err := s.services.Terminal.Start(cmd.Workspace); err != nil {
+		return nil, err
+	}
+	defer s.services.Terminal.Kill()
+	if err := s.services.Terminal.Write(cmd.Command + "\n"); err != nil {
+		return nil, err
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	var output strings.Builder
+	for time.Now().Before(deadline) {
+		output.WriteString(s.services.Terminal.ReadOutput(250 * time.Millisecond))
+		if strings.Contains(output.String(), cmd.Expected) {
+			return map[string]interface{}{"output": output.String()}, nil
+		}
+	}
+	return nil, fmt.Errorf("terminal output did not contain %q; got %q", cmd.Expected, output.String())
+}
+
+func (s *server) runLSPAction(cmd command) (interface{}, error) {
+	if cmd.Language == "" {
+		cmd.Language = "go"
+	}
+	if err := s.services.LSP.StartLSPServer(cmd.Language); err != nil {
+		return nil, err
+	}
+	completionRequest := services.LSPCompletionRequest{
+		Language: cmd.Language,
+		FilePath: cmd.Path,
+		Content:  cmd.Content,
+		Line:     cmd.CompletionLine,
+		Column:   cmd.CompletionColumn,
+	}
+	// The packaged E2E isolates APPDATA per launch, so gopls starts cold and
+	// its first request can exceed the single-request timeout. Retry a few
+	// times with a settle pause; once the server is warm, results are real.
+	var items []services.LSPCompletionItem
+	var hover string
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		var err error
+		items, err = s.services.LSP.GetCompletions(completionRequest)
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		// GetCompletions deliberately converts request timeouts into an empty
+		// result with a nil error for the production UI. The packaged probe must
+		// inspect the structured call status as well, otherwise a cold gopls
+		// startup is mistaken for a valid empty completion response and the
+		// retry loop never runs.
+		completionStatus := s.services.LSP.GetCallStatus(cmd.Language)
+		if completionStatus.Code != "ok" {
+			lastErr = fmt.Errorf("LSP completion %s: %s", completionStatus.Code, completionStatus.Message)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		hoverRequest := completionRequest
+		hoverRequest.Line = cmd.HoverLine
+		hoverRequest.Column = cmd.HoverColumn
+		hover, err = s.services.LSP.GetHover(hoverRequest)
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if len(items) == 0 && strings.TrimSpace(hover) == "" {
+			lastErr = errors.New("LSP returned neither completion nor hover content")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return map[string]interface{}{
+		"completionCount": len(items),
+		"hover":           hover,
+		"status":          s.services.LSP.GetCallStatus(cmd.Language),
+	}, nil
+}
+
+func (s *server) runG10MonacoProbe(cmd command) (interface{}, error) {
+	if s.services.ExecJS == nil {
+		return nil, errors.New("G10 monaco automation is not fully wired")
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]string{
+		"runId":     runID,
+		"workspace": cmd.Workspace,
+		"filePath":  cmd.Path,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode G10 monaco probe configuration: %w", err)
+	}
+	return s.runRendererProbeWithExecutor(
+		s.services.ExecJS,
+		"__koyoriIdeRunG10MonacoProbe",
+		monacoResultEvent,
+		"G10 Monaco",
+		configuration,
+	)
+}
+
+func (s *server) runSearchReplace(cmd command) (interface{}, error) {
+	if s.services.Search == nil {
+		return nil, errors.New("search-replace automation is not fully wired")
+	}
+	if cmd.Workspace == "" || cmd.Path == "" || cmd.Marker == "" || cmd.Replacement == "" {
+		return nil, errors.New("search-replace requires workspace, path, marker, and replacement")
+	}
+	matches, err := s.services.Search.Search(cmd.Workspace, cmd.Marker, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("search did not find marker %q under %s", cmd.Marker, cmd.Workspace)
+	}
+	result, err := s.services.Search.Replace(cmd.Path, cmd.Marker, cmd.Replacement, false)
+	if err != nil {
+		return nil, err
+	}
+	if result.Replacements == 0 {
+		return nil, fmt.Errorf("replace applied no replacements in %s", cmd.Path)
+	}
+	return map[string]interface{}{
+		"matches":      len(matches),
+		"replacements": result.Replacements,
+	}, nil
+}
+func (s *server) runGitDiff(cmd command) (interface{}, error) {
+	if s.services.Git == nil {
+		return nil, errors.New("git-diff automation is not fully wired")
+	}
+	if cmd.Workspace == "" || cmd.Path == "" || cmd.Content == "" {
+		return nil, errors.New("git-diff requires workspace, path, and content")
+	}
+	if err := s.services.Git.InitRepo(cmd.Workspace); err != nil {
+		return nil, err
+	}
+	// InitRepo makes an initial commit of everything present, so write a
+	// brand-new file to exercise a real untracked diff deterministically.
+	if err := os.WriteFile(cmd.Path, []byte(cmd.Content), 0o600); err != nil {
+		return nil, err
+	}
+	status, err := s.services.Git.GetStatus(cmd.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(cmd.Workspace, cmd.Path)
+	if err != nil {
+		return nil, err
+	}
+	changed := false
+	for _, change := range status {
+		if change.Path == rel {
+			changed = true
+		}
+	}
+	if !changed {
+		return nil, fmt.Errorf("git status did not report %s as changed", rel)
+	}
+	diff, err := s.services.Git.GetDiff(cmd.Workspace, rel)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(diff) == "" {
+		return nil, errors.New("git diff for the fixture file is empty")
+	}
+	return map[string]interface{}{"changed": changed, "diff": diff}, nil
+}
+func (s *server) runAIFailCancel(cmd command) (interface{}, error) {
+	if s.services.AI == nil {
+		return nil, errors.New("ai-fail-cancel automation is not fully wired")
+	}
+	// P9-G10: without credentials the AI service must fail closed rather than
+	// report success. The packaged E2E env never injects API keys.
+	_, sendErr := s.services.AI.Send([]services.ChatMessage{{Role: "user", Content: "ping"}})
+	if sendErr == nil {
+		return nil, errors.New("AI Send succeeded without credentials; fail-closed violated")
+	}
+	_, startErr := s.services.AI.StartStream([]services.ChatMessage{{Role: "user", Content: "ping"}})
+	stopped := true
+	if startErr == nil {
+		_ = s.services.AI.StopStream()
+		stopped = !s.services.AI.IsStreaming()
+	}
+	return map[string]interface{}{
+		"sendFailed":     sendErr != nil,
+		"sendError":      sendErr.Error(),
+		"streamStarted":  startErr == nil,
+		"streamStopped":  stopped,
+		"streamStartErr": errString(startErr),
+	}, nil
+}
+
+func (s *server) runSettingsConcurrent(cmd command) (interface{}, error) {
+	if s.services.Settings == nil {
+		return nil, errors.New("settings-concurrent automation is not fully wired")
+	}
+	svc := s.services.Settings
+
+	// Seed a deterministic baseline in the isolated E2E config dir (the
+	// packaged harness redirects XDG_CONFIG_HOME per launch).
+	if err := svc.SaveSettings(services.Settings{Theme: "light", FontSize: 12}); err != nil {
+		return nil, fmt.Errorf("seed settings: %w", err)
+	}
+
+	// Two windows each load the same baseline version.
+	loadedA, err := svc.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("window A load: %w", err)
+	}
+	loadedB, err := svc.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("window B load: %w", err)
+	}
+
+	// Window A commits Theme against the current version.
+	verA := loadedA.Version
+	loadedA.ExpectedVersion = &verA
+	loadedA.Theme = "dark"
+	if err := svc.SaveSettings(loadedA); err != nil {
+		return nil, fmt.Errorf("window A save: %w", err)
+	}
+
+	// Window B still holds the stale version and changes FontSize: the CAS
+	// must reject the write so A's change is not silently overwritten.
+	stale := loadedB.Version
+	loadedB.ExpectedVersion = &stale
+	loadedB.FontSize = 16
+	staleErr := svc.SaveSettings(loadedB)
+	if staleErr == nil {
+		return nil, errors.New("stale window B save unexpectedly succeeded; CAS not enforced")
+	}
+	if !strings.Contains(staleErr.Error(), "version conflict") {
+		return nil, fmt.Errorf("expected version conflict, got %v", staleErr)
+	}
+
+	// B reloads the latest snapshot (must contain A's Theme change) and
+	// replays its own FontSize change against the fresh version.
+	reloaded, err := svc.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("window B reload: %w", err)
+	}
+	if reloaded.Theme != "dark" {
+		return nil, fmt.Errorf("window B reload lost window A change: theme=%q", reloaded.Theme)
+	}
+	cur := reloaded.Version
+	reloaded.ExpectedVersion = &cur
+	reloaded.FontSize = 16
+	if err := svc.SaveSettings(reloaded); err != nil {
+		return nil, fmt.Errorf("window B retry save: %w", err)
+	}
+
+	final, err := svc.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("final load: %w", err)
+	}
+	both := final.Theme == "dark" && final.FontSize == 16
+	if !both {
+		return nil, fmt.Errorf("both windows' changes not preserved on disk: %+v", final)
+	}
+	return map[string]interface{}{
+		"windowAApplied":    true,
+		"staleBRejected":    true,
+		"staleBError":       staleErr.Error(),
+		"bReloadSawA":       true,
+		"bRetryApplied":     true,
+		"finalTheme":        final.Theme,
+		"finalFontSize":     final.FontSize,
+		"finalVersion":      final.Version,
+		"bothFieldsPresent": both,
+	}, nil
+}
+func (s *server) runAIRequestContextProbe(cmd command) (interface{}, error) {
+	if s.services.AI == nil {
+		return nil, errors.New("ai-request-context-probe automation is not fully wired")
+	}
+	// G12 AC1: a checkable local protocol service (httptest) receives the
+	// exact structured fields the UI builds — system prompt (plan/persona)
+	// plus image_url content blocks — through the real packaged service graph.
+	var mu sync.Mutex
+	var captured map[string]interface{}
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		captured = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]string{"role": "assistant", "content": "ok"}, "finish_reason": "stop"},
+			},
+		})
+	}))
+	defer mock.Close()
+
+	systemPrompt := "You are koyori-ide E2E assistant.\n" +
+		"Active plan (user-approved goal):\nGoal: Fix HTTP retry\nSteps:\n  1. [approved] Extract client\n" +
+		"Persona: Senior Go Reviewer"
+	if err := s.services.AI.SetConfig(services.AIConfig{
+		APIKey:       "e2e-key",
+		BaseURL:      mock.URL,
+		Model:        "gpt-4o",
+		SystemPrompt: systemPrompt,
+		MaxTokens:    128,
+	}); err != nil {
+		return nil, fmt.Errorf("set AI config for request-context probe: %w", err)
+	}
+	if _, err := s.services.AI.Send([]services.ChatMessage{{
+		Role:    "user",
+		Content: "analyze the screenshot",
+		Images:  []string{"data:image/png;base64,aGVsbG8="},
+	}}); err != nil {
+		return nil, fmt.Errorf("AI Send against local protocol service: %w", err)
+	}
+
+	mu.Lock()
+	body := captured
+	mu.Unlock()
+	if body == nil {
+		return nil, errors.New("local protocol service captured no request body")
+	}
+	messages, _ := body["messages"].([]interface{})
+	var systemContent, userContent interface{}
+	for _, m := range messages {
+		msg, _ := m.(map[string]interface{})
+		switch msg["role"] {
+		case "system":
+			systemContent = msg["content"]
+		case "user":
+			userContent = msg["content"]
+		}
+	}
+	sysText, sysOK := systemContent.(string)
+	if !sysOK || !strings.Contains(sysText, "Active plan") || !strings.Contains(sysText, "Fix HTTP retry") ||
+		!strings.Contains(sysText, "Extract client") || !strings.Contains(sysText, "Persona: Senior Go Reviewer") {
+		return nil, fmt.Errorf("provider system prompt lost plan/persona fields: %v", systemContent)
+	}
+	parts, partsOK := userContent.([]interface{})
+	if !partsOK {
+		return nil, fmt.Errorf("provider user content is not an array (image missing): %T", userContent)
+	}
+	imageSeen := false
+	for _, part := range parts {
+		p, _ := part.(map[string]interface{})
+		if p["type"] == "image_url" {
+			imageSeen = true
+		}
+	}
+	if !imageSeen {
+		return nil, errors.New("provider request has no image_url block")
+	}
+	return map[string]interface{}{
+		"systemPromptReachedProvider": sysOK && strings.Contains(sysText, "Active plan"),
+		"planInSystemPrompt":          strings.Contains(sysText, "Fix HTTP retry") && strings.Contains(sysText, "Extract client"),
+		"personaInSystemPrompt":       strings.Contains(sysText, "Persona: Senior Go Reviewer"),
+		"imageBlockReachedProvider":   imageSeen,
+		"captured":                    true,
+	}, nil
+}
+func (s *server) runExtensionAPIG13Probe(cmd command) (interface{}, error) {
+	if s.services.ExecJS == nil {
+		return nil, errors.New("G13 extension API automation is not fully wired")
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]string{"runId": runID})
+	if err != nil {
+		return nil, fmt.Errorf("encode G13 extension API probe configuration: %w", err)
+	}
+	return s.runRendererProbeWithExecutor(
+		s.services.ExecJS,
+		"__koyoriIdeRunG13ExtensionApiProbe",
+		extensionAPIResultEvent,
+		"G13 extension API",
+		configuration,
+	)
+}
+
+// runTestExplorerG15Probe creates a real Go test package, then drives the
+// packaged renderer's Test Explorer store through pass and fail exit codes.
+func (s *server) runTestExplorerG15Probe(cmd command) (interface{}, error) {
+	if s.services.Project == nil || s.services.ExecJS == nil {
+		return nil, errors.New("G15 Test Explorer automation is not fully wired")
+	}
+	if cmd.Workspace == "" {
+		return nil, errors.New("G15 Test Explorer probe requires workspace")
+	}
+	if _, err := s.services.Project.AddProject(cmd.Workspace); err != nil {
+		return nil, fmt.Errorf("open workspace for G15 probe: %w", err)
+	}
+	dir := filepath.Join(cmd.Workspace, "g15-test-fixture")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create G15 fixture: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module g15fixture\n\ngo 1.25.0\n"), 0o600); err != nil {
+		return nil, err
+	}
+	content := "package fixture\n\nimport \"testing\"\n\nfunc TestPass(t *testing.T) {}\n\nfunc TestFail(t *testing.T) {\n\tt.Fatal(\"G15_EXPECTED_FAILURE\")\n}\n"
+	testPath := filepath.Join(dir, "fixture_test.go")
+	if err := os.WriteFile(testPath, []byte(content), 0o600); err != nil {
+		return nil, err
+	}
+	passLine, failLine := -1, -1
+	for index, line := range strings.Split(content, "\n") {
+		switch {
+		case strings.Contains(line, "func TestPass"):
+			passLine = index
+		case strings.Contains(line, "func TestFail"):
+			failLine = index
+		}
+	}
+	if passLine < 0 || failLine < 0 {
+		return nil, errors.New("G15 fixture test identities were not found")
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]interface{}{
+		"runId":     runID,
+		"workspace": cmd.Workspace,
+		"filePath":  testPath,
+		"content":   content,
+		"passLine":  passLine,
+		"failLine":  failLine,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode G15 Test Explorer probe: %w", err)
+	}
+	return s.runRendererProbeWithExecutor(
+		s.services.ExecJS,
+		"__koyoriIdeRunG15TestExplorerProbe",
+		testExplorerResultEvent,
+		"G15 Test Explorer",
+		configuration,
+	)
+}
+
+// runDebugG14Probe drives the real Delve DAP adapter inside the packaged
+// process (P-level evidence for GOAL P9-G14): breakpoint -> stop -> nested
+// variables expanded through adapter-owned references -> single step -> stop.
+func (s *server) runDebugG14Probe(cmd command) (interface{}, error) {
+	if s.services.Debug == nil || s.services.Project == nil {
+		return nil, errors.New("debug-g14 automation is not fully wired")
+	}
+	if cmd.Workspace == "" {
+		return nil, errors.New("debug-g14 probe requires workspace")
+	}
+	if _, err := s.services.Project.AddProject(cmd.Workspace); err != nil {
+		return nil, fmt.Errorf("open workspace for debug probe: %w", err)
+	}
+	if _, err := exec.LookPath("dlv"); err != nil {
+		return nil, errors.New("dlv not found; real Delve adapter probe skipped")
+	}
+
+	dir := filepath.Join(cmd.Workspace, "g14-delve-fixture")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create debug fixture dir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module g14fixture\n\ngo 1.25.0\n"), 0o600); err != nil {
+		return nil, err
+	}
+	mainSrc := "package main\n\nimport \"fmt\"\n\ntype Inner struct {\n\tZ int\n}\n\ntype Outer struct {\n\tName string\n\tIn   Inner\n}\n\nfunc main() {\n\to := Outer{Name: \"hello\", In: Inner{Z: 42}}\n\tfmt.Println(o)\n}\n"
+	mainPath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(mainPath, []byte(mainSrc), 0o600); err != nil {
+		return nil, err
+	}
+	bpLine := 0
+	for i, line := range strings.Split(mainSrc, "\n") {
+		if strings.Contains(line, "fmt.Println(o)") {
+			bpLine = i + 1
+			break
+		}
+	}
+	if bpLine == 0 {
+		return nil, errors.New("could not locate breakpoint line")
+	}
+	if _, err := s.services.Debug.SetBreakpointEx(mainPath, bpLine, "", ""); err != nil {
+		return nil, fmt.Errorf("SetBreakpointEx: %w", err)
+	}
+	info, err := s.services.Debug.LaunchPackage(dir)
+	if err != nil {
+		return nil, fmt.Errorf("LaunchPackage (real dlv): %w", err)
+	}
+	if info.Address == "" {
+		return nil, fmt.Errorf("no dlv dap address: %+v", info)
+	}
+	defer s.services.Debug.Stop()
+
+	// Wait for the breakpoint stop.
+	if err := waitForDebugStop(s.services.Debug, 30*time.Second); err != nil {
+		return nil, err
+	}
+	if err := s.services.Debug.RefreshStackAndLocals(); err != nil {
+		return nil, fmt.Errorf("RefreshStackAndLocals: %w", err)
+	}
+	state := s.services.Debug.GetState()
+	var outer *services.DebugVariable
+	for i := range state.Locals {
+		v := &state.Locals[i]
+		if v.Name == "o" {
+			outer = v
+			break
+		}
+	}
+	if outer == nil || outer.VariablesReference <= 0 {
+		return nil, fmt.Errorf("Outer variable missing adapter-owned reference: %+v", state.Locals)
+	}
+	fields, err := s.services.Debug.GetVariables(outer.VariablesReference, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("GetVariables(outer): %w", err)
+	}
+	var inner *services.DebugVariable
+	for i := range fields {
+		v := &fields[i]
+		if v.Name == "In" {
+			inner = v
+			break
+		}
+	}
+	if inner == nil || inner.VariablesReference <= 0 {
+		return nil, fmt.Errorf("nested In missing reference: %+v", fields)
+	}
+	innerFields, err := s.services.Debug.GetVariables(inner.VariablesReference, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("GetVariables(inner): %w", err)
+	}
+	zFound := false
+	for _, v := range innerFields {
+		if v.Name == "Z" && v.Value == "42" {
+			zFound = true
+		}
+	}
+	if !zFound {
+		return nil, fmt.Errorf("Z != 42: %+v", innerFields)
+	}
+	if err := s.services.Debug.StepOver(); err != nil {
+		return nil, fmt.Errorf("StepOver: %w", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	advanced := false
+	for time.Now().Before(deadline) {
+		st := s.services.Debug.GetState()
+		if st.Session.Stopped && st.Session.StopReason != "entry" {
+			advanced = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !advanced {
+		return nil, fmt.Errorf("StepOver did not produce a new stop")
+	}
+	return map[string]interface{}{
+		"dlvLaunch":         true,
+		"breakpointStop":    true,
+		"nestedExpanded":    zFound,
+		"singleStep":        true,
+		"adapterReference":  outer.VariablesReference,
+		"nestedReference":   inner.VariablesReference,
+		"fixtureDir":        dir,
+		"stopReason":        state.Session.StopReason,
+		"adapterId":         info.AdapterID,
+		"sourcePackId":      info.SourcePackID,
+		"sourcePackVersion": info.SourcePackVersion,
+	}, nil
+}
+
+func waitForDebugStop(d *services.DebugService, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		st := d.GetState()
+		if st.Session.Stopped || st.Session.StopReason == "entry" {
+			return nil
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	return errors.New("timed out waiting for debug stop")
+}
+
+// runTerminalReconnectProbe verifies the renderer-level G16 reconnect flow.
+// The probe exits a real PTY, clicks the real tab action, and writes through
+// the same session after reconnecting. It is only reachable from an e2e build.
+func (s *server) runTerminalReconnectProbe(cmd command) (interface{}, error) {
+	if s.services.ExecJS == nil || s.services.Terminal == nil {
+		return nil, errors.New("terminal-reconnect automation is not fully wired")
+	}
+	if cmd.Workspace == "" {
+		return nil, errors.New("terminal-reconnect probe requires workspace")
+	}
+	shell := "sh"
+	exitInput := "exit 7\n"
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		exitInput = "exit 7\r\n"
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration, err := json.Marshal(map[string]string{
+		"runId":     runID,
+		"workspace": cmd.Workspace,
+		"shell":     shell,
+		"exitInput": exitInput,
+		"marker":    "KOYORI_IDE_G16_RECONNECT_OK",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode G16 terminal reconnect probe configuration: %w", err)
+	}
+	return s.runRendererProbe(
+		"__koyoriIdeRunTerminalReconnectProbe",
+		terminalReconnectResultEvent,
+		"G16 terminal reconnect",
+		configuration,
+	)
+}
+
+// runTerminalExitProbe verifies the G16 exit-code protocol in the packaged
+// process: illegal shell rejected (fail-closed), real PTY exit 7 delivered as
+// a structured terminal:exited event, and resize accepted.
+func (s *server) runTerminalExitProbe(cmd command) (interface{}, error) {
+	if s.services.Terminal == nil {
+		return nil, errors.New("terminal-exit automation is not fully wired")
+	}
+	// 1) non-whitelisted shell must be rejected before any process starts.
+	if err := s.services.Terminal.StartSession("g16-illegal", cmd.Workspace, "fish"); err == nil {
+		return nil, errors.New("illegal shell accepted; shell whitelist violated")
+	}
+	app := application.Get()
+	if app == nil {
+		return nil, errors.New("no application for terminal:exited events")
+	}
+	exitCh := make(chan map[string]interface{}, 1)
+	remove := app.Event.On("terminal:exited", func(event *application.CustomEvent) {
+		encoded, merr := json.Marshal(event.Data)
+		if merr != nil {
+			return
+		}
+		var payload map[string]interface{}
+		if json.Unmarshal(encoded, &payload) != nil {
+			return
+		}
+		if sid, _ := payload["sessionId"].(string); sid == "g16-exit" {
+			select {
+			case exitCh <- payload:
+			default:
+			}
+		}
+	})
+	defer remove()
+
+	// Use cmd.exe (whitelisted): its interactive shell exits deterministically
+	// with the requested code, unlike PowerShell which swallows early `exit`.
+	if err := s.services.Terminal.StartSession("g16-exit", cmd.Workspace, "cmd"); err != nil {
+		return nil, fmt.Errorf("start cmd shell: %w", err)
+	}
+	defer s.services.Terminal.KillSession("g16-exit")
+	if err := s.services.Terminal.ResizeSession("g16-exit", 100, 30); err != nil {
+		return nil, fmt.Errorf("resize: %w", err)
+	}
+	// Let the shell banner finish before sending input; a command written
+	// during startup can be swallowed by the banner.
+	time.Sleep(1200 * time.Millisecond)
+	// cmd exits with the given code via `exit 7` (CRLF line ending).
+	if err := s.services.Terminal.WriteSession("g16-exit", "exit 7\r\n"); err != nil {
+		return nil, fmt.Errorf("write exit command: %w", err)
+	}
+	select {
+	case payload := <-exitCh:
+		code, _ := payload["code"].(float64)
+		if int(code) != 7 {
+			return nil, fmt.Errorf("exit code = %v, want 7", code)
+		}
+		return map[string]interface{}{
+			"illegalShellRejected": true,
+			"resizeOk":             true,
+			"exitEventReceived":    true,
+			"exitCode":             int(code),
+		}, nil
+	case <-time.After(15 * time.Second):
+		return nil, errors.New("timed out waiting for terminal:exited with code 7")
+	}
+}
+
+// runGitWorktreeProbe verifies the G17 sibling-worktree flow in the packaged
+// process: a worktree added inside the workspace succeeds, appears in
+// `git worktree list`, and an out-of-workspace path is rejected.
+func (s *server) runGitWorktreeProbe(cmd command) (interface{}, error) {
+	if s.services.GitWorktree == nil || s.services.Project == nil || s.services.Git == nil {
+		return nil, errors.New("git-worktree automation is not fully wired")
+	}
+	if cmd.Workspace == "" {
+		return nil, errors.New("git-worktree probe requires workspace")
+	}
+	if _, err := s.services.Project.AddProject(cmd.Workspace); err != nil {
+		return nil, fmt.Errorf("open workspace for git-worktree probe: %w", err)
+	}
+	repo := filepath.Join(cmd.Workspace, "g17-repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		return nil, err
+	}
+	// Seed a file so InitRepo's initial commit has content and HEAD exists.
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("g17 fixture\n"), 0o600); err != nil {
+		return nil, err
+	}
+	if err := s.services.Git.InitRepo(repo); err != nil {
+		return nil, fmt.Errorf("init repo: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sibling := filepath.Join(cmd.Workspace, "g17-sibling")
+	if err := s.services.GitWorktree.AddWorktree(ctx, repo, sibling, "HEAD", services.AddWorktreeOptions{Detach: true}); err != nil {
+		return nil, fmt.Errorf("add sibling worktree inside workspace: %w", err)
+	}
+	wts, err := s.services.GitWorktree.ListWorktrees(ctx, repo)
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees: %w", err)
+	}
+	siblingFound := false
+	for _, w := range wts {
+		if filepath.Clean(w.Path) == filepath.Clean(sibling) {
+			siblingFound = true
+			break
+		}
+	}
+	if !siblingFound {
+		return nil, fmt.Errorf("sibling worktree not listed: %+v", wts)
+	}
+
+	// Out-of-workspace path must be rejected (safe roots = workspace root).
+	outside := filepath.Join(os.TempDir(), "koyori-ide-g17-outside-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	defer os.RemoveAll(outside)
+	if err := s.services.GitWorktree.AddWorktree(ctx, repo, outside, "HEAD", services.AddWorktreeOptions{Detach: true}); err == nil {
+		return nil, errors.New("out-of-workspace worktree path was accepted (safe roots violated)")
+	}
+	return map[string]interface{}{
+		"repoInitialized": true,
+		"siblingCreated":  true,
+		"siblingListed":   true,
+		"outsideRejected": true,
+	}, nil
+}
+
+// runGitRebaseProbe exercises the real interactive rebase service in the
+// packaged process. The fixture history is prepared with git, while every
+// rebase operation under test goes through GitRebaseService.
+func (s *server) runGitRebaseProbe(cmd command) (interface{}, error) {
+	if s.services.GitRebase == nil || s.services.Git == nil || s.services.Project == nil {
+		return nil, errors.New("git-rebase automation is not fully wired")
+	}
+	if cmd.Workspace == "" {
+		return nil, errors.New("git-rebase probe requires workspace")
+	}
+	if _, err := s.services.Project.AddProject(cmd.Workspace); err != nil {
+		return nil, fmt.Errorf("open workspace for git-rebase probe: %w", err)
+	}
+	repo := filepath.Join(cmd.Workspace, "g17-rebase-repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		return nil, fmt.Errorf("create rebase repo: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("g17 rebase fixture\n"), 0o600); err != nil {
+		return nil, fmt.Errorf("seed rebase repo: %w", err)
+	}
+	if err := s.services.Git.InitRepo(repo); err != nil {
+		return nil, fmt.Errorf("init rebase repo: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	git := func(args ...string) (string, error) {
+		return runE2EGitCommand(ctx, repo, args...)
+	}
+	// InitRepo uses an explicit author for its initial commit; set repository
+	// identity before creating the fixture's subsequent commits.
+	for _, config := range [][2]string{{"user.name", "koyori-ide-e2e"}, {"user.email", "koyori-ide-e2e@local"}} {
+		if _, err := git("config", config[0], config[1]); err != nil {
+			return nil, fmt.Errorf("configure fixture git identity: %w", err)
+		}
+	}
+	base, err := git("rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("resolve fixture base: %w", err)
+	}
+	base = strings.TrimSpace(base)
+	if _, err := git("branch", "upstream", base); err != nil {
+		return nil, fmt.Errorf("create upstream branch: %w", err)
+	}
+	if _, err := git("branch", "-M", "feature"); err != nil {
+		return nil, fmt.Errorf("rename feature branch: %w", err)
+	}
+	for index, content := range []string{"feature one\n", "feature two\n"} {
+		name := fmt.Sprintf("feature-%d.txt", index+1)
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			return nil, fmt.Errorf("write %s: %w", name, err)
+		}
+		if _, err := git("add", name); err != nil {
+			return nil, fmt.Errorf("stage %s: %w", name, err)
+		}
+		if _, err := git("commit", "-m", fmt.Sprintf("feature %d", index+1)); err != nil {
+			return nil, fmt.Errorf("commit feature %d: %w", index+1, err)
+		}
+	}
+
+	actions, err := s.services.GitRebase.GetRebaseTodoList(ctx, repo, "upstream")
+	if err != nil {
+		return nil, fmt.Errorf("get rebase todo: %w", err)
+	}
+	if len(actions) != 2 || actions[0].Action != "pick" || actions[1].Action != "pick" {
+		return nil, fmt.Errorf("unexpected rebase todo: %+v", actions)
+	}
+	if err := s.services.GitRebase.StartInteractiveRebase(ctx, repo, "upstream"); err != nil {
+		return nil, fmt.Errorf("start interactive rebase: %w", err)
+	}
+	started, err := s.services.GitRebase.GetRebaseStatus(repo)
+	if err != nil {
+		return nil, fmt.Errorf("read started rebase status: %w", err)
+	}
+	if !started.InProgress || !started.Owned || started.Phase == "" {
+		return nil, fmt.Errorf("started rebase status is not owned/in progress: %+v", started)
+	}
+	if err := s.services.GitRebase.ApplyRebaseActions(ctx, repo, actions); err != nil {
+		return nil, fmt.Errorf("apply rebase actions: %w", err)
+	}
+	ready, err := s.services.GitRebase.GetRebaseStatus(repo)
+	if err != nil {
+		return nil, fmt.Errorf("read ready rebase status: %w", err)
+	}
+	if !ready.InProgress || !ready.Owned || ready.Phase != "ready" {
+		return nil, fmt.Errorf("ready rebase status is invalid: %+v", ready)
+	}
+	if err := s.services.GitRebase.ContinueRebase(ctx, repo); err != nil {
+		return nil, fmt.Errorf("continue rebase: %w", err)
+	}
+	inProgress, err := s.services.GitRebase.IsRebaseInProgress(repo)
+	if err != nil {
+		return nil, fmt.Errorf("check completed rebase: %w", err)
+	}
+	finalStatus, err := s.services.GitRebase.GetRebaseStatus(repo)
+	if err != nil {
+		return nil, fmt.Errorf("read completed rebase status: %w", err)
+	}
+	if inProgress || finalStatus.InProgress {
+		return nil, fmt.Errorf("rebase remains in progress: inProgress=%t status=%+v", inProgress, finalStatus)
+	}
+	subjects, err := git("log", "--format=%s", "--reverse", "upstream..HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("inspect rebased commits: %w", err)
+	}
+	if strings.TrimSpace(subjects) != "feature 1\nfeature 2" {
+		return nil, fmt.Errorf("rebased commit subjects = %q", subjects)
+	}
+	return map[string]interface{}{
+		"todoLoaded":         true,
+		"rebaseStarted":      true,
+		"actionsApplied":     true,
+		"rebaseCompleted":    true,
+		"noRebaseInProgress": true,
+		"commitCount":        len(actions),
+	}, nil
+}
+
+func runE2EGitCommand(ctx context.Context, repo string, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+// runAIDiffReceiptProbe verifies the G18 commit-receipt protocol in the
+// packaged process: ApplyDiff commits once with a receipt (transaction id +
+// on-disk hashes), the disk actually changes, and a second apply of the same
+// diff is rejected (no duplicate commit).
+func (s *server) runAIDiffReceiptProbe(cmd command) (interface{}, error) {
+	if s.services.Diff == nil || s.services.Project == nil {
+		return nil, errors.New("ai-diff-receipt automation is not fully wired")
+	}
+	if cmd.Workspace == "" {
+		return nil, errors.New("ai-diff-receipt probe requires workspace")
+	}
+	if _, err := s.services.Project.AddProject(cmd.Workspace); err != nil {
+		return nil, fmt.Errorf("open workspace for ai-diff-receipt probe: %w", err)
+	}
+	target := filepath.Join(cmd.Workspace, "g18-diff-target.txt")
+	if err := os.WriteFile(target, []byte("old line\n"), 0o600); err != nil {
+		return nil, err
+	}
+	diff := services.FileDiff{
+		Path:       target,
+		OldContent: "old line\n",
+		NewContent: "new line\n",
+	}
+
+	first := s.services.Diff.ApplyDiff([]services.FileDiff{diff})
+	if !first.Applied {
+		return nil, fmt.Errorf("first ApplyDiff did not commit: %+v", first)
+	}
+	if first.TransactionID == "" {
+		return nil, errors.New("commit receipt missing transactionId")
+	}
+	if len(first.FileHashes) != 1 {
+		return nil, fmt.Errorf("commit receipt missing file hashes: %+v", first.FileHashes)
+	}
+	disk, err := os.ReadFile(target)
+	if err != nil {
+		return nil, err
+	}
+	if string(disk) != "new line\n" {
+		return nil, fmt.Errorf("disk content = %q, want %q (commit did not persist)", string(disk), "new line\n")
+	}
+
+	// A second apply of the same diff must be rejected (baseline no longer
+	// matches) — never a duplicate disk commit.
+	second := s.services.Diff.ApplyDiff([]services.FileDiff{diff})
+	if second.Applied {
+		return nil, errors.New("second ApplyDiff committed again; duplicate commit not prevented")
+	}
+	disk2, err := os.ReadFile(target)
+	if err != nil {
+		return nil, err
+	}
+	if string(disk2) != "new line\n" {
+		return nil, fmt.Errorf("disk changed after rejected second apply: %q", string(disk2))
+	}
+	return map[string]interface{}{
+		"committedOnce":         true,
+		"transactionId":         first.TransactionID,
+		"fileHashesRecorded":    len(first.FileHashes) == 1,
+		"diskMatchesCommit":     string(disk) == "new line\n",
+		"duplicateRejected":     !second.Applied,
+		"diskUnchangedOnReject": string(disk2) == "new line\n",
+	}, nil
+}
+
+// runAIDiffReceiptRecoveryProbe is called by the packaged driver only after
+// the artifact has been killed and relaunched. It proves that the new service
+// instance can recover the durable receipt, verify disk, and reject the old
+// diff without a second write.
+func (s *server) runAIDiffReceiptRecoveryProbe(cmd command) (interface{}, error) {
+	if s.services.Diff == nil || s.services.Project == nil {
+		return nil, errors.New("ai-diff-receipt recovery automation is not fully wired")
+	}
+	if cmd.Workspace == "" {
+		return nil, errors.New("ai-diff-receipt recovery probe requires workspace")
+	}
+	if _, err := s.services.Project.AddProject(cmd.Workspace); err != nil {
+		return nil, fmt.Errorf("open workspace for ai-diff-receipt recovery probe: %w", err)
+	}
+	receipt, err := s.services.Diff.GetLatestCommitReceipt()
+	if err != nil {
+		return nil, fmt.Errorf("load durable commit receipt after restart: %w", err)
+	}
+	target := filepath.Join(cmd.Workspace, "g18-diff-target.txt")
+	diskBefore, err := os.ReadFile(target)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(diskBefore)
+	diskHash := hex.EncodeToString(digest[:])
+	if receipt.FileHashes[target] != diskHash {
+		return nil, fmt.Errorf("recovered receipt hash %q does not match disk hash %q", receipt.FileHashes[target], diskHash)
+	}
+	if cmd.Expected != "" && receipt.TransactionID != cmd.Expected {
+		return nil, fmt.Errorf("recovered transaction id %q differs from %q", receipt.TransactionID, cmd.Expected)
+	}
+	diff := services.FileDiff{
+		Path:       target,
+		OldContent: "old line\n",
+		NewContent: "new line\n",
+	}
+	second := s.services.Diff.ApplyDiff([]services.FileDiff{diff})
+	diskAfter, err := os.ReadFile(target)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"receiptRecovered":        true,
+		"transactionIdStable":     cmd.Expected == "" || receipt.TransactionID == cmd.Expected,
+		"fileHashesMatchDisk":     receipt.FileHashes[target] == diskHash,
+		"duplicateRejected":       !second.Applied,
+		"diskUnchangedOnReject":   string(diskBefore) == string(diskAfter),
+		"receiptWorkspaceMatches": receipt.WorkspaceRoot == cmd.Workspace,
+	}, nil
+}
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}

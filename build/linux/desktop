@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=koyori-ide
+Comment=AI-Powered Coding Desktop App for Professional Developers
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/koyori-ide %u
+Terminal=false
+Type=Application
+Icon=koyori-ide
+Categories=Utility;
+StartupWMClass=koyori-ide
+
+ 

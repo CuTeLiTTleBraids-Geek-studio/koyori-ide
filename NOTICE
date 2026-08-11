@@ -1,0 +1,44 @@
+Koyori IDE Third-Party Notices
+
+Koyori IDE is licensed under the MIT License. See LICENSE for the project
+copyright and license terms.
+
+This distribution includes third-party Go modules and npm packages. Their
+licenses remain the property of their respective copyright holders. The
+generated dependency-by-dependency inventory is available at:
+
+  docs/THIRD_PARTY_LICENSES.md
+
+Material dependency families include Wails (MIT), Vue and Vue ecosystem
+packages (primarily MIT), Monaco Editor (MIT), Element Plus (MIT), Go standard
+project modules (BSD-style licenses), and database, Git, SSH, terminal, and
+sanitization libraries under the terms recorded in the inventory.
+
+The classified inventory contains permissive, MPL-2.0, Apache-2.0, Python-2.0,
+BlueOak-1.0.0, CC0-1.0, and dual-license expressions. Preserve upstream
+copyright notices and license texts where their terms require it. No GPL or
+AGPL identifier was found in the classified rows. The inventory covers the
+union of the four supported `desktop,production` Go package closures and the
+frontend package-lock dependency set; it does not silently treat unused
+modules in a build tool's module graph as shipped code.
+
+Release asset attribution is recorded separately in:
+
+  docs/RELEASE_ASSET_LICENSES.md
+
+The native Koyori IDE icons are first-party MIT assets. The `wails.png` and
+`vue.svg` frontend template assets are copied from the pinned Wails Vue template
+and are covered by the Wails MIT license. Monaco's generated Codicon font is
+covered by Monaco's MIT license and third-party notices. The release asset
+checker fails when an unrecorded public asset enters the frontend or when a
+stale build directory retains a removed asset.
+
+The pinned Wails module graph contains github.com/konoui/go-qsort@v0.1.0,
+whose upstream archive has no detected license, but it is not present in any
+of the four supported production package closures. The release generator
+will fail if a future target imports it. Do not treat this NOTICE as legal
+advice or as a substitute for the upstream terms.
+
+Tag releases also publish one mandatory SPDX JSON SBOM per final platform
+archive and an unsigned in-toto provenance statement. The provenance file is
+release metadata, not a signed attestation.

@@ -1,0 +1,107 @@
+version: '3'
+
+vars:
+  APP_NAME: "koyori-ide"
+  BIN_DIR: "bin"
+  PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+  # Target OS for build/package/run. Defaults to the host OS, and is overridden
+  # by `wails3 build GOOS=...` (or the GOOS env var) for cross-compilation. The
+  # tasks below dispatch to the matching platform Taskfile via this variable.
+  GOOS: '{{.GOOS | default OS}}'
+
+includes:
+  common: ./build/Taskfile.yml
+  windows: ./build/windows/Taskfile.yml
+  darwin: ./build/darwin/Taskfile.yml
+  linux: ./build/linux/Taskfile.yml
+  ios: ./build/ios/Taskfile.yml
+  android: ./build/android/Taskfile.yml
+
+tasks:
+  # prompt-5 Task I: engineering gates
+  bindings:generate:
+    summary: Generate frontend bindings with the Wails version pinned by go.mod
+    dir: .
+    cmds:
+      - node scripts/generate-bindings.mjs
+
+  bindings:check:
+    summary: Verify the complete generated tree, export policy, and drift failures
+    dir: .
+    cmds:
+      - node --test scripts/wails-bindings.test.mjs
+      - node scripts/check-bindings.mjs
+
+  docs:check:
+    summary: Verify README numbers match code constants (MAX_TOOL_CALLS)
+    dir: .
+    cmds:
+      - node scripts/check-doc-numbers.mjs
+
+  release:check:
+    summary: Verify all release metadata files are synchronized with VERSION (P9-G08)
+    dir: .
+    cmds:
+      - node scripts/sync-release-metadata.mjs --check
+  backend:check:
+    summary: Run backend gates (gofmt/vet/build/test/contract/bindings/docs) with per-command exit codes
+    dir: .
+    cmds:
+      - node scripts/backend-gate.mjs
+  frontend:check:
+    summary: Run vitest + eslint + vue-tsc + bindings/docs gates
+    dir: frontend
+    deps:
+      - task: bindings:generate
+    cmds:
+      - node node_modules/vitest/vitest.mjs run
+      - node node_modules/eslint/bin/eslint.js src
+      - node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
+      - task: bindings:check
+      - task: docs:check
+
+  build:
+    summary: Builds the application
+    cmds:
+      - task: "{{.GOOS}}:build"
+
+  package:
+    summary: Packages a production build of the application
+    cmds:
+      - task: "{{.GOOS}}:package"
+
+  run:
+    summary: Runs the application
+    cmds:
+      - task: "{{.GOOS}}:run"
+
+  dev:
+    summary: Runs the application in development mode
+    cmds:
+      - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
+
+  setup:docker:
+    summary: Builds Docker image for cross-compilation (~800MB download)
+    cmds:
+      - task: common:setup:docker
+
+  build:server:
+    summary: Builds the application in server mode (no GUI, HTTP server only)
+    cmds:
+      - task: common:build:server
+
+  run:server:
+    summary: Runs the application in server mode
+    cmds:
+      - task: common:run:server
+
+  build:docker:
+    summary: Builds a Docker image for server mode deployment
+    cmds:
+      - task: common:build:docker
+
+  run:docker:
+    summary: Builds and runs the Docker image
+    cmds:
+      - task: common:run:docker

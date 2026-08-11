@@ -1,0 +1,243 @@
+# ============================================
+# 本地/内部草稿（公开文档放在 docs/ 与 .github/）
+# Local drafts only — public docs live in docs/ and .github/
+# ============================================
+
+# 旧版内部设计稿文件名（勿提交）。
+# 设计/验证记录 prompt-*.md 已归档至 docs/prompts/（正式文档，需跟踪）。
+DESIGN-*.md
+**/superpowers/
+docs/superpowers/
+
+# ============================================
+# 构建产物 / Build artifacts
+# ============================================
+
+# Go 二进制 / 安装包（仅根目录可执行文件名，避免误伤源码目录）
+bin/
+*.exe
+*.exe~
+*.run
+*.dll
+*.so
+*.dylib
+# koyori ide 本地产物（历史旧名一并忽略，防止旧产物误传）
+/koyori-ide
+/koyori-ide.exe
+/koyori-ide.app
+/koyori-ide-console
+/koyori-ide-console.exe
+koyori-ide-server*
+/gugacode
+/gugacode.exe
+/gugacode.app
+/gugacode-console
+/gugacode-console.exe
+gugacode-server*
+/miaomiaocode
+/miaomiaocode.exe
+/nknk-coding
+/nknk-coding.exe
+
+# Windows 资源文件（构建时生成）/ Windows syso (generated)
+*.syso
+wails_windows_*.syso
+
+# 前端构建产物 / Frontend build output
+frontend/dist/
+
+# 打包/压缩产物（npm pack、下载的离线包等）
+*.tgz
+*.vsix
+
+# Wails bindings：全部由 go.mod 锁定版本在 dev/build/test 前生成，不提交。
+# 可审计的文件哈希与 service 导出白名单位于 scripts/wails-bindings.manifest.json。
+frontend/bindings/
+frontend/.bindings-tmp*
+/wails_obfuscated.gen.go
+
+# Wails overlay 文件（含本机绝对路径，构建时按平台重新生成）
+build/overlay_windows.json
+build/overlay_darwin.json
+build/overlay_linux.json
+
+# 本地/CI 集成证据由工作流上传，不作为源码提交。
+build/e2e-evidence/
+
+# E2E 测试残留标记与辅助二进制（g03/g05 手动流程产物）
+build/g03-manual-marker
+
+# Vite / TS 缓存
+.vite/
+frontend/.vite/
+*.tsbuildinfo
+
+# 移动平台生成文件（含机器特定路径）/ Mobile generated
+build/ios/xcode/overlay.json
+build/ios/xcode/gen/
+build/android/overlay.json
+build/android/gen/
+build/android/.gradle/
+build/android/**/build/
+build/android/local.properties
+
+# Linux AppImage 构建目录
+build/linux/appimage/build
+
+# Windows NSIS WebView2 安装包
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+
+# Taskfile 缓存 / Taskfile cache
+.task/
+
+# 根目录本地 agent/调试状态（不属于发行源码）
+/.claude/
+/.omo/
+/.agents/
+
+# 本地调试脚本（含本机绝对路径，勿提交）
+/run-build-only.cmd
+/run-packaged-skip.cmd
+
+# Windows 保留名与误生成的 PowerShell profile dump
+/NUL
+/$profile
+
+# 启动日志（本机调试残留）
+startup-err.txt
+startup-out.txt
+bin/startup-err.txt
+bin/startup-out.txt
+
+# ============================================
+# 用户数据 / User data（绝不提交）
+# ============================================
+
+# 应用运行时生成的用户数据目录
+services/koyori-ide/
+services/gugacode/
+
+# AI 对话历史文件（根目录时间戳 JSON）
+[0-9]*-*.json
+
+# 本地测试写盘残留
+.test_write*
+.test_write*.tmp
+
+# ============================================
+# 依赖 / Dependencies
+# ============================================
+
+# Node.js
+node_modules/
+
+# Go vendor（如使用）
+vendor/
+
+# Go workspace（如使用）
+go.work
+go.work.sum
+
+# ============================================
+# IDE / 编辑器
+# ============================================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+*.code-workspace
+.eslintcache
+
+# ============================================
+# 操作系统文件 / OS files
+# ============================================
+
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ============================================
+# 环境与密钥 / Environment & secrets
+# ============================================
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+secrets.json
+**/secrets.local.*
+
+# ============================================
+# 日志与临时文件 / Logs & temp files
+# ============================================
+
+*.log
+*.tmp
+*.temp
+*.bak
+*.cache
+*.orig
+*.swp
+
+# ============================================
+# 测试覆盖率与性能分析 / Coverage & profiling
+# ============================================
+
+coverage/
+frontend/coverage/
+*.lcov
+*.out
+*.prof
+*.pprof
+cpu.out
+mem.out
+block.out
+mutex.out
+
+# ============================================
+# 调试工具 / Debug tools
+# ============================================
+
+# Delve / go test 调试产物
+__debug_bin*
+debug.test
+*.test
+*.pdb
+
+# 哈希测试调试工具
+tools/hashtest6/
+
+# Local lint dumps
+frontend/eslint_output.json
+
+# ============================================
+# SBOM / 本地打包残留（脚本可能生成）
+# 发布物请走 GitHub Releases，勿把安装包提交进仓库
+# ============================================
+
+sbom*.json
+bom.json
+*.spdx.json
+*.spdx
+/dist/
+/release/
+*.zip
+*.tar.gz
+*.msi
+*.msix
+*.appimage
+*.dmg

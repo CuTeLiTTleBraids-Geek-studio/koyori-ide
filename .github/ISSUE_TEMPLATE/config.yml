@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞 / Security vulnerabilities
+    url: https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/security/advisories/new
+    about: 请私下报告安全漏洞，勿公开 Issue / Report vulnerabilities privately; do not open a public issue.
+  - name: 文档 / Documentation
+    url: https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/tree/main/docs
+    about: 架构、发布、扩展协议等文档 / Architecture, release, and extension docs.

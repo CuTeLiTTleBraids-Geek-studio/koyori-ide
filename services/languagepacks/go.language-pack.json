@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "1.0",
+  "id": "org.koyori.ide.go",
+  "version": "1.0.0",
+  "displayName": "Go",
+  "compatibility": {
+    "engineApi": "1.0",
+    "hostProtocol": "language.local.v1",
+    "platforms": [
+      { "os": "windows", "arch": "amd64" },
+      { "os": "windows", "arch": "arm64" },
+      { "os": "darwin", "arch": "amd64" },
+      { "os": "darwin", "arch": "arm64" },
+      { "os": "linux", "arch": "amd64" },
+      { "os": "linux", "arch": "arm64" }
+    ]
+  },
+  "languages": [
+    {
+      "id": "go",
+      "extensions": [".go"],
+      "filenames": []
+    }
+  ],
+  "rootMarkers": ["go.work", "go.mod", ".git"],
+  "servers": [
+    {
+      "id": "gopls",
+      "statusOrder": 10,
+      "languages": ["go"],
+      "aliases": [],
+      "executables": [
+        { "commandName": "gopls", "kind": "gopls" }
+      ],
+      "args": ["serve"],
+      "installHint": "go install golang.org/x/tools/gopls@latest",
+      "workspaceNode": false,
+      "initializationProfile": "go",
+      "configurationSections": ["gopls"],
+      "configurationResponse": "full",
+      "versionArgs": ["version"],
+      "preferReactWorkspace": false,
+      "reactAware": false
+    }
+  ],
+  "debuggers": [
+    {
+      "id": "delve",
+      "protocol": "dap",
+      "languages": ["go"],
+      "executable": "dlv",
+      "args": ["dap", "--log=false"],
+      "installHint": "go install github.com/go-delve/delve/cmd/dlv@latest"
+    }
+  ],
+  "toolchain": {
+    "commands": [
+      { "id": "go-run", "label": "Go: Run", "language": "go", "executable": "go", "args": ["run", "."], "description": "Run the current Go module", "fileScoped": false },
+      { "id": "go-build", "label": "Go: Build", "language": "go", "executable": "go", "args": ["build", "./..."], "description": "Compile all Go packages", "fileScoped": false },
+      { "id": "go-test", "label": "Go: Test", "language": "go", "executable": "go", "args": ["test", "./..."], "description": "Run all Go tests", "fileScoped": false },
+      { "id": "go-test-race", "label": "Go: Test with Race Detector", "language": "go", "executable": "go", "args": ["test", "-race", "./..."], "description": "Run all Go tests with the race detector", "fileScoped": false },
+      { "id": "go-bench", "label": "Go: Benchmark", "language": "go", "executable": "go", "args": ["test", "-run=^$", "-bench=.", "-benchmem", "./..."], "description": "Run all Go benchmarks with memory metrics", "fileScoped": false },
+      { "id": "go-generate", "label": "Go: Generate", "language": "go", "executable": "go", "args": ["generate", "./..."], "description": "Run go generate for all packages", "fileScoped": false },
+      { "id": "go-work-sync", "label": "Go: Sync Workspace", "language": "go", "executable": "go", "args": ["work", "sync"], "description": "Sync the active go.work workspace", "fileScoped": false },
+      { "id": "go-vet", "label": "Go: Vet", "language": "go", "executable": "go", "args": ["vet", "./..."], "description": "Run go vet on all packages", "fileScoped": false },
+      { "id": "go-mod-tidy", "label": "Go: Mod Tidy", "language": "go", "executable": "go", "args": ["mod", "tidy"], "description": "Tidy go.mod and go.sum", "fileScoped": false },
+      { "id": "gofmt", "label": "Go: gofmt (list workspace)", "language": "go", "executable": "gofmt", "args": ["-l", "."], "description": "List files that need formatting", "fileScoped": false },
+      { "id": "gofmt-file", "label": "Go: gofmt (current file)", "language": "go", "executable": "gofmt", "args": ["-w"], "description": "Format current .go file in place", "fileScoped": true },
+      { "id": "goimports", "label": "Go: goimports (list workspace)", "language": "go", "executable": "goimports", "args": ["-l", "."], "description": "List files that need import formatting", "fileScoped": false },
+      { "id": "goimports-file", "label": "Go: goimports (current file)", "language": "go", "executable": "goimports", "args": ["-w"], "description": "Organize imports for current .go file", "fileScoped": true },
+      { "id": "go-test-pkg", "label": "Go: Test (current package)", "language": "go", "executable": "go", "args": ["test", "."], "description": "Run tests in the current package directory", "fileScoped": false },
+      { "id": "go-test-cursor", "label": "Go: Test at Cursor", "language": "go", "executable": "go", "args": ["test"], "description": "Run the Go test under the cursor", "fileScoped": false },
+      { "id": "golangci-lint", "label": "Go: golangci-lint", "language": "go", "executable": "golangci-lint", "args": ["run"], "description": "Run golangci-lint", "fileScoped": false }
+    ],
+    "tools": [
+      { "name": "go", "installHint": "Install Go from https://go.dev/dl/" },
+      { "name": "gofmt", "installHint": "Install Go from https://go.dev/dl/" },
+      { "name": "goimports", "installHint": "go install golang.org/x/tools/cmd/goimports@latest" },
+      { "name": "golangci-lint", "installHint": "go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest" }
+    ]
+  },
+  "permissions": ["workspace.read", "process.launch"],
+  "configurationSchema": {},
+  "integrity": { "manifestSha256": "8fc17d538c1ec21fd2049c374af5ff61f5b687eb6b33f21059e95f1b9fdc90ef" }
+}

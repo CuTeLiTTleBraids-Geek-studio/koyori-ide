@@ -1,0 +1,52 @@
+name: Bug 报告 / Bug report
+description: 报告崩溃、错误行为或回归 / Report a crash, incorrect behavior, or regression
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > ⚠️ 安全漏洞请勿在此公开提交，请按 [SECURITY.md](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/blob/main/.github/SECURITY.md) 私下报告。
+        > Do NOT report security vulnerabilities here — see [SECURITY.md](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/blob/main/.github/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: 应用版本（设置 → 关于，或 VERSION 文件）与操作系统信息 / App version (Settings → About, or VERSION) and OS details
+      placeholder: "0.2.0 · Windows 11 24H2 x64"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述 / Description
+      description: 清晰描述期望行为与实际行为 / What you expected vs what actually happened
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 尽量给出最小复现 / Minimal repro if possible
+      placeholder: |
+        1. 打开 …
+        2. 执行 …
+        3. 观察到 …
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / Logs
+      description: 启动日志、崩溃报告或截图（可选）/ startup logs, crash dumps, screenshots (optional)
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认 / Checklist
+      options:
+        - label: 我已在 Issues 中搜索过同类问题 / I searched existing issues
+          required: true
+        - label: 我确认这不是安全漏洞（安全漏洞请私下报告）/ This is not a security vulnerability
+          required: true

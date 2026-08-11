@@ -1,0 +1,327 @@
+name: Release Installers
+
+# Attaches native installers (Windows NSIS, Linux AppImage/deb/rpm, macOS DMG)
+# to an already-published GitHub Release. Runs after the tag-triggered
+# `Release` workflow has published the release, so there is no race on the
+# release object and the portable artifacts (zip / tar.gz) keep their own
+# SBOM/provenance pipeline intact.
+#
+# Signing policy mirrors release.yml (MED-07 / G-SEC-08):
+#   - Windows: Authenticode via signtool (WINDOWS_CERT_PFX + WINDOWS_CERT_PASSWORD).
+#   - macOS:   Developer ID codesign + notarytool notarization + stapling
+#              (MACOS_CERT_P12 + MACOS_CERT_PASSWORD + APPLE_ID +
+#              APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID).
+#   - Linux:   unsigned, matching release.yml (which does not sign Linux artifacts).
+#   - Missing secrets FAIL the job unless REQUIRE_CODE_SIGN=false.
+#
+# Every installer is uploaded with a per-asset SHA256 checksum.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Installer - Windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    env:
+      REQUIRE_CODE_SIGN: ${{ vars.REQUIRE_CODE_SIGN || 'true' }}
+      WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate and verify untracked Wails bindings
+        shell: bash
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: ./build/scripts/build-windows.ps1 -Arch ${{ matrix.arch }}
+
+      - name: Sign NSIS installer (Authenticode)
+        if: env.WINDOWS_CERT_PFX != '' && env.WINDOWS_CERT_PASSWORD != ''
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path bin -Filter "koyori-ide-*-installer.exe" -File | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found under bin" }
+          $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
+          try {
+            [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
+            $securePassword = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+            $imported = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation "Cert:\CurrentUser\My" -Password $securePassword)
+            $cert = $imported | Where-Object { $_.HasPrivateKey } | Select-Object -First 1
+            if (-not $cert) { throw "No private-key certificate found in the imported PFX" }
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+              Sort-Object -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+            & $signtool.FullName sign /sha1 $cert.Thumbprint /s My /fd sha256 /td sha256 /tr http://timestamp.digicert.com $installer.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
+            & $signtool.FullName verify /pa $installer.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+          } finally {
+            if ($imported) {
+              foreach ($c in @($imported)) {
+                Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($c.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              }
+            }
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
+            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify signing requirement met
+        shell: bash
+        run: |
+          if [ "${REQUIRE_CODE_SIGN:-true}" = "true" ] && \
+             { [ -z "$WINDOWS_CERT_PFX" ] || [ -z "$WINDOWS_CERT_PASSWORD" ]; }; then
+            echo "::error::Windows code-signing secrets missing and REQUIRE_CODE_SIGN is true; refusing to publish an unsigned installer."
+            exit 1
+          fi
+
+      - name: Checksum installer
+        shell: pwsh
+        run: |
+          Get-ChildItem bin/koyori-ide-*-installer.exe | ForEach-Object {
+            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + "  " + $_.Name | Set-Content "$($_.FullName).sha256"
+          }
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            bin/koyori-ide-*-installer.exe bin/koyori-ide-*-installer.exe.sha256 --clobber
+
+  linux:
+    name: Installer - Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate and verify untracked Wails bindings
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Build installers (AppImage + deb + rpm)
+        run: |
+          chmod +x build/scripts/build-linux.sh
+          ./build/scripts/build-linux.sh ${{ matrix.arch }}
+
+      - name: Verify产物
+        run: |
+          echo "=== bin 目录内容 ==="
+          ls -lh bin/
+
+      - name: Checksum installers
+        run: |
+          cd bin
+          for f in *.AppImage *.deb *.rpm; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            bin/*.AppImage bin/*.AppImage.sha256 \
+            bin/*.deb bin/*.deb.sha256 \
+            bin/*.rpm bin/*.rpm.sha256 --clobber
+
+  macos:
+    name: Installer - macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: amd64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
+    env:
+      REQUIRE_CODE_SIGN: ${{ vars.REQUIRE_CODE_SIGN || 'true' }}
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate and verify untracked Wails bindings
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build app bundle + DMG
+        run: |
+          chmod +x build/scripts/build-macos.sh
+          ./build/scripts/build-macos.sh ${{ matrix.arch }}
+
+      # The build script ad-hoc signs the .app. For distribution, re-sign with
+      # Developer ID, notarize, staple, then rebuild the DMG from the signed app
+      # and notarize the DMG itself (mirrors release.yml signing, but for DMG).
+      - name: Code sign & notarize (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="bin/koyori-ide.app"
+          DMG_PATH="bin/koyori-ide-$(tr -d '[:space:]' < VERSION)-macos-${{ matrix.arch }}.dmg"
+          if [ "${REQUIRE_CODE_SIGN:-true}" = "false" ]; then
+            echo "::warning::REQUIRE_CODE_SIGN=false; publishing an unsigned DMG."
+            exit 0
+          fi
+          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_CERT_PASSWORD" ] || \
+             [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || \
+             [ -z "$APPLE_TEAM_ID" ]; then
+            echo "::error::macOS code-signing secrets missing; set REQUIRE_CODE_SIGN=false to allow an unsigned DMG."
+            exit 1
+          fi
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::koyori-ide.app not found; refusing to publish an unsigned DMG."
+            exit 1
+          fi
+          p12_path="$RUNNER_TEMP/developer_id.p12"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$p12_path"
+          keychain="build-$RANDOM.keychain"
+          keychain_pw="$(openssl rand -hex 32)"
+          security create-keychain -p "$keychain_pw" "$keychain"
+          security default-keychain -s "$keychain"
+          security unlock-keychain -p "$keychain_pw" "$keychain"
+          security import "$p12_path" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain"
+          rm -f "$p12_path"
+          # Re-sign the app with hardened runtime (replaces the ad-hoc signature).
+          codesign --force --deep --options runtime --sign "Developer ID Application" "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$APP_PATH"
+          # Rebuild the DMG from the signed app, then notarize the DMG itself.
+          # Notarizing the DMG also covers the app inside it.
+          rm -f "$DMG_PATH"
+          create-dmg \
+            --volname "koyori-ide" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "koyori-ide.app" 175 190 \
+            --hide-extension "koyori-ide.app" \
+            --app-drop-link 425 190 \
+            --volicon "$PWD/build/darwin/icons.icns" \
+            "$DMG_PATH" "$APP_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          codesign --verify --strict "$APP_PATH"
+          security delete-keychain "$keychain"
+
+      - name: Checksum DMG
+        run: |
+          cd bin
+          for f in *.dmg; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            bin/*.dmg bin/*.dmg.sha256 --clobber

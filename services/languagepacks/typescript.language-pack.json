@@ -1,0 +1,112 @@
+{
+  "schemaVersion": "1.0",
+  "id": "org.koyori.ide.typescript",
+  "version": "1.0.0",
+  "displayName": "TypeScript and JavaScript",
+  "compatibility": {
+    "engineApi": "1.0",
+    "hostProtocol": "language.local.v1",
+    "platforms": [
+      { "os": "windows", "arch": "amd64" },
+      { "os": "windows", "arch": "arm64" },
+      { "os": "darwin", "arch": "amd64" },
+      { "os": "darwin", "arch": "arm64" },
+      { "os": "linux", "arch": "amd64" },
+      { "os": "linux", "arch": "arm64" }
+    ]
+  },
+  "languages": [
+    {
+      "id": "typescript",
+      "extensions": [".ts"],
+      "filenames": []
+    },
+    {
+      "id": "typescriptreact",
+      "extensions": [".tsx"],
+      "filenames": []
+    },
+    {
+      "id": "javascript",
+      "extensions": [".js", ".mjs", ".cjs"],
+      "filenames": []
+    },
+    {
+      "id": "javascriptreact",
+      "extensions": [".jsx"],
+      "filenames": []
+    }
+  ],
+  "rootMarkers": ["package.json", "tsconfig.json", ".git"],
+  "servers": [
+    {
+      "id": "typescript",
+      "statusOrder": 40,
+      "languages": ["typescript"],
+      "aliases": ["typescriptreact"],
+      "executables": [
+        { "commandName": "typescript-language-server", "kind": "typescript-language-server" },
+        { "commandName": "vtsls", "kind": "vtsls" }
+      ],
+      "args": ["--stdio"],
+      "installHint": "npm install --save-dev typescript typescript-language-server",
+      "workspaceNode": true,
+      "initializationProfile": "typescript",
+      "configurationSections": ["typescript"],
+      "configurationResponse": "preferences",
+      "versionArgs": [],
+      "preferReactWorkspace": true,
+      "reactAware": true
+    },
+    {
+      "id": "javascript",
+      "statusOrder": 50,
+      "languages": ["javascript"],
+      "aliases": ["javascriptreact"],
+      "executables": [
+        { "commandName": "typescript-language-server", "kind": "typescript-language-server" },
+        { "commandName": "vtsls", "kind": "vtsls" }
+      ],
+      "args": ["--stdio"],
+      "installHint": "npm install --save-dev typescript typescript-language-server",
+      "workspaceNode": true,
+      "initializationProfile": "typescript",
+      "configurationSections": ["javascript"],
+      "configurationResponse": "preferences",
+      "versionArgs": [],
+      "preferReactWorkspace": true,
+      "reactAware": true
+    }
+  ],
+  "debuggers": [
+    {
+      "id": "node-inspector",
+      "protocol": "cdp",
+      "languages": ["typescript", "typescriptreact", "javascript", "javascriptreact"],
+      "executable": "node",
+      "args": ["--inspect-brk"],
+      "installHint": "Install Node.js from https://nodejs.org/"
+    }
+  ],
+  "toolchain": {
+    "commands": [
+      { "id": "tsc", "label": "TypeScript: Type Check", "language": "typescript", "executable": "tsc", "args": ["--noEmit"], "description": "Type-check with tsc --noEmit", "fileScoped": false },
+      { "id": "eslint", "label": "ESLint: Check (workspace)", "language": "javascript", "executable": "eslint", "args": ["."], "description": "Lint workspace without modifying files", "fileScoped": false },
+      { "id": "eslint-file", "label": "ESLint: Fix (current file)", "language": "javascript", "executable": "eslint", "args": ["--fix"], "description": "Run eslint --fix for one file", "fileScoped": true },
+      { "id": "prettier", "label": "Prettier: Check (workspace)", "language": "javascript", "executable": "prettier", "args": ["--check", "."], "description": "Check formatting without modifying files", "fileScoped": false },
+      { "id": "prettier-file", "label": "Prettier: Write (current file)", "language": "javascript", "executable": "prettier", "args": ["--write"], "description": "Format the current file with Prettier", "fileScoped": true },
+      { "id": "vitest", "label": "Vitest: Run (workspace)", "language": "typescript", "executable": "vitest", "args": ["run"], "description": "Run all Vitest tests once", "fileScoped": false },
+      { "id": "vitest-file", "label": "Vitest: Run (current file)", "language": "typescript", "executable": "vitest", "args": ["run"], "description": "Run Vitest for one test file", "fileScoped": true },
+      { "id": "vitest-cursor", "label": "Vitest: Test at Cursor", "language": "typescript", "executable": "vitest", "args": ["run"], "description": "Run the TypeScript test under the cursor", "fileScoped": false }
+    ],
+    "tools": [
+      { "name": "tsc", "installHint": "npm install --save-dev typescript" },
+      { "name": "eslint", "installHint": "npm install --save-dev eslint" },
+      { "name": "prettier", "installHint": "npm install --save-dev prettier" },
+      { "name": "vitest", "installHint": "npm install --save-dev vitest" }
+    ]
+  },
+  "permissions": ["workspace.read", "process.launch"],
+  "configurationSchema": {},
+  "integrity": { "manifestSha256": "703a6f788308271985170cb18311ecfe0ac76a9b2fd5a5652c19e5bf4d70ea98" }
+}

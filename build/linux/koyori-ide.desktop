@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=koyori-ide
+Comment=AI-Powered Coding Desktop App
+Exec=koyori-ide
+Icon=koyori-ide
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=koyori-ide

@@ -1,0 +1,9 @@
+.git/
+.task/
+bin/
+build/e2e-evidence/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/bindings/
+frontend/.bindings-tmp*

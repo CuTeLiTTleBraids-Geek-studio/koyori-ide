@@ -1,0 +1,540 @@
+name: Release
+
+# N-147: Tag-triggered release pipeline. When a version tag (v*.*.*) is
+# pushed, this workflow builds production artifacts for Windows, Linux, and
+# macOS, generates SHA256 checksums, and creates a GitHub Release with the
+# artifacts attached. The docs/CHANGELOG.md section for the tag version is used
+# as the release notes body (hand-maintained changelog is the source of truth).
+#
+# Triggering:
+#   git tag v0.2.0
+#   git push origin v0.2.0
+#
+# Artifacts per platform:
+#   Windows: koyori-ide-<version>-windows-amd64.zip
+#   Linux:   koyori-ide-<version>-linux-amd64.tar.gz
+#   macOS:   koyori-ide-<version>-darwin-amd64.zip
+#            koyori-ide-<version>-darwin-arm64.zip
+#
+# Every release asset is hashed with SHA256. A mandatory SPDX JSON SBOM, an
+# unsigned in-toto provenance statement, and a single SHA256SUMS file are
+# published alongside the platform artifacts.
+#
+# Code signing (MED-07 / G-SEC-08):
+#   - Windows: Authenticode via signtool (requires WINDOWS_CERT_PFX +
+#     WINDOWS_CERT_PASSWORD secrets). Missing secrets FAIL the release.
+#   - macOS:   Developer ID codesign + notarytool notarization (requires
+#     MACOS_CERT_P12 + MACOS_CERT_PASSWORD + APPLE_ID +
+#     APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID secrets). Missing
+#     secrets FAIL the release.
+# Tag releases require signing by default. REQUIRE_CODE_SIGN=false is the
+# only supported opt-out for an intentional unsigned release.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: amd64
+            artifact_name: koyori-ide-${{ github.ref_name }}-windows-amd64.zip
+            build_cmd: wails3 build -tags desktop,production
+          - os: ubuntu-latest
+            arch: amd64
+            artifact_name: koyori-ide-${{ github.ref_name }}-linux-amd64.tar.gz
+            build_cmd: wails3 build -tags desktop,production
+          - os: macos-latest
+            arch: amd64
+            artifact_name: koyori-ide-${{ github.ref_name }}-darwin-amd64.zip
+            build_cmd: wails3 build -tags desktop,production
+          - os: macos-latest
+            arch: arm64
+            artifact_name: koyori-ide-${{ github.ref_name }}-darwin-arm64.zip
+            build_cmd: wails3 build -tags desktop,production
+    runs-on: ${{ matrix.os }}
+    env:
+      # Every matrix entry passes its declared architecture to Wails/Go. This
+      # also makes the Windows and Linux architecture explicit instead of
+      # relying on the hosted runner default.
+      GOARCH: ${{ matrix.arch }}
+      # MED-07 / G-SEC-08: code-signing secrets. Required for tag releases —
+      # missing secrets fail the build (see the verify step below).
+      REQUIRE_CODE_SIGN: ${{ vars.REQUIRE_CODE_SIGN || 'true' }}
+      WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Signing is mandatory by default. Set the repository variable
+      # REQUIRE_CODE_SIGN=false only when an unsigned release is intentional.
+      - name: Verify code-signing secrets (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          if [ -z "$WINDOWS_CERT_PFX" ] || [ -z "$WINDOWS_CERT_PASSWORD" ]; then
+            if [ "${REQUIRE_CODE_SIGN:-true}" != "false" ]; then
+              echo "::error::Windows code-signing secrets missing; set REQUIRE_CODE_SIGN=false to allow an unsigned release."
+              exit 1
+            fi
+            echo "::warning::REQUIRE_CODE_SIGN=false; publishing an unsigned Windows artifact."
+          else
+            echo "Windows signing secrets present."
+          fi
+
+      - name: Verify code-signing secrets (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_CERT_PASSWORD" ] || \
+             [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || \
+             [ -z "$APPLE_TEAM_ID" ]; then
+            if [ "${REQUIRE_CODE_SIGN:-true}" != "false" ]; then
+              echo "::error::macOS code-signing secrets missing; set REQUIRE_CODE_SIGN=false to allow an unsigned release."
+              exit 1
+            fi
+            echo "::warning::REQUIRE_CODE_SIGN=false; publishing an unsigned macOS artifact."
+          else
+            echo "macOS signing secrets present."
+          fi
+
+      # GOAL-P0-05 AC 2: the tag must equal the declared version before anything
+      # is built. Running this first means a drifted tag cannot produce artifacts
+      # at all, rather than producing artifacts whose filename says one version
+      # while the embedded application metadata says another.
+      - name: Verify tag matches all release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          tag_version="${tag#v}"
+          source_version="$(tr -d ' \t\n\r' < VERSION)"
+
+          config_versions=()
+          while IFS= read -r line; do config_versions+=("$line"); done < <(awk -F'"' '/^  version:/{print $2}' build/config.yml)
+          windows_versions=()
+          while IFS= read -r line; do windows_versions+=("$line"); done < <(awk -F'"' '/file_version|ProductVersion/{print $4}' build/windows/info.json)
+          nfpm_versions=()
+          while IFS= read -r line; do nfpm_versions+=("$line"); done < <(awk -F'"' '/^version:/{print $2}' build/linux/nfpm/nfpm.yaml)
+          darwin_versions=()
+          while IFS= read -r line; do darwin_versions+=("$line"); done < <(awk '
+            /<key>CFBundleVersion<\/key>|<key>CFBundleShortVersionString<\/key>/ {
+              getline
+              value=$0
+              sub(/^.*<string>/, "", value)
+              sub(/<\/string>.*$/, "", value)
+              print value
+            }
+          ' build/darwin/Info.plist)
+
+          require_versions() {
+            local source="$1"
+            local expected_count="$2"
+            shift 2
+            local values=("$@")
+            if [ "${#values[@]}" -ne "$expected_count" ]; then
+              echo "::error::${source} yielded ${#values[@]} version fields; expected ${expected_count}."
+              exit 1
+            fi
+            for value in "${values[@]}"; do
+              if [ "$value" != "$source_version" ]; then
+                echo "::error::${source} version (${value}) does not match VERSION (${source_version})."
+                exit 1
+              fi
+            done
+          }
+
+          echo "tag=${tag} tag_version=${tag_version} VERSION=${source_version}"
+
+          if [ "${tag_version}" != "${source_version}" ]; then
+            echo "::error::tag ${tag} does not match VERSION (${source_version})."
+            exit 1
+          fi
+          require_versions "build/config.yml" 1 "${config_versions[@]}"
+          require_versions "build/windows/info.json" 2 "${windows_versions[@]}"
+          require_versions "build/linux/nfpm/nfpm.yaml" 1 "${nfpm_versions[@]}"
+          require_versions "build/darwin/Info.plist" 2 "${darwin_versions[@]}"
+          echo "All release metadata agrees on ${source_version}."
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux GUI build deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
+
+      - name: Install frontend deps (lockfile + official registry)
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      # G19: release must not proceed with high/critical advisories or a
+      # drifting lockfile (same gate CI/local devs use).
+      - name: Dependency governance gate (audit + lockfile stability)
+        run: node scripts/npm-audit-gate.mjs
+
+      - name: Verify Wails pin and untracked bindings
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/check-wails-pin.mjs
+          node --test scripts/wails-bindings.test.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+
+      - name: Build
+        run: ${{ matrix.build_cmd }}
+
+      - name: Verify packaged frontend asset boundary
+        run: node scripts/check-release-assets.mjs --check --require-dist
+
+      # MED-07 / G-SEC-08: Windows Authenticode signing. Missing credentials
+      # fail verification unless the unsigned-release opt-out is explicit.
+      # When present, the certificate is decoded to a temporary file here.
+      - name: Code sign (Windows Authenticode)
+        if: matrix.os == 'windows-latest' && env.WINDOWS_CERT_PFX != ''
+        shell: pwsh
+        run: |
+          $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
+          $securePassword = $null
+          $importedCertificates = @()
+          $signingCertificate = $null
+          $thumbprint = $null
+          try {
+            [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
+            $securePassword = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+            $importedCertificates = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation "Cert:\CurrentUser\My" -Password $securePassword)
+            $signingCertificate = $importedCertificates | Where-Object { $_.HasPrivateKey } | Select-Object -First 1
+            if (-not $signingCertificate) { throw "No private-key certificate found in the imported PFX" }
+            $thumbprint = $signingCertificate.Thumbprint
+            # Locate signtool.exe from the installed Windows SDK.
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+            $windowsArtifacts = @(Get-ChildItem -Path bin -Filter "*koyori-ide*.exe" -File -Recurse -ErrorAction SilentlyContinue)
+            if ($windowsArtifacts.Count -ne 1) {
+              throw "Expected exactly one Koyori IDE Windows executable under bin; found $($windowsArtifacts.Count): $($windowsArtifacts.FullName -join ', ')"
+            }
+            foreach ($artifact in $windowsArtifacts) {
+              & $signtool.FullName sign /sha1 $thumbprint /s My /fd sha256 /td sha256 /tr http://timestamp.digicert.com $artifact.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $($artifact.FullName)" }
+              & $signtool.FullName verify /pa $artifact.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $($artifact.FullName)" }
+            }
+          } finally {
+            foreach ($certificate in @($importedCertificates)) {
+              if ($certificate -and $certificate.Thumbprint) {
+                Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              }
+            }
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
+            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+            $thumbprint = $null
+            $signingCertificate = $null
+            $importedCertificates = @()
+            $securePassword = $null
+          }
+
+      # MED-07 / G-SEC-08: macOS Developer ID signing + notarization. Missing
+      # credentials fail verification unless the unsigned-release opt-out is
+      # explicit. When present, the certificate is imported into a temporary
+      # keychain before signing and notarizing the .app bundle.
+      - name: Code sign & notarize (macOS)
+        if: matrix.os == 'macos-latest' && env.MACOS_CERT_P12 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="bin/koyori-ide.app"
+          if [ ! -d "$APP_PATH" ]; then
+            if [ "${REQUIRE_CODE_SIGN:-true}" = "false" ]; then
+              echo "::warning::REQUIRE_CODE_SIGN=false; skipping macOS signing because koyori-ide.app was not built."
+              exit 0
+            fi
+            echo "::error::koyori-ide.app not found; refusing to publish an unsigned macOS artifact."
+            exit 1
+          fi
+          p12_path="$RUNNER_TEMP/developer_id.p12"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$p12_path"
+          keychain="build-$RANDOM.keychain"
+          keychain_pw="$(openssl rand -hex 32)"
+          security create-keychain -p "$keychain_pw" "$keychain"
+          security default-keychain -s "$keychain"
+          security unlock-keychain -p "$keychain_pw" "$keychain"
+          security import "$p12_path" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain"
+          rm -f "$p12_path"
+          # Sign with hardened runtime (required for notarization).
+          codesign --force --deep --options runtime --sign "Developer ID Application" "$APP_PATH"
+          # Verify the signature.
+          codesign --verify --strict --verbose=2 "$APP_PATH"
+          # Submit for notarization and wait for Apple's verdict.
+          zip_path="$RUNNER_TEMP/koyori-ide-notarize.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$zip_path"
+          xcrun notarytool submit "$zip_path" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          # Staple the notarization ticket to the app bundle.
+          xcrun stapler staple "$APP_PATH"
+          # Clean up the temporary keychain.
+          security delete-keychain "$keychain"
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $windowsArtifacts = @(Get-ChildItem -Path bin -Filter "*koyori-ide*.exe" -File -Recurse -ErrorAction SilentlyContinue)
+          if ($windowsArtifacts.Count -ne 1) {
+            throw "Expected exactly one Koyori IDE Windows executable under bin; found $($windowsArtifacts.Count): $($windowsArtifacts.FullName -join ', ')"
+          }
+          Compress-Archive -LiteralPath $windowsArtifacts[0].FullName -DestinationPath "${{ matrix.artifact_name }}"
+
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts=()
+          for candidate in bin/koyori-ide*; do
+            if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+              artifacts+=("$candidate")
+            fi
+          done
+          if [ "${#artifacts[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Linux Koyori IDE executable; found ${#artifacts[@]}: ${artifacts[*]-}"
+            exit 1
+          fi
+          tar -czf "${{ matrix.artifact_name }}" -C bin "$(basename "${artifacts[0]}")"
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_bundles=()
+          for candidate in bin/koyori-ide*.app; do
+            if [ -d "$candidate" ]; then
+              app_bundles+=("$candidate")
+            fi
+          done
+          if [ "${#app_bundles[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one macOS Koyori IDE app bundle; found ${#app_bundles[@]}: ${app_bundles[*]-}"
+            exit 1
+          fi
+          ditto -c -k --keepParent "${app_bundles[0]}" "${{ matrix.artifact_name }}"
+
+      - name: Generate SHA256 checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.artifact_name }}" > "${{ matrix.artifact_name }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.artifact_name }}" > "${{ matrix.artifact_name }}.sha256"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}
+            ${{ matrix.artifact_name }}.sha256
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Verify notices and license inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s NOTICE
+          test -s docs/THIRD_PARTY_LICENSES.md
+          test -s docs/RELEASE_ASSET_LICENSES.md
+          node scripts/generate-license-inventory.mjs --full-check
+          node scripts/check-release-assets.mjs --check
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+
+      - name: Consolidate and verify platform artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          checksum_files=()
+          while IFS= read -r file; do
+            case "$file" in *$'\n'*) echo "::error::checksum filename contains newline: $file"; exit 1;; esac
+            checksum_files+=("$file")
+          done < <(find artifacts -type f -name '*.sha256' | sort)
+          if [ "${#checksum_files[@]}" -ne 4 ]; then
+            echo "::error::Expected four artifact checksum files, found ${#checksum_files[@]}"
+            exit 1
+          fi
+          for checksum in "${checksum_files[@]}"; do
+            (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
+          done
+          artifacts_to_release=()
+          while IFS= read -r file; do
+            case "$file" in *$'\n'*) echo "::error::artifact filename contains newline: $file"; exit 1;; esac
+            artifacts_to_release+=("$file")
+          done < <(find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) | sort)
+          if [ "${#artifacts_to_release[@]}" -ne 4 ]; then
+            echo "::error::Expected four platform artifacts, found ${#artifacts_to_release[@]}"
+            exit 1
+          fi
+          cp "${artifacts_to_release[@]}" release-assets/
+          cp NOTICE docs/THIRD_PARTY_LICENSES.md docs/RELEASE_ASSET_LICENSES.md release-assets/
+          # N-153: 将项目图标 icon.png 一并放入 release-assets，用户在
+          # GitHub Release 下载页可直接看到并下载图标文件。
+          if [ -f icon.png ]; then cp icon.png release-assets/icon.png; fi
+
+      - name: Extract changelog for this version
+        id: changelog
+        shell: bash
+        run: |
+          # Extract the changelog section matching the released version
+          # (e.g. tag v0.1.0 -> section "## [0.1.0]").
+          #
+          # GOAL-P0-05 execution point 6: there is deliberately no fallback to
+          # [Unreleased]. Publishing the in-progress section as if it described
+          # the tagged release attributes unshipped work to a version users can
+          # download, so a missing section fails the job instead.
+          python3 - <<'PY'
+          import os, re, pathlib, sys
+          md = pathlib.Path("docs/CHANGELOG.md").read_text(encoding="utf-8")
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          version = tag.lstrip("v") if tag else ""
+          if not version:
+              print("::error::GITHUB_REF_NAME is empty; cannot resolve the release version.")
+              sys.exit(1)
+          m = re.search(rf"## \[{re.escape(version)}\](.*?)(?=\n## \[|\Z)", md, re.S)
+          if not m:
+              print(f"::error::docs/CHANGELOG.md has no '## [{version}]' section. "
+                    f"Add the section for this release; the [Unreleased] section "
+                    f"is not a substitute.")
+              sys.exit(1)
+          body = m.group(1).strip()
+          if not body:
+              print(f"::error::docs/CHANGELOG.md section '## [{version}]' is empty.")
+              sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"body<<EOF\n{body}\nEOF\n")
+          PY
+
+      - name: Generate mandatory SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts=()
+          for candidate in release-assets/*; do
+            [ -f "$candidate" ] || continue
+            case "$candidate" in
+              *.zip|*.tar.gz) artifacts+=("$candidate") ;;
+            esac
+          done
+          IFS=$'\n' artifacts=($(printf '%s\n' "${artifacts[@]}" | sort))
+          if [ "${#artifacts[@]}" -ne 4 ]; then
+            echo "::error::Expected four final platform artifacts for per-artifact SBOMs, found ${#artifacts[@]}"
+            exit 1
+          fi
+          for artifact in "${artifacts[@]}"; do
+            base="$(basename "$artifact")"
+            sbom="release-assets/${base}.sbom.spdx.json"
+            bash scripts/generate-sbom.sh "$sbom" "$artifact"
+            test -s "$sbom"
+            node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$sbom"
+            node scripts/check-sbom-artifact.mjs "$artifact" "$sbom"
+          done
+
+      - name: Generate unsigned provenance statement
+        shell: bash
+        run: |
+          set -euo pipefail
+          subjects=()
+          for candidate in release-assets/*; do
+            [ -f "$candidate" ] || continue
+            case "$(basename "$candidate")" in provenance.intoto.jsonl|SHA256SUMS) continue;; esac
+            subjects+=("$candidate")
+          done
+          if [ "${#subjects[@]}" -eq 0 ]; then
+            echo "::error::No release subjects found for provenance"
+            exit 1
+          fi
+          node scripts/generate-release-provenance.mjs release-assets/provenance.intoto.jsonl "${subjects[@]}"
+          test -s release-assets/provenance.intoto.jsonl
+
+      - name: Finalize release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          assets=()
+          for candidate in ./*; do
+            [ -f "$candidate" ] || continue
+            case "$(basename "$candidate")" in SHA256SUMS) continue;; esac
+            assets+=("$(basename "$candidate")")
+          done
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::No release assets found"
+            exit 1
+          fi
+          sha256sum "${assets[@]}" > SHA256SUMS
+          test -s SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            release-assets/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

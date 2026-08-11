@@ -1,0 +1,1744 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────
+   koyori-ide — Apple Design Language
+   源自 DESIGN.md：SF Pro + Action Blue + 单一阴影系统
+   以内容为中心、UI 退场的设计哲学
+   ─────────────────────────────────────────────────────────
+
+   P1-9 语义色跨设计语言约定（避免后续漂移）：
+     • 暗色模式（[data-mode="dark"]）下，--color-error / --color-warning
+       / --color-success 跨设计语言一致（Apple 与 Claude 共用同一组暗色
+       语义色），因为暗色背景下视觉对比需求相同。
+     • 亮色模式（[data-mode="light"] 或默认）下，--color-error 等按设计
+       语言区分：Apple 用饱和度更高的中性红/黄/绿，Claude 用暖化的
+       珊瑚红/琥珀黄/苔藓绿，与各自画布色温协调。
+     • 新增语义色或调整值时，必须同步审视两套设计语言的对应 token，
+       并在明暗两种模式下检查对比度。
+   ───────────────────────────────────────────────────────── */
+
+@theme {
+  /* ── 单一品牌色：Action Blue（DESIGN.md colors.primary）── */
+  --color-primary: #0066cc;
+  --color-primary-focus: #0071e3;
+  --color-primary-on-dark: #2997ff;
+  --color-on-primary: #ffffff;
+
+  /* ── 语义色（保留功能性，但去强调）── */
+  --color-error: #d9505a;
+  --color-error-container: rgba(217, 80, 90, 0.08);
+  --color-warning: #b07a00;
+  --color-warning-container: rgba(176, 122, 0, 0.08);
+  --color-success: #1f7a3d;
+  --color-success-container: rgba(31, 122, 61, 0.08);
+
+  /* ── Apple 表面层级（DESIGN.md colors）── */
+  /* 亮色画布 */
+  --color-canvas: #ffffff;
+  --color-canvas-parchment: #f5f5f7;
+  --color-surface-pearl: #fafafc;
+  --color-surface-black: #000000;
+  /* 暗色 tile 微步层级 */
+  --color-surface-tile-1: #272729;
+  --color-surface-tile-2: #2a2a2c;
+  --color-surface-tile-3: #252527;
+  --color-surface-chip-translucent: #d2d2d7;
+
+  /* ── App chrome 表面 ── */
+  --color-bg-base: #ffffff;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-bg-overlay: #ffffff;
+  --color-bg-surface-container: #f5f5f7;
+  --color-bg-surface-container-low: #fafafc;
+  --color-bg-surface-container-high: #f0f0f0;
+  --color-bg-surface-container-highest: #e0e0e0;
+
+  /* ── 文本 ──
+     P0-5 命名收敛：保留 --color-text-primary（内容区主文本）与
+     --chrome-text-primary（窗口 chrome 文本，定义在下方 :root）两个语义。
+     --color-ink / --color-on-background / --color-on-surface 为 deprecated
+     旧名，仅为向后兼容保留，新增代码禁止使用。 */
+  --color-ink: #1d1d1f;                       /* @deprecated use --color-text-primary */
+  --color-body: #1d1d1f;                      /* @deprecated use --color-text-primary */
+  --color-body-on-dark: #ffffff;              /* @deprecated use --color-on-dark */
+  --color-body-muted: #cccccc;                /* @deprecated use --color-text-disabled */
+  --color-ink-muted-80: #333333;              /* @deprecated use --color-text-secondary */
+  --color-ink-muted-48: #7a7a7a;              /* @deprecated use --color-text-tertiary */
+  --color-on-dark: #ffffff;
+
+  --color-text-primary: #1d1d1f;
+  --color-text-secondary: #333333;
+  --color-text-tertiary: #7a7a7a;
+  --color-text-disabled: #b0b0b0;
+  --color-on-background: #1d1d1f;             /* @deprecated use --color-text-primary */
+  --color-on-surface: #1d1d1f;                /* @deprecated use --color-text-primary */
+  --color-on-surface-variant: #333333;        /* @deprecated use --color-text-secondary */
+
+  /* ── 发丝级分割线（DESIGN.md hairline）── */
+  --color-divider-soft: #f0f0f0;
+  --color-hairline: #e0e0e0;
+  --color-border-subtle: rgba(0, 0, 0, 0.04);
+  --color-border-default: rgba(0, 0, 0, 0.08);
+  --color-border-strong: rgba(0, 0, 0, 0.12);
+  --color-outline: rgba(0, 0, 0, 0.10);
+  --color-outline-variant: rgba(0, 0, 0, 0.06);
+
+  /* ── 滚动条 ── */
+  --color-scrollbar: rgba(0, 0, 0, 0.06);
+  --color-scrollbar-hover: rgba(0, 0, 0, 0.14);
+
+  /* ── Apple 单一阴影系统 ──
+     仅用于"产品图像悬浮于表面"的场景；UI chrome 永不使用阴影 */
+  --shadow-product: rgba(0, 0, 0, 0.22) 3px 5px 30px 0;
+  /* 卡片极弱阴影（用于浮动面板，不破坏单阴影哲学过多）*/
+  --shadow-floating: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+
+  /* ── 字体（SF Pro → system-ui → Inter 兜底）── */
+  --font-sans: "SF Pro Text", "Inter", -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
+  --font-display: "SF Pro Display", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+
+  /* ── 圆角（DESIGN.md rounded）── */
+  --radius-none: 0px;
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 18px;
+  --radius-pill: 9999px;
+  --radius-full: 9999px;
+
+  /* ── 间距（DESIGN.md spacing，8px 基础）── */
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 17px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 48px;
+  --space-section: 80px;
+
+  /* ── 动效（Apple 风格缓动）── */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+
+  --transition-fast: 150ms var(--ease-standard);
+  --transition-normal: 250ms var(--ease-standard);
+  --transition-slow: 400ms var(--ease-decelerate);
+
+  /* ── 设置面板控件宽度（消除内联 style="width: Npx"）── */
+  --setting-control-width-sm: 180px;
+  --setting-control-width: 320px;
+  --setting-control-width-md: 240px;
+  --setting-control-width-lg: 480px;
+
+  /* ── 微交互反馈（按压/悬停缩放）── */
+  --micro-scale-press: 0.97;
+  --micro-scale-tile: 0.98;
+
+  /* ── 通用过渡（组件内无过渡时长时使用）── */
+  --duration-micro: 100ms;
+}
+
+/* ─────────────────────────────────────────────────────────
+   Chrome 变量（独立于 @theme，确保源序可控）
+   这些变量随 [data-mode] 和 [data-design-language] 翻转，
+   必须在 @theme 之外，以便后续覆盖块能按源序生效。
+   ───────────────────────────────────────────────────────── */
+:root {
+  /* Apple 亮色 chrome 默认值
+     P1-10: titlebar / statusbar 用 #ededf0（略深一档），形成 Apple HIG
+     风格的层次；sidebar / activitybar 保持 #f5f5f7。 */
+  --color-sidebar-bg: #f5f5f7;
+  --color-sidebar-hover: #ececf0;
+  --color-sidebar-active: #e0e0e4;
+  --color-titlebar-bg: #ededf0;
+  --color-activitybar-bg: #f5f5f7;
+  --color-terminal-bg: #f6f8fa;
+  --color-statusbar-bg: #ededf0;
+
+  /* Chrome 文本色：亮色模式 = 深色文本 */
+  --chrome-text-primary: #1d1d1f;
+  --chrome-text-secondary: rgba(29, 29, 31, 0.65);
+  --chrome-text-muted: rgba(29, 29, 31, 0.40);
+  --chrome-text-active: #0066cc;
+  --chrome-hover-bg: rgba(0, 0, 0, 0.05);
+  --chrome-active-bg: rgba(0, 0, 0, 0.08);
+  --chrome-border: rgba(0, 0, 0, 0.08);
+}
+
+/* ─────────────────────────────────────────────────────────
+   暗色模式覆盖（DESIGN.md product-tile-dark 系列）
+   Apple 的暗色不是颜色反转，而是切换到 surface-tile 层级
+   ───────────────────────────────────────────────────────── */
+
+[data-mode="dark"] {
+  --color-bg-base: #1d1d1f;
+  --color-bg-surface: #272729;
+  --color-bg-elevated: #2a2a2c;
+  --color-bg-overlay: #2a2a2c;
+  --color-bg-surface-container: #252527;
+  --color-bg-surface-container-low: #1d1d1f;
+  --color-bg-surface-container-high: #2a2a2c;
+  --color-bg-surface-container-highest: #333335;
+
+  --color-sidebar-bg: #1d1d1f;
+  --color-sidebar-hover: #2a2a2c;
+  --color-sidebar-active: #333335;
+  --color-titlebar-bg: #1d1d1f;
+  --color-activitybar-bg: #1d1d1f;
+  --color-terminal-bg: #000000;
+  --color-statusbar-bg: #1d1d1f;
+
+  /* 暗色模式 chrome 文本：浅色文本 */
+  --chrome-text-primary: #ffffff;
+  --chrome-text-secondary: rgba(255, 255, 255, 0.70);
+  --chrome-text-muted: rgba(255, 255, 255, 0.40);
+  --chrome-text-active: #2997ff;
+  --chrome-hover-bg: rgba(255, 255, 255, 0.08);
+  --chrome-active-bg: rgba(255, 255, 255, 0.12);
+  --chrome-border: rgba(255, 255, 255, 0.10);
+
+  --color-canvas: #1d1d1f;
+  --color-canvas-parchment: #252527;
+  --color-surface-pearl: #2a2a2c;
+
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #cccccc;
+  --color-text-tertiary: #8e8e93;
+  --color-text-disabled: #4a4a4c;
+  --color-on-background: #ffffff;             /* @deprecated use --color-text-primary */
+  --color-on-surface: #ffffff;                /* @deprecated use --color-text-primary */
+  --color-on-surface-variant: #cccccc;        /* @deprecated use --color-text-secondary */
+
+  --color-ink: #ffffff;                       /* @deprecated use --color-text-primary */
+  --color-body: #ffffff;                      /* @deprecated use --color-text-primary */
+  --color-ink-muted-80: #e0e0e0;              /* @deprecated use --color-text-secondary */
+  --color-ink-muted-48: #8e8e93;              /* @deprecated use --color-text-tertiary */
+
+  --color-divider-soft: rgba(255, 255, 255, 0.08);
+  --color-hairline: rgba(255, 255, 255, 0.12);
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.10);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+  --color-outline: rgba(255, 255, 255, 0.12);
+  --color-outline-variant: rgba(255, 255, 255, 0.08);
+
+  --color-scrollbar: rgba(255, 255, 255, 0.08);
+  --color-scrollbar-hover: rgba(255, 255, 255, 0.18);
+
+  --color-error: #ff6b6b;
+  --color-error-container: rgba(255, 107, 107, 0.12);
+  --color-warning: #ffd166;
+  --color-warning-container: rgba(255, 209, 102, 0.12);
+  --color-success: #4ade80;
+  --color-success-container: rgba(74, 222, 128, 0.12);
+}
+
+/* ─────────────────────────────────────────────────────────
+   基础重置与全局样式
+   ───────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-family: var(--font-sans);
+  color-scheme: light dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Apple 标准：17px body 字号。font-size 由 --font-base-size × --font-scale
+     组合得到，前者由设计语言覆盖，后者由用户字号缩放覆盖。 */
+  font-size: calc(var(--font-base-size, 17px) * var(--font-scale, 1));
+  /* Apple body 行高 1.47 */
+  line-height: 1.47;
+  letter-spacing: -0.374px;
+  background: var(--color-bg-base);
+  color: var(--color-on-background);
+}
+
+[data-mode="dark"] {
+  color-scheme: dark;
+}
+
+[data-mode="light"] {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  background: var(--color-bg-base);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+#app {
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* ─────────────────────────────────────────────────────────
+   排版工具类（DESIGN.md typography）
+   ───────────────────────────────────────────────────────── */
+
+h1, h2, h3, h4, h5, h6 {
+  text-wrap: balance;
+  font-family: var(--font-display);
+  font-weight: 600;
+  /* Apple tight：display 尺寸使用负字距 */
+  letter-spacing: -0.016em;
+}
+
+/* hero-display：56px / 600 / 1.07 / -0.28px */
+.text-hero {
+  font-family: var(--font-display);
+  font-size: 56px;
+  font-weight: 600;
+  line-height: 1.07;
+  letter-spacing: -0.28px;
+}
+
+/* display-lg：40px / 600 / 1.10 / 0 */
+.text-display-lg {
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.10;
+  letter-spacing: 0;
+}
+
+/* display-md：34px / 600 / 1.47 / -0.374px */
+.text-display-md {
+  font-family: var(--font-display);
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.47;
+  letter-spacing: -0.374px;
+}
+
+/* lead：28px / 400 / 1.14 / 0.196px */
+.text-lead {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  line-height: 1.14;
+  letter-spacing: 0.196px;
+}
+
+/* tagline：21px / 600 / 1.19 / 0.231px */
+.text-tagline {
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.19;
+  letter-spacing: 0.231px;
+}
+
+/* body-strong：17px / 600 / 1.24 / -0.374px */
+.text-body-strong {
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.24;
+  letter-spacing: -0.374px;
+}
+
+/* caption：14px / 400 / 1.43 / -0.224px */
+.text-caption {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.43;
+  letter-spacing: -0.224px;
+}
+
+/* caption-strong：14px / 600 / 1.29 / -0.224px */
+.text-caption-strong {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.29;
+  letter-spacing: -0.224px;
+}
+
+/* nav-link：12px / 400 / 1.0 / -0.12px */
+.text-nav-link {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.0;
+  letter-spacing: -0.12px;
+}
+
+/* fine-print：12px / 400 / 1.0 / -0.12px */
+.text-fine-print {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.0;
+  letter-spacing: -0.12px;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─────────────────────────────────────────────────────────
+   P3-19: 空状态通用视觉语言
+   规范：48px 图标（--color-text-tertiary + opacity 0.5）+ 标题 + 描述 + 可选 CTA
+   布局：flex column center，gap 12px，padding 48px 24px
+   字号由 .text-body-strong / .text-caption 等工具类提供
+   ───────────────────────────────────────────────────────── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 48px 24px;
+  margin: auto;
+}
+
+.empty-state__icon {
+  color: var(--color-text-tertiary);
+  opacity: 0.5;
+}
+
+.empty-state__title {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.empty-state__desc {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  max-width: 480px;
+  line-height: 1.5;
+}
+
+/* ─────────────────────────────────────────────────────────
+   滚动条（极简 6px，Apple 风格）
+   ───────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar);
+  border-radius: var(--radius-full);
+  border: 1.5px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-hover);
+  border: 1px solid transparent;
+  background-clip: content-box;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar) transparent;
+}
+
+/* ─────────────────────────────────────────────────────────
+   选区（Action Blue 半透明）
+   ───────────────────────────────────────────────────────── */
+
+::selection {
+  background: rgba(0, 102, 204, 0.18);
+  color: var(--color-text-primary);
+}
+
+::-moz-selection {
+  background: rgba(0, 102, 204, 0.18);
+  color: var(--color-text-primary);
+}
+
+/* ─────────────────────────────────────────────────────────
+   焦点环（DESIGN.md：2px solid primary-focus）
+   ───────────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid var(--color-primary-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+  transition: outline-color var(--transition-fast), outline-offset var(--transition-fast);
+}
+
+/* ─────────────────────────────────────────────────────────
+   暗色/亮色 Element Plus 标记
+   ───────────────────────────────────────────────────────── */
+
+.dark {
+  color-scheme: dark;
+}
+
+.light {
+  color-scheme: light;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ─────────────────────────────────────────────────────────
+   Apple 微交互：scale(0.95) 按压反馈
+   应用于所有 .btn-apple 按钮
+   ───────────────────────────────────────────────────────── */
+
+.btn-apple {
+  transition: transform var(--duration-fast) var(--ease-standard),
+              background-color var(--duration-fast) var(--ease-standard);
+}
+
+.btn-apple:active {
+  transform: scale(0.95);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Vue Transitions（Apple 风格动效）
+   ───────────────────────────────────────────────────────── */
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--duration-normal) var(--ease-standard);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.view-enter-active,
+.view-leave-active {
+  transition: opacity var(--duration-normal) var(--ease-decelerate);
+}
+
+.view-enter-from,
+.view-leave-to {
+  opacity: 0;
+}
+
+.slide-left-enter-active {
+  transition: transform var(--duration-slow) var(--ease-decelerate),
+              opacity var(--duration-normal) var(--ease-standard);
+}
+
+.slide-left-leave-active {
+  transition: transform var(--duration-normal) var(--ease-accelerate),
+              opacity var(--duration-fast) var(--ease-accelerate);
+}
+
+.slide-left-enter-from {
+  transform: translateX(20px);
+  opacity: 0;
+}
+
+.slide-left-leave-to {
+  transform: translateX(-12px);
+  opacity: 0;
+}
+
+.slide-right-enter-active {
+  transition: transform var(--duration-slow) var(--ease-decelerate),
+              opacity var(--duration-normal) var(--ease-standard);
+}
+
+.slide-right-leave-active {
+  transition: transform var(--duration-normal) var(--ease-accelerate),
+              opacity var(--duration-fast) var(--ease-accelerate);
+}
+
+.slide-right-enter-from {
+  transform: translateX(-20px);
+  opacity: 0;
+}
+
+.slide-right-leave-to {
+  transform: translateX(12px);
+  opacity: 0;
+}
+
+.scale-fade-enter-active {
+  transition: transform var(--duration-slow) var(--ease-decelerate),
+              opacity var(--duration-normal) var(--ease-standard);
+}
+
+.scale-fade-leave-active {
+  transition: transform var(--duration-normal) var(--ease-accelerate),
+              opacity var(--duration-fast) var(--ease-accelerate);
+}
+
+.scale-fade-enter-from,
+.scale-fade-leave-to {
+  transform: scale(0.92);
+  opacity: 0;
+}
+
+.slide-chat-enter-active,
+.slide-chat-leave-active {
+  transition: transform var(--duration-slow) var(--ease-decelerate),
+              opacity var(--duration-normal) var(--ease-standard);
+}
+
+.slide-chat-enter-from,
+.slide-chat-leave-to {
+  transform: translateX(20px);
+  opacity: 0;
+}
+
+/* ─────────────────────────────────────────────────────────
+   减弱动效支持
+   ───────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   Element Plus 全局覆盖（Apple 对齐）
+   ───────────────────────────────────────────────────────── */
+
+:root {
+  --el-color-primary: #0066cc;
+  --el-color-primary-light-3: #3385d6;
+  --el-color-primary-light-5: #66a3e0;
+  --el-color-primary-light-7: #99c2eb;
+  --el-color-primary-light-9: #cce0f5;
+  --el-color-primary-dark-2: #0052a8;
+  --el-border-radius-base: 11px;
+  --el-border-radius-small: 8px;
+  --el-border-radius-round: 18px;
+  --el-font-family: var(--font-sans);
+  --el-bg-color: var(--color-bg-base);
+  --el-bg-color-overlay: var(--color-bg-overlay);
+  --el-bg-color-page: var(--color-bg-base);
+  --el-text-color-primary: var(--color-text-primary);
+  --el-text-color-regular: var(--color-text-secondary);
+  --el-text-color-secondary: var(--color-text-tertiary);
+  --el-border-color: var(--color-border-default);
+  --el-border-color-light: var(--color-border-subtle);
+  --el-fill-color: var(--color-bg-surface-container);
+  --el-fill-color-light: var(--color-bg-surface-container-low);
+  --el-fill-color-lighter: var(--color-bg-surface);
+  --el-fill-color-blank: var(--color-bg-base);
+  --el-fill-color-extra-light: var(--color-bg-surface-container-low);
+}
+
+[data-mode="dark"] {
+  --el-bg-color: #1d1d1f;
+  --el-bg-color-overlay: #2a2a2c;
+  --el-bg-color-page: #1d1d1f;
+  --el-text-color-primary: #ffffff;
+  --el-text-color-regular: #cccccc;
+  --el-text-color-secondary: #8e8e93;
+  --el-border-color: rgba(255, 255, 255, 0.10);
+  --el-border-color-light: rgba(255, 255, 255, 0.06);
+  --el-fill-color: #252527;
+  --el-fill-color-light: #1d1d1f;
+  --el-fill-color-lighter: #272729;
+  --el-fill-color-blank: #1d1d1f;
+  --el-fill-color-extra-light: #252527;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CLAUDE 设计语言主题覆盖
+   源自 DESIGN (1).md：Anthropic Claude warm-canvas editorial style
+   暖奶油画布 + 珊瑚色 CTA + 衬线展示字体 + 暖深色产品表面
+   通过 [data-design-language="claude"] 属性选择器激活
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+[data-design-language="claude"] {
+  /* ── 品牌色：Coral（Claude 的签名暖珊瑚）── */
+  --color-primary: #cc785c;
+  --color-primary-focus: #a9583e;
+  --color-primary-on-dark: #d4926f;
+  --color-on-primary: #ffffff;
+
+  /* ── 语义色（Claude warm variants）── */
+  --color-error: #c64545;
+  --color-error-container: rgba(198, 69, 69, 0.08);
+  --color-warning: #d4a017;
+  --color-warning-container: rgba(212, 160, 23, 0.08);
+  --color-success: #5db872;
+  --color-success-container: rgba(93, 184, 114, 0.08);
+
+  /* ── Claude 表面层级 ── */
+  --color-canvas: #faf9f5;
+  --color-canvas-parchment: #f5f0e8;
+  --color-surface-pearl: #efe9de;
+  --color-surface-black: #181715;
+  --color-surface-tile-1: #1f1e1b;
+  --color-surface-tile-2: #252320;
+  --color-surface-tile-3: #181715;
+  --color-surface-chip-translucent: #e8e0d2;
+
+  /* ── App chrome 表面（Claude 的亮色画布）── */
+  --color-bg-base: #faf9f5;
+  --color-bg-surface: #faf9f5;
+  --color-bg-elevated: #efe9de;
+  --color-bg-overlay: #faf9f5;
+  --color-bg-surface-container: #f5f0e8;
+  --color-bg-surface-container-low: #faf9f5;
+  --color-bg-surface-container-high: #efe9de;
+  --color-bg-surface-container-highest: #e8e0d2;
+
+  --color-sidebar-bg: #f5f0e8;
+  --color-sidebar-hover: #e8e0d2;
+  --color-sidebar-active: #dfd6c5;
+  /* Claude 浅色模式：chrome 用暖浅色（与 sidebar 同色调），避免突兀的深色 bar
+     P1-10: titlebar / statusbar 用 #efe9de（略深一档），与 sidebar #f5f0e8
+     形成层次；activitybar 保持 #f5f0e8。 */
+  --color-titlebar-bg: #efe9de;
+  --color-activitybar-bg: #f5f0e8;
+  --color-terminal-bg: #faf7f2;
+  --color-statusbar-bg: #efe9de;
+
+  /* Claude chrome 文本：暖浅色 bar 上用深色文本 + 珊瑚 active */
+  --chrome-text-primary: #181715;
+  --chrome-text-secondary: rgba(24, 23, 21, 0.65);
+  --chrome-text-muted: rgba(24, 23, 21, 0.40);
+  --chrome-text-active: #cc785c;
+  --chrome-hover-bg: rgba(24, 23, 21, 0.05);
+  --chrome-active-bg: rgba(204, 120, 92, 0.14);
+  --chrome-border: rgba(24, 23, 21, 0.08);
+
+  /* ── 文本（Claude warm ink）──
+     P0-5: --color-ink / --color-on-background / --color-on-surface 等
+     为 deprecated 旧名，保留向后兼容，新增代码请使用 --color-text-* 系列。 */
+  --color-ink: #141413;                       /* @deprecated use --color-text-primary */
+  --color-body: #3d3d3a;                      /* @deprecated use --color-text-secondary */
+  --color-body-on-dark: #faf9f5;              /* @deprecated use --color-on-dark */
+  --color-body-muted: #a09d96;                /* @deprecated use --color-text-disabled */
+  --color-ink-muted-80: #252523;              /* @deprecated use --color-text-secondary */
+  --color-ink-muted-48: #6c6a64;              /* @deprecated use --color-text-tertiary */
+  --color-on-dark: #faf9f5;
+
+  --color-text-primary: #141413;
+  --color-text-secondary: #3d3d3a;
+  --color-text-tertiary: #6c6a64;
+  --color-text-disabled: #8e8b82;
+  --color-on-background: #141413;             /* @deprecated use --color-text-primary */
+  --color-on-surface: #141413;                /* @deprecated use --color-text-primary */
+  --color-on-surface-variant: #3d3d3a;        /* @deprecated use --color-text-secondary */
+
+  /* ── 发丝级分割线（Claude hairline 暖色）── */
+  --color-divider-soft: #ebe6df;
+  --color-hairline: #e6dfd8;
+  --color-border-subtle: #ebe6df;
+  --color-border-default: #e6dfd8;
+  --color-border-strong: #d4ccc0;
+  --color-outline: #e6dfd8;
+  --color-outline-variant: #ebe6df;
+
+  --color-scrollbar: rgba(20, 20, 19, 0.06);
+  --color-scrollbar-hover: rgba(20, 20, 19, 0.14);
+
+  /* ── 字体（Copernicus 衬线 → Tiempos Headline → EB Garamond 兜底；
+     StyreneB → Inter 兜底）── */
+  --font-sans: "StyreneB", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: "Tiempos Headline", "Cormorant Garamond", "EB Garamond", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  /* ── 圆角（Claude 体系：8px 按钮/输入，12px 卡片，16px hero）── */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 9999px;
+  --radius-full: 9999px;
+
+  /* ── 间距（4px 基础，section 96px）── */
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 48px;
+  --space-section: 96px;
+
+  /* ── Claude 阴影：极弱，色块对比优先 ── */
+  --shadow-product: 0 1px 3px rgba(20, 20, 19, 0.08), 0 1px 2px rgba(20, 20, 19, 0.04);
+  /* P3-23: --shadow-floating 改为更弱，恢复与 --shadow-product 的语义区分 */
+  --shadow-floating: 0 1px 2px rgba(20, 20, 19, 0.04);
+}
+
+/* Claude 主题 — 暗色模式覆盖（暖深色 surface-dark 系列） */
+[data-design-language="claude"][data-mode="dark"] {
+  --color-bg-base: #181715;
+  --color-bg-surface: #1f1e1b;
+  --color-bg-elevated: #252320;
+  --color-bg-overlay: #252320;
+  --color-bg-surface-container: #1f1e1b;
+  --color-bg-surface-container-low: #181715;
+  --color-bg-surface-container-high: #252320;
+  --color-bg-surface-container-highest: #2a2925;
+
+  --color-sidebar-bg: #1f1e1b;
+  --color-sidebar-hover: #252320;
+  --color-sidebar-active: #2a2925;
+  --color-titlebar-bg: #181715;
+  --color-activitybar-bg: #181715;
+  --color-terminal-bg: #000000;
+  --color-statusbar-bg: #181715;
+
+  /* Claude 暗色模式 chrome 文本：暖深色 bar 上用浅色文本 + 浅珊瑚 active */
+  --chrome-text-primary: #faf9f5;
+  --chrome-text-secondary: rgba(250, 249, 245, 0.70);
+  --chrome-text-muted: rgba(250, 249, 245, 0.42);
+  --chrome-text-active: #d4926f;
+  --chrome-hover-bg: rgba(250, 249, 245, 0.08);
+  --chrome-active-bg: rgba(212, 146, 111, 0.18);
+  --chrome-border: rgba(250, 249, 245, 0.10);
+
+  --color-canvas: #181715;
+  --color-canvas-parchment: #1f1e1b;
+  --color-surface-pearl: #252320;
+
+  --color-text-primary: #faf9f5;
+  --color-text-secondary: #a09d96;
+  --color-text-tertiary: #8e8b82;
+  --color-text-disabled: #4a4844;
+  --color-on-background: #faf9f5;             /* @deprecated use --color-text-primary */
+  --color-on-surface: #faf9f5;                /* @deprecated use --color-text-primary */
+  --color-on-surface-variant: #a09d96;        /* @deprecated use --color-text-secondary */
+
+  --color-ink: #faf9f5;                       /* @deprecated use --color-text-primary */
+  --color-body: #a09d96;                      /* @deprecated use --color-text-secondary */
+  --color-ink-muted-80: #d4d1c8;              /* @deprecated use --color-text-secondary */
+  --color-ink-muted-48: #8e8b82;              /* @deprecated use --color-text-tertiary */
+
+  --color-divider-soft: rgba(250, 249, 245, 0.06);
+  --color-hairline: rgba(250, 249, 245, 0.10);
+  --color-border-subtle: rgba(250, 249, 245, 0.06);
+  --color-border-default: rgba(250, 249, 245, 0.10);
+  --color-border-strong: rgba(250, 249, 245, 0.16);
+  --color-outline: rgba(250, 249, 245, 0.12);
+  --color-outline-variant: rgba(250, 249, 245, 0.08);
+
+  --color-scrollbar: rgba(250, 249, 245, 0.08);
+  --color-scrollbar-hover: rgba(250, 249, 245, 0.18);
+
+  --color-error: #ff6b6b;
+  --color-error-container: rgba(255, 107, 107, 0.12);
+  --color-warning: #ffd166;
+  --color-warning-container: rgba(255, 209, 102, 0.12);
+  --color-success: #5db872;
+  --color-success-container: rgba(93, 184, 114, 0.12);
+}
+
+/* Claude 主题 — Element Plus 变量覆盖 */
+[data-design-language="claude"] {
+  --el-color-primary: #cc785c;
+  --el-color-primary-light-3: #d68c72;
+  --el-color-primary-light-5: #dfa590;
+  --el-color-primary-light-7: #e8bdae;
+  --el-color-primary-light-9: #f2d5c9;
+  --el-color-primary-dark-2: #a9583e;
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 12px;
+  --el-font-family: var(--font-sans);
+  --el-bg-color: #faf9f5;
+  --el-bg-color-overlay: #efe9de;
+  --el-bg-color-page: #faf9f5;
+  --el-text-color-primary: #141413;
+  --el-text-color-regular: #3d3d3a;
+  --el-text-color-secondary: #6c6a64;
+  --el-border-color: #e6dfd8;
+  --el-border-color-light: #ebe6df;
+  --el-fill-color: #f5f0e8;
+  --el-fill-color-light: #faf9f5;
+  --el-fill-color-lighter: #efe9de;
+  --el-fill-color-blank: #faf9f5;
+  --el-fill-color-extra-light: #f5f0e8;
+}
+
+[data-design-language="claude"][data-mode="dark"] {
+  --el-bg-color: #181715;
+  --el-bg-color-overlay: #252320;
+  --el-bg-color-page: #181715;
+  --el-text-color-primary: #faf9f5;
+  --el-text-color-regular: #a09d96;
+  --el-text-color-secondary: #8e8b82;
+  --el-border-color: rgba(250, 249, 245, 0.10);
+  --el-border-color-light: rgba(250, 249, 245, 0.06);
+  --el-fill-color: #1f1e1b;
+  --el-fill-color-light: #181715;
+  --el-fill-color-lighter: #252320;
+  --el-fill-color-blank: #181715;
+  --el-fill-color-extra-light: #1f1e1b;
+}
+
+/* Claude 主题 — 排版工具类覆盖
+   DISPLAY 用衬线字体（Tiempos Headline / Cormorant Garamond），
+   body 用 StyreneB / Inter */
+[data-design-language="claude"] .text-hero {
+  font-family: var(--font-display);
+  font-size: 64px;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -1.5px;
+}
+
+[data-design-language="claude"] .text-display-lg {
+  font-family: var(--font-display);
+  font-size: 48px;
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -1px;
+}
+
+[data-design-language="claude"] .text-display-md {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 400;
+  line-height: 1.15;
+  letter-spacing: -0.5px;
+}
+
+[data-design-language="claude"] .text-lead {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: -0.3px;
+}
+
+[data-design-language="claude"] .text-tagline {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+[data-design-language="claude"] .text-body-strong {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.55;
+  letter-spacing: 0;
+}
+
+[data-design-language="claude"] .text-caption {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+[data-design-language="claude"] .text-caption-strong {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+[data-design-language="claude"] .text-nav-link {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+[data-design-language="claude"] .text-fine-print {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+/* Claude 主题 — 全局排版（body 16px / 1.55 / serif display headings）。
+   注意：data-design-language 设置在 <html> 上，因此用 html[...] 选择器，
+   且只覆盖 --font-base-size，让 --font-scale 仍由用户缩放控制。 */
+html[data-design-language="claude"] {
+  --font-base-size: 16px;
+  line-height: 1.55;
+  letter-spacing: 0;
+}
+
+[data-design-language="claude"] h1,
+[data-design-language="claude"] h2,
+[data-design-language="claude"] h3,
+[data-design-language="claude"] h4,
+[data-design-language="claude"] h5,
+[data-design-language="claude"] h6 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.5px;
+}
+
+/* Claude 主题 — 选区用珊瑚色 */
+[data-design-language="claude"] ::selection {
+  background: rgba(204, 120, 92, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-design-language="claude"] ::-moz-selection {
+  background: rgba(204, 120, 92, 0.22);
+  color: var(--color-text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI 密度覆盖（data-density）
+   通过调整 --space-* 与 --radius-* 变量影响全局间距与圆角。
+   - compact:   间距 ×0.82, 圆角稍小
+   - comfortable: 默认（无覆盖）
+   - spacious:  间距 ×1.18, 圆角稍大
+   选择器用 html[data-density="..."] 以确保特异性高于 @theme 的 :root。
+   ═══════════════════════════════════════════════════════════════════════════ */
+html[data-density="compact"] {
+  --space-xxs: 3px;
+  --space-xs: 6px;
+  --space-sm: 10px;
+  --space-md: 14px;
+  --space-lg: 20px;
+  --space-xl: 26px;
+  --space-xxl: 40px;
+  --space-section: 64px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 14px;
+}
+
+html[data-density="spacious"] {
+  --space-xxs: 5px;
+  --space-xs: 10px;
+  --space-sm: 14px;
+  --space-md: 20px;
+  --space-lg: 28px;
+  --space-xl: 38px;
+  --space-xxl: 56px;
+  --space-section: 96px;
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 13px;
+  --radius-lg: 22px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   强调色覆盖（data-theme）
+   applyAccentTheme() 设置 data-theme="<accent>" 属性，这里为每个内置 accent
+   覆盖 --color-primary / --color-primary-focus / --el-color-primary 等变量。
+   放在所有设计语言块之后，确保用户选择的强调色优先于设计语言默认主色。
+   token 派生规则与 themeEditor.ts 的 deriveAccentTokens 保持一致：
+     primary = base color
+     primary-hover = base + ee (≈93% alpha)
+     primary-light = base + 30 (≈19% alpha)
+     primary-container = base + 20 (≈13% alpha)
+   ═══════════════════════════════════════════════════════════════════════════ */
+[data-theme="blue"] {
+  --color-primary: #4285f4;
+  --color-primary-focus: #4285f4;
+  --color-primary-hover: #4285f4ee;
+  --color-primary-light: #4285f430;
+  --color-primary-container: #4285f420;
+  --el-color-primary: #4285f4;
+  --el-color-primary-light-3: #6b9ff7;
+  --el-color-primary-light-5: #a0c2f9;
+  --el-color-primary-light-7: #c5d9fb;
+  --el-color-primary-light-9: #e9eefc;
+  --el-color-primary-dark-2: #356ad3;
+}
+
+/* P1-6: 选区色随 [data-theme] 强调色联动 */
+[data-theme="blue"] ::selection {
+  background: rgba(66, 133, 244, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="blue"] ::-moz-selection {
+  background: rgba(66, 133, 244, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-theme="teal"] {
+  --color-primary: #26a69a;
+  --color-primary-focus: #26a69a;
+  --color-primary-hover: #26a69aee;
+  --color-primary-light: #26a69a30;
+  --color-primary-container: #26a69a20;
+  --el-color-primary: #26a69a;
+  --el-color-primary-light-3: #5bbdb3;
+  --el-color-primary-light-5: #90d3cc;
+  --el-color-primary-light-7: #bbe6e1;
+  --el-color-primary-light-9: #e0f3f1;
+  --el-color-primary-dark-2: #1f8c82;
+}
+
+[data-theme="teal"] ::selection {
+  background: rgba(38, 166, 154, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="teal"] ::-moz-selection {
+  background: rgba(38, 166, 154, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-theme="green"] {
+  --color-primary: #66bb6a;
+  --color-primary-focus: #66bb6a;
+  --color-primary-hover: #66bb6aee;
+  --color-primary-light: #66bb6a30;
+  --color-primary-container: #66bb6a20;
+  --el-color-primary: #66bb6a;
+  --el-color-primary-light-3: #88c98c;
+  --el-color-primary-light-5: #b0dcb3;
+  --el-color-primary-light-7: #d0e9d2;
+  --el-color-primary-light-9: #ecf6ed;
+  --el-color-primary-dark-2: #549c58;
+}
+
+[data-theme="green"] ::selection {
+  background: rgba(102, 187, 106, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="green"] ::-moz-selection {
+  background: rgba(102, 187, 106, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-theme="amber"] {
+  --color-primary: #ffa726;
+  --color-primary-focus: #ffa726;
+  --color-primary-hover: #ffa726ee;
+  --color-primary-light: #ffa72630;
+  --color-primary-container: #ffa72620;
+  --el-color-primary: #ffa726;
+  --el-color-primary-light-3: #ffba55;
+  --el-color-primary-light-5: #ffd088;
+  --el-color-primary-light-7: #ffdfb0;
+  --el-color-primary-light-9: #fff2e0;
+  --el-color-primary-dark-2: #d88a1f;
+}
+
+[data-theme="amber"] ::selection {
+  background: rgba(255, 167, 38, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="amber"] ::-moz-selection {
+  background: rgba(255, 167, 38, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-theme="pink"] {
+  --color-primary: #ec407a;
+  --color-primary-focus: #ec407a;
+  --color-primary-hover: #ec407aee;
+  --color-primary-light: #ec407a30;
+  --color-primary-container: #ec407a20;
+  --el-color-primary: #ec407a;
+  --el-color-primary-light-3: #f06b98;
+  --el-color-primary-light-5: #f5a0b9;
+  --el-color-primary-light-7: #f9c4d3;
+  --el-color-primary-light-9: #fce8ef;
+  --el-color-primary-dark-2: #c93565;
+}
+
+[data-theme="pink"] ::selection {
+  background: rgba(236, 64, 122, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="pink"] ::-moz-selection {
+  background: rgba(236, 64, 122, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-theme="purple"] {
+  --color-primary: #ab47bc;
+  --color-primary-focus: #ab47bc;
+  --color-primary-hover: #ab47bcee;
+  --color-primary-light: #ab47bc30;
+  --color-primary-container: #ab47bc20;
+  --el-color-primary: #ab47bc;
+  --el-color-primary-light-3: #bd75c9;
+  --el-color-primary-light-5: #d0a3d6;
+  --el-color-primary-light-7: #e0c4e6;
+  --el-color-primary-light-9: #f3e8f6;
+  --el-color-primary-dark-2: #8f3aa0;
+}
+
+[data-theme="purple"] ::selection {
+  background: rgba(171, 71, 188, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="purple"] ::-moz-selection {
+  background: rgba(171, 71, 188, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-theme="cyan"] {
+  --color-primary: #26c6da;
+  --color-primary-focus: #26c6da;
+  --color-primary-hover: #26c6daee;
+  --color-primary-light: #26c6da30;
+  --color-primary-container: #26c6da20;
+  --el-color-primary: #26c6da;
+  --el-color-primary-light-3: #58d3e3;
+  --el-color-primary-light-5: #90dfeb;
+  --el-color-primary-light-7: #bbeaf1;
+  --el-color-primary-light-9: #e0f5f8;
+  --el-color-primary-dark-2: #1fa7b9;
+}
+
+[data-theme="cyan"] ::selection {
+  background: rgba(38, 198, 218, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="cyan"] ::-moz-selection {
+  background: rgba(38, 198, 218, 0.22);
+  color: var(--color-text-primary);
+}
+
+[data-theme="indigo"] {
+  --color-primary: #5c6bc0;
+  --color-primary-focus: #5c6bc0;
+  --color-primary-hover: #5c6bc0ee;
+  --color-primary-light: #5c6bc030;
+  --color-primary-container: #5c6bc020;
+  --el-color-primary: #5c6bc0;
+  --el-color-primary-light-3: #7d8acd;
+  --el-color-primary-light-5: #a5b0db;
+  --el-color-primary-light-7: #c5cce8;
+  --el-color-primary-light-9: #eaecf6;
+  --el-color-primary-dark-2: #4d5aa3;
+}
+
+[data-theme="indigo"] ::selection {
+  background: rgba(92, 107, 192, 0.22);
+  color: var(--color-text-primary);
+}
+[data-theme="indigo"] ::-moz-selection {
+  background: rgba(92, 107, 192, 0.22);
+  color: var(--color-text-primary);
+}
+
+/* ─────────────────────────────────────────────────────────
+   highlight.js 代码高亮主题（深化版）
+   适配 Apple / Claude 设计语言的深色与浅色模式。
+   色板灵感来自 VS Code Dark+/Light+，高对比度、高辨识度。
+   ───────────────────────────────────────────────────────── */
+
+:root {
+  /* 浅色模式：高饱和度色板，在浅灰背景上清晰突出 */
+  --hljs-bg: #f6f8fa;
+  --hljs-text: #1f2328;
+  --hljs-keyword: #0000ff;          /* 纯蓝：关键字 */
+  --hljs-control: #af00db;          /* 紫：控制流关键字 (if/return/for) */
+  --hljs-string: #a31515;           /* 深红：字符串 */
+  --hljs-comment: #008000;          /* 绿：注释 */
+  --hljs-number: #098658;           /* 深绿：数字 */
+  --hljs-function: #795e26;         /* 棕：函数名 */
+  --hljs-title: #795e26;
+  --hljs-built-in: #001080;         /* 深蓝：内置对象 */
+  --hljs-type: #267f99;             /* 青：类型 */
+  --hljs-class: #267f99;            /* 青：类名 */
+  --hljs-attr: #001080;             /* 深蓝：属性 */
+  --hljs-variable: #001080;         /* 深蓝：变量 */
+  --hljs-constant: #0070c1;         /* 蓝：常量 */
+  --hljs-tag: #800000;              /* 深红：HTML 标签 */
+  --hljs-name: #800000;
+  --hljs-literal: #0000ff;          /* 蓝：字面量 */
+  --hljs-regexp: #811f3f;           /* 深红：正则 */
+  --hljs-meta: #008000;             /* 绿：元信息 */
+  --hljs-deletion: #82071e;
+  --hljs-addition: #116329;
+  --hljs-symbol: #001080;
+  --hljs-section: #001080;
+  --hljs-bullet: #098658;
+  --hljs-emphasis: #1f2328;
+  --hljs-strong: #1f2328;
+  --hljs-operator: #000000;         /* 黑：运算符 */
+  --hljs-punctuation: #1f2328;      /* 深灰：标点 */
+}
+
+[data-mode="dark"] {
+  /* 深色模式：霓虹高饱和色板，在深灰背景上鲜明醒目 */
+  --hljs-bg: #1e1e1e;
+  --hljs-text: #d4d4d4;
+  --hljs-keyword: #569cd6;          /* 亮蓝：关键字 */
+  --hljs-control: #c586c0;          /* 粉紫：控制流关键字 */
+  --hljs-string: #ce9178;           /* 橙棕：字符串 */
+  --hljs-comment: #6a9955;          /* 绿：注释 */
+  --hljs-number: #b5cea8;           /* 浅绿：数字 */
+  --hljs-function: #dcdcaa;         /* 浅黄：函数名 */
+  --hljs-title: #dcdcaa;
+  --hljs-built-in: #4fc1ff;         /* 亮青：内置对象 */
+  --hljs-type: #4ec9b0;             /* 青绿：类型 */
+  --hljs-class: #4ec9b0;            /* 青绿：类名 */
+  --hljs-attr: #9cdcfe;             /* 浅蓝：属性 */
+  --hljs-variable: #9cdcfe;         /* 浅蓝：变量 */
+  --hljs-constant: #4fc1ff;         /* 亮青：常量 */
+  --hljs-tag: #569cd6;              /* 亮蓝：HTML 标签 */
+  --hljs-name: #569cd6;
+  --hljs-literal: #569cd6;          /* 亮蓝：字面量 */
+  --hljs-regexp: #d16969;           /* 红：正则 */
+  --hljs-meta: #6a9955;             /* 绿：元信息 */
+  --hljs-deletion: #f48771;
+  --hljs-addition: #89d185;
+  --hljs-symbol: #4fc1ff;
+  --hljs-section: #4fc1ff;
+  --hljs-bullet: #b5cea8;
+  --hljs-emphasis: #d4d4d4;
+  --hljs-strong: #ffffff;
+  --hljs-operator: #d4d4d4;         /* 浅灰：运算符 */
+  --hljs-punctuation: #d4d4d4;      /* 浅灰：标点 */
+}
+
+.hljs {
+  color: var(--hljs-text);
+  background: var(--hljs-bg);
+}
+
+/* 注释：斜体 + 较低对比度，明确区分于代码 */
+.hljs-comment,
+.hljs-quote {
+  color: var(--hljs-comment);
+  font-style: italic;
+  opacity: 0.9;
+}
+
+/* 关键字：加粗，最高醒目度 */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag {
+  color: var(--hljs-keyword);
+  font-weight: 600;
+}
+
+/* 控制流关键字 (if/else/return/for/while)：用紫色区分 */
+.hljs-keyword.control,
+.hljs-keyword\\.control {
+  color: var(--hljs-control);
+  font-weight: 600;
+}
+
+/* 字面量 (true/false/null/undefined)：蓝色 */
+.hljs-literal {
+  color: var(--hljs-literal);
+  font-weight: 600;
+}
+
+/* 标签名 (HTML/XML)：深红/亮蓝 */
+.hljs-name,
+.hljs-tag .hljs-name {
+  color: var(--hljs-tag);
+  font-weight: 600;
+}
+
+.hljs-tag {
+  color: var(--hljs-tag);
+}
+
+/* 字符串：醒目的红/橙色 */
+.hljs-string,
+.hljs-regexp,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-addition {
+  color: var(--hljs-string);
+}
+
+.hljs-regexp {
+  color: var(--hljs-regexp);
+}
+
+/* 数字：绿色，清晰可辨 */
+.hljs-number,
+.hljs-bullet {
+  color: var(--hljs-number);
+}
+
+/* 函数名：黄/棕色 + 加粗，调用处一目了然 */
+.hljs-function .hljs-title,
+.hljs-title.function_,
+.hljs-title.class_ {
+  color: var(--hljs-function);
+  font-weight: 600;
+}
+
+.hljs-title {
+  color: var(--hljs-function);
+}
+
+/* 类型/类名：青绿色 + 加粗，与函数区分 */
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-title.class_ {
+  color: var(--hljs-type);
+  font-weight: 600;
+}
+
+/* 内置对象 (console/Math/Object)：亮蓝 */
+.hljs-built_in {
+  color: var(--hljs-built-in);
+  font-weight: 500;
+}
+
+/* 常量：蓝色 */
+.hljs-constant {
+  color: var(--hljs-constant);
+  font-weight: 500;
+}
+
+/* 变量/属性：蓝色 */
+.hljs-variable,
+.hljs-attr,
+.hljs-params,
+.hljs-property {
+  color: var(--hljs-variable);
+}
+
+/* 符号/章节/链接 */
+.hljs-symbol,
+.hljs-section,
+.hljs-link {
+  color: var(--hljs-symbol);
+}
+
+/* 属性/元信息 */
+.hljs-attribute,
+.hljs-meta {
+  color: var(--hljs-meta);
+}
+
+/* 运算符：加粗，提升存在感 */
+.hljs-operator {
+  color: var(--hljs-operator);
+  font-weight: 600;
+}
+
+/* 标点符号 */
+.hljs-punctuation {
+  color: var(--hljs-punctuation);
+}
+
+/* 删除/新增 (diff) */
+.hljs-deletion {
+  color: var(--hljs-deletion);
+  background: rgba(255, 0, 0, 0.08);
+}
+
+.hljs-addition {
+  color: var(--hljs-addition);
+  background: rgba(0, 128, 0, 0.08);
+}
+
+/* 强调：斜体 */
+.hljs-emphasis {
+  font-style: italic;
+  color: var(--hljs-emphasis);
+}
+
+/* 加粗 */
+.hljs-strong {
+  font-weight: 700;
+  color: var(--hljs-strong);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Plan 11 Task 15 — Personalization (Step 4-8)
+   代码编辑器/对话框背景图、字体、气泡样式联动
+   变量由 composables/usePersonalization.ts 设置到 :root
+   ───────────────────────────────────────────────────────── */
+
+/* Step 4: 代码编辑器背景层（覆盖在 Monaco 容器之上、内容之下） */
+.editor-view__bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--personalization-editor-bg, none);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: var(--personalization-editor-bg-opacity, 0);
+  filter: blur(var(--personalization-editor-bg-blur, 0px));
+}
+
+/* 当启用编辑器背景图时，让 Monaco 画布与边距透明，使背景图透过 */
+html[data-editor-bg] .monaco-editor,
+html[data-editor-bg] .monaco-editor .margin,
+html[data-editor-bg] .monaco-editor-background {
+  background: transparent !important;
+}
+
+/* Step 5: 对话框背景层 */
+.ai-msg-list {
+  background-image: var(--personalization-chat-bg, none);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.ai-msg-list::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: rgba(0, 0, 0, 0);
+  opacity: var(--personalization-chat-bg-opacity, 0);
+  backdrop-filter: blur(var(--personalization-chat-bg-blur, 0px));
+  pointer-events: none;
+}
+
+/* Step 6: 字体（仅对启用个性化的区域生效） */
+.personalization-font {
+  font-family: var(--personalization-font-family, inherit);
+  font-size: var(--personalization-font-size, inherit);
+}
+
+/* Step 7: 气泡样式 */
+.ai-msg--rounded,
+.ai-msg {
+  border-radius: 8px;
+}
+.ai-msg--sharp {
+  border-radius: 0;
+}
+.ai-msg--bubble {
+  border-radius: 18px;
+}
+.ai-msg {
+  opacity: var(--personalization-bubble-opacity, 1);
+}
+.ai-msg-list {
+  gap: var(--personalization-message-spacing, 12px);
+}
+
+/* Step 8: 明暗模式下背景层叠加柔光，避免图片压字 */
+[data-mode="light"] .editor-view__bg,
+[data-mode="light"] .ai-msg-list::before {
+  background: rgba(255, 255, 255, 0.35);
+}
+[data-mode="dark"] .editor-view__bg,
+[data-mode="dark"] .ai-msg-list::before {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+
+/* prompt-10 10-H: coverage gutter decorations
+   P0-2: 颜色引用语义变量 --color-success / --color-error / 其 container，
+   随设计语言与明暗模式翻转。
+   P4-24: width 使用 !important 是因为 Monaco gutter 的内联样式优先级极高，
+   必须强覆盖才能生效。 */
+.coverage-gutter--covered {
+  background: color-mix(in srgb, var(--color-success) 85%, transparent);
+  width: 4px !important;
+  margin-left: 3px;
+}
+.coverage-gutter--uncovered {
+  background: color-mix(in srgb, var(--color-error) 85%, transparent);
+  width: 4px !important;
+  margin-left: 3px;
+}
+.coverage-gutter--partial {
+  background: color-mix(in srgb, var(--color-warning) 88%, transparent);
+  width: 4px !important;
+  margin-left: 3px;
+}
+.coverage-line--covered {
+  background: var(--color-success-container);
+}
+.coverage-line--uncovered {
+  background: var(--color-error-container);
+}
+.coverage-line--partial {
+  background: var(--color-warning-container);
+}
+
+/* G-BLAME-01: inline git blame decoration — subtle gray text after line content */
+.koyoriIde-blame-text {
+  color: var(--color-text-tertiary);
+  font-size: 0.85em;
+  font-style: italic;
+  opacity: 0.7;
+  white-space: nowrap;
+  margin-left: 24px;
+  user-select: none;
+}
+.koyoriIde-blame-deco::after {
+  content: "";
+  display: inline-block;
+}
+
+/* prompt-11 11-A: debug breakpoint glyphs + current line
+   P0-2: 引用 --color-error / --color-warning / --color-primary-focus 等
+   语义变量，取代 GitHub Dark Dimmed 色板。 */
+.debug-bp-glyph {
+  background: var(--color-error);
+  border-radius: 50%;
+  width: 8px !important;
+  height: 8px !important;
+  margin-left: 5px;
+  margin-top: 5px;
+}
+.debug-bp-glyph--unverified {
+  background: var(--color-warning);
+}
+.debug-current-line {
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent) !important;
+}
+.debug-current-glyph {
+  border-left: 4px solid var(--color-primary-focus);
+}
+
+/* prompt-12 12-A: unverified breakpoint = hollow amber */
+.debug-bp-glyph--unverified {
+  background: transparent !important;
+  border: 2px solid var(--color-warning);
+  box-sizing: border-box;
+}
+
+/* Editor syntax palette shared by Monaco-adjacent UI and inspection widgets. */
+:root {
+  --editor-bracket-1: #0431fa;
+  --editor-bracket-2: #7a3e9d;
+  --editor-bracket-3: #007c91;
+  --editor-bracket-4: #b45f06;
+  --editor-bracket-5: #2e7d32;
+  --editor-bracket-6: #a23e48;
+  --editor-semantic-type: #006a6a;
+  --editor-semantic-function: #1858b4;
+  --editor-semantic-readonly: #8e24aa;
+  --focus-ring-color: var(--color-primary-focus);
+  --focus-ring-width: 2px;
+}
+
+[data-mode="dark"] {
+  --editor-bracket-1: #ffd700;
+  --editor-bracket-2: #da70d6;
+  --editor-bracket-3: #87cefa;
+  --editor-bracket-4: #ff8c69;
+  --editor-bracket-5: #98fb98;
+  --editor-bracket-6: #dda0dd;
+  --editor-semantic-type: #80cbc4;
+  --editor-semantic-function: #a8c7fa;
+  --editor-semantic-readonly: #ce93d8;
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --color-border-subtle: rgba(0, 0, 0, 0.45);
+    --color-border-default: rgba(0, 0, 0, 0.68);
+    --color-border-strong: #000000;
+    --color-text-secondary: #202124;
+    --color-text-tertiary: #3c4043;
+    --focus-ring-width: 3px;
+  }
+
+  [data-mode="dark"] {
+    --color-border-subtle: rgba(255, 255, 255, 0.5);
+    --color-border-default: rgba(255, 255, 255, 0.72);
+    --color-border-strong: #ffffff;
+    --color-text-secondary: #f1f3f4;
+    --color-text-tertiary: #d2d5da;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --focus-ring-color: Highlight;
+  }
+
+  :focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px !important;
+  }
+
+  button,
+  input,
+  select,
+  textarea,
+  [role="button"],
+  [role="option"] {
+    forced-color-adjust: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+    --transition-fast: none;
+    --transition-normal: none;
+    --transition-slow: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────
+   全局微交互 & 焦点环修复（prompt-1 Task 13）
+   ───────────────────────────────────────────────────────── */
+
+/* 按压反馈：为所有可点击的卡片/磁贴/按钮提供统一的 active 缩放 */
+button:active:not(:disabled),
+[role="button"]:active:not([aria-disabled="true"]) {
+  transform: scale(var(--micro-scale-press));
+}
+
+/* 焦点环安全网：所有设置了 outline: none 的元素必须有可见的 :focus-visible */
+:focus-visible {
+  outline: 2px solid var(--focus-ring-color, var(--color-primary-focus));
+  outline-offset: 2px;
+}

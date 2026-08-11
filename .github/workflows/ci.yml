@@ -1,0 +1,506 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  # GOAL-P0-06 execution point 1: this job is a CONTRACT smoke, not a packaged
+  # desktop E2E. It drives FileService semantics through Node's fs plus one
+  # mocked-Wails store test. It never launches the packaged binary, so it cannot
+  # detect binding drift, packaging faults, or WebView-only failures. The job
+  # name says "contract" so a green check here is never mistaken for evidence
+  # that the desktop application works. The packaged driver source contract is
+  # checked here, while real artifact execution remains a separate manual
+  # qualification job — see docs/E2E.md.
+  #
+  # Ubuntu is the required gate. Windows and macOS provide visible
+  # cross-platform evidence without blocking merges while the native desktop
+  # runner path remains environment-sensitive.
+  contract-smoke:
+    name: Contract smoke, not packaged E2E (${{ matrix.os }}${{ matrix.optional && ', optional' || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            optional: false
+          - os: windows-latest
+            optional: true
+          - os: macos-latest
+            optional: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Check repository text encoding
+        run: node scripts/check-encoding.mjs
+      - name: Packaged E2E driver source contract (not an artifact run)
+        shell: bash
+        run: |
+          node --test scripts/packaged-e2e-driver.test.mjs
+          node scripts/packaged-e2e.mjs --dry-run
+      - name: Install frontend dependencies
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+      - name: Dry-run contract smoke harness
+        run: node scripts/contract-smoke.mjs --dry-run
+      - name: Contract smoke — open directory, tree, open and save
+        run: node scripts/contract-smoke.mjs
+
+  # P9-G01: bindings are untracked. Generate them with the exact version from
+  # go.mod, then compare the entire tree and export whitelist with the manifest.
+  wails-bindings:
+    name: Wails bindings (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - name: Verify bindings are not tracked
+        run: node scripts/check-bindings-ownership.mjs
+      - name: Verify Wails pin consistency
+        run: node scripts/check-wails-pin.mjs
+      - name: Test pin, entrypoint ownership, drift, FQN, and forbidden-export failures
+        run: node --test scripts/wails-bindings.test.mjs
+      - name: Generate untracked bindings with the pinned CLI
+        run: node scripts/generate-bindings.mjs
+      - name: Check generated bindings
+        run: node scripts/check-bindings.mjs
+
+  # N-75: Run Go build & test across all three platforms. Wails v3 has
+  # platform-specific code (pty_windows.go, pty_unix.go, shell_exec_*.go,
+  # secrets_{windows,darwin,linux,other}.go) — building only on Ubuntu
+  # leaves Windows/macOS build-tagged files unverified.
+  go-test:
+    name: Go Build & Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - name: Download dependencies
+        run: go mod download
+
+      # N-129: vet the root package, services, and the repository governance
+      # tests (internal/repo). We avoid `./...` because it would also traverse
+      # frontend/node_modules (which contains third-party Go files like
+      # `flatted/golang`) and the build/android + build/ios scaffolding — not
+      # our code to lint.
+      - name: Vet
+        run: go vet ./services/... . ./internal/repo/...
+
+      - name: Build
+        run: go build .
+
+      # N-129: test the root package (main_test.go covers CSP nonce
+      # injection), services, and the repository governance tests. The
+      # previous `./services/...` skipped the root. We don't use `./...` for
+      # the same reason as Vet.
+      - name: Test
+        # Keep the CI leg equivalent to the local G07 gate: do not let the Go
+        # test cache turn a changed platform leg into an unexecuted pass.
+        run: go test -race ./services/... . ./internal/repo/... -count=1
+
+      # Compiles and exercises the test-only loopback hook (internal/e2e) on
+      # every supported source platform. This is not a packaged artifact run.
+      - name: E2E build-tag hook contract (not an artifact run)
+        run: go test -race -tags e2e ./internal/e2e/... -count=1
+
+  # N-128: Go lint. golangci-lint runs vet + a suite of additional linters
+  # (errcheck, ineffassign, staticcheck, unused, etc.) that `go vet` alone
+  # does not cover.
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6.5.2
+        with:
+          version: v1.62.0
+          # Scope to project packages: root + services. Avoids traversing
+          # frontend/node_modules and build/ scaffolding.
+          args: --timeout=10m ./services/... .
+      # P3: gofmt + goimports format check. golangci-lint intentionally
+      # does not enable gofmt/goimports linters (they produce noisy diffs
+      # on existing code). Instead we run a dedicated formatter pass that
+      # fails CI when any file is not properly formatted. `gofmt -l` lists
+      # files that would be changed; a non-empty list means failure.
+      - name: Check formatting (gofmt)
+        run: |
+          unformatted=$(gofmt -l services/ *.go 2>&1)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+      # goimports also checks import grouping + removal of unused imports.
+      # Install via go install (not pre-installed on the runner).
+      - name: Check imports (goimports)
+        run: |
+          go install golang.org/x/tools/cmd/goimports@v0.48.0
+          unformatted=$(goimports -l services/ *.go 2>&1)
+          if [ -n "$unformatted" ]; then
+            echo "The following files have goimports issues:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  # N-75: Frontend checks across all three platforms. Vitest and vue-tsc
+  # are pure JS so they're cross-platform, but running on Windows + macOS
+  # catches any path-separator or platform-API regressions in tests.
+  frontend-test:
+    name: Frontend Check & Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go for pinned binding generation
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate untracked Wails bindings
+        run: node scripts/generate-bindings.mjs
+
+      - name: Type check
+        run: npx vue-tsc --noEmit
+        working-directory: frontend
+
+      # N-128: ESLint step. The `lint` script is defined in package.json.
+      - name: Lint
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Test
+        run: npx vitest run
+        working-directory: frontend
+
+      # prompt-7 Task B / BUG-M15: bindings + docs number gates (same as Taskfile).
+      - name: Check Wails bindings symbols
+        run: node scripts/check-bindings.mjs
+
+      - name: Check README / MAX_TOOL_CALLS alignment
+        run: node scripts/check-doc-numbers.mjs
+
+      # G19: official-registry audit and lockfile stability block every
+      # frontend matrix leg.
+      - name: Dependency governance gate (audit + lockfile stability)
+        run: node scripts/npm-audit-gate.mjs
+        working-directory: .
+
+  # N-130: Frontend coverage report. Runs on a single platform to keep CI
+  # fast — the cross-platform test job above already verifies correctness.
+  # Uploads the lcov report as an artifact for consumption by external
+  # coverage tools (Codecov, Coveralls, etc.) and prints a text summary
+  # to the job log.
+  frontend-coverage:
+    name: Frontend Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go for pinned binding generation
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Generate untracked Wails bindings
+        run: node scripts/generate-bindings.mjs
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+        working-directory: frontend
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/
+          retention-days: 14
+
+  # N-100: Production build via `wails3 build`. `go build .` only compiles
+  # the Go binary; it does NOT exercise the full Wails pipeline (frontend
+  # bundling, asset embedding, binding generation, platform packaging).
+  # A binding mismatch or missing embed.FS path can pass `go build` but
+  # fail `wails3 build`. We run this on a single platform (Ubuntu) to keep
+  # CI fast — the cross-platform Go build is already covered by go-test.
+  wails-build:
+    name: Wails Production Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      # Match the wails v3 version pinned in go.mod (v3.0.0-alpha2.111).
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+
+      - name: Wails build
+        run: wails3 build -tags desktop,production
+
+  # GOAL-P0-06: packaged desktop E2E against the real built artifact.
+  #
+  # Ordering (execution point 3): this job `needs` the required checks so the
+  # artifact is only built and driven after the same commit has passed them.
+  # A release must not reach this job by skipping those checks.
+  #
+  # QUALIFICATION GATE: the test-only loopback driver is implemented, but real
+  # packaged execution is still U. Keep this workflow_dispatch-only until it
+  # has passed three consecutive manual runs on three distinct commits, with
+  # each run's manifest retained. Only then remove the `if:` gate, rename the
+  # job without the qualification suffix, and configure it as a required check.
+  #
+  # A source-level test or dry-run does not count toward those three runs.
+  packaged-e2e:
+    name: Packaged desktop E2E (Linux qualification)
+    if: github.event_name == 'workflow_dispatch'
+    needs: [contract-smoke, wails-bindings, go-test, frontend-test, wails-build, npm-audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KOYORI_IDE_E2E_DISPLAY: ':99'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux GUI and headless-display deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev \
+            pkg-config xvfb imagemagick
+
+      - name: Install frontend deps
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      # Must match the wails v3 version pinned in go.mod. check-wails-pin.mjs
+      # enforces that this stays in sync.
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+
+      - name: Install real Go language server fixture dependency
+        run: go install golang.org/x/tools/gopls@v0.21.1
+
+      - name: Packaged E2E
+        run: node scripts/packaged-e2e.mjs
+
+      # Execution point 6: artifact hash, logs, and screenshots must survive a
+      # failure, otherwise a red run cannot be audited after the runner is gone.
+      - name: Upload E2E evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packaged-e2e-evidence
+          path: build/e2e-evidence/
+          if-no-files-found: warn
+
+  # G-SEC-04: Run govulncheck to scan for known vulnerabilities in Go
+  # dependencies. Catches CVEs in go.mod transitively-resolved modules that
+  # `go vet` and golangci-lint do not detect.
+  govulncheck:
+    name: Govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./services/... .
+
+  # G-PERF-04: Performance comparison. Runs Go benchmarks on the services
+  # package and uses benchstat to report statistical differences from a
+  # committed baseline; this command does not enforce a percentage threshold. The
+  # baseline (.benchmark-baseline.txt) is committed at the repo root; if
+  # absent, the current run is recorded as the new baseline (no failure).
+  perf-benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Run benchmarks
+        run: |
+          go test -bench=. -benchmem -count=5 ./services/... 2>&1 | tee benchmark_results.txt
+      - name: Store benchmark results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmark-results
+          path: benchmark_results.txt
+      - name: Compare with baseline (if exists)
+        run: |
+          # Check if baseline exists
+          if [ -f .benchmark-baseline.txt ]; then
+            echo "Comparing against baseline..."
+            # GOAL-P1-06: benchstat output is parsed for ±20% or worse regressions.
+            # Any line with a delta outside that window causes this step to fail so
+            # CI blocks the PR rather than silently accepting a significant slowdown.
+            output=$(go run golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d .benchmark-baseline.txt benchmark_results.txt 2>&1)
+            echo "$output"
+            # Fail on statistically significant regressions (indicated by a + delta
+            # that exceeds the threshold). benchstat marks significant changes with
+            # a p-value; lines without a ~ or ± symbol or containing +[0-9] indicate
+            # potential regressions. We use a simple heuristic: any tilde-free line
+            # with a positive delta of more than 20% exits non-zero.
+            if echo "$output" | grep -E '\+[2-9][0-9]\.[0-9]+%|\+[0-9]{3,}\.[0-9]+%' | grep -v '~'; then
+              echo "FAIL: significant performance regression detected (>20%)"
+              exit 1
+            fi
+            echo "Performance within acceptable bounds (no >20% regression detected)"
+          else
+            echo "No baseline found, using current results as baseline"
+            cp benchmark_results.txt .benchmark-baseline.txt
+          fi
+
+  # P1/G19: the shared gate scans the official registry and verifies lockfile
+  # stability; a mirror or drifting resolve cannot pass as a clean audit.
+  npm-audit:
+    name: NPM Audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies (lockfile + official registry)
+        run: npm ci --registry=https://registry.npmjs.org
+      # G19: official-registry audit (high+) + lockfile stability, same gate
+      # release.yml uses; a mirror that cannot audit does not count as zero.
+      - name: Dependency governance gate (audit + lockfile stability)
+        run: node ../scripts/npm-audit-gate.mjs
+
+  # P2-7: optional real gopls/typescript-language-server/vtsls matrix.
+  # Manual/nightly only: this is visible evidence, not a required PR gate.
+  lsp-integration:
+    name: LSP real-server matrix (optional, non-PR gate)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      KOYORI_IDE_LSP_INTEGRATION: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+      - name: Install gopls
+        run: go install golang.org/x/tools/gopls@v0.21.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+      - name: Install pinned TypeScript language servers
+        run: npm install -g typescript@5.9.2 typescript-language-server@5.3.0 @vtsls/language-server@0.3.0
+      - name: Require every matrix command on PATH
+        shell: bash
+        run: |
+          for command in gopls typescript-language-server vtsls; do
+            if ! command -v "$command" >/dev/null 2>&1; then
+              echo "Required real LSP command is missing: $command"
+              exit 1
+            fi
+          done
+      - name: Real LSP compatibility matrix
+        run: go test ./services/ -count=1 -timeout 120s -run '^TestLSPRealServerCompatibilityMatrix$'

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MsixPackagingToolTemplate
+    xmlns="http://schemas.microsoft.com/msix/packaging/msixpackagingtool/template/2022">
+    <Settings
+        AllowTelemetry="false"
+        ApplyACLsToPackageFiles="true"
+        GenerateCommandLineFile="true"
+        AllowPromptForPassword="false">
+    </Settings>
+    <Installer
+        Path="koyori-ide.exe"
+        Arguments=""
+        InstallLocation="C:\Program Files\koyori-ide\koyori-ide">
+    </Installer>
+    <PackageInformation
+        PackageName="koyori-ide"
+        PackageDisplayName="koyori-ide"
+        PublisherName="CN=koyori ide contributors"
+        PublisherDisplayName="Koyori IDE"
+        Version="0.1.0.0"
+        PackageDescription="AI-Powered Coding Desktop App for Professional Developers">
+        <Capabilities>
+            <Capability Name="runFullTrust" />
+            
+        </Capabilities>
+        <Applications>
+            <Application
+                Id="com.koyori.app"
+                Description="AI-Powered Coding Desktop App for Professional Developers"
+                DisplayName="koyori-ide"
+                ExecutableName="koyori-ide.exe"
+                EntryPoint="Windows.FullTrustApplication">
+                
+            </Application>
+        </Applications>
+        <Resources>
+            <Resource Language="en-us" />
+        </Resources>
+        <Dependencies>
+            <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+        </Dependencies>
+        <Properties>
+            <Framework>false</Framework>
+            <DisplayName>Koyori IDE</DisplayName>
+            <PublisherDisplayName>Koyori IDE</PublisherDisplayName>
+            <Description>AI-Powered Coding Desktop App for Professional Developers</Description>
+            <Logo>Assets\AppIcon.png</Logo>
+        </Properties>
+    </PackageInformation>
+    <SaveLocation PackagePath="koyori-ide.msix" />
+    <PackageIntegrity>
+        <CertificatePath></CertificatePath>
+    </PackageIntegrity>
+</MsixPackagingToolTemplate>
