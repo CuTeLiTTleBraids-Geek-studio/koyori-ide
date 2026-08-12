@@ -158,10 +158,20 @@
 
 **现状：没有可核验的真实 crash/startup/edit durability 数据、稳定发布历史或独立审计；全部 AC 未勾选（U）。最低证据 `R`；完成本 Goal 才可评估“广泛日常可用/生产级”，不自动等于结论。**
 
+**续作状态（2026-08-12）：** G27 Phase 1 T 级基础已实现但不构成 R 级证据：Ed25519 manifest/rollback authorization 绑定 channel、platform、arch、artifact、commit、transaction、nonce 并支持进程内一次性消费；更新事务状态机拒绝非法跳转；运营事件 schema v1 默认关闭、local-only、bounded、隐私 fail-closed。真实发布密钥/三平台 release/SLO cohort/外部审计仍为 `U`。
+
 **T-G27-1（签名更新与回滚）**：更新 manifest、包、channel 全部签名；失败/损坏/降级/撤回可自动回滚且保留用户数据；至少三个不同 commit 的真实三平台 release 通过签名更新与回滚演练（AC1）。
 **T-G27-2（SLO）**：定义并采集启动、崩溃、无响应、编辑持久性、LSP 延迟、扩展崩溃 SLI；默认最小化、可退出；连续稳定窗口达到已发布 SLO，原始查询与样本偏差可审计（AC2）。
 **T-G27-3（性能与可访问性门禁）**：建立性能预算（大仓库场景）；WCAG 2.2 AA 核心流程门禁（AC3）。
 **T-G27-4（外部审计）**：委托独立安全、供应链与可访问性审计；P0/P1 问题公开处置并复测（AC4）。
+
+### 会话交付：P11-T-G27-Foundation（2026-08-12）
+
+- 复核结论：G27 缺口已变化但仍存在；Phase 1 仅完成 T 级基础，AC 仍为 0/4，不能宣称 R 级或生产级。
+- 改动文件：新增 `services/update_manifest_g27.go` / 测试，提供 Ed25519 manifest 验证、跨平台 artifact 名称校验、channel/版本/降级授权 scope、进程内 replay consume 和 update transaction journal；新增 `services/operational_events_g27.go` / 测试，提供默认关闭的本地 bounded v1 事件 buffer、严格枚举 schema、随机 session ID 和隐私拒绝。
+- 验证：`go test ./services -run 'UpdateManifest|UpdateTransaction|RollbackAuthorization|OperationalEvent|OperationalBuffer|SessionID' -count=1` exit 0；同集合 `-race` exit 0。Wails/GTK 仅有既有 deprecated warnings。
+- 门禁限制：本轮 Oracle 复核 session 异常退出，未把其当作通过证据；代码审查与定向测试仅证明 T 级基础。真实发布签名密钥托管、三个 commit 的三平台 release/update/rollback、持久化跨进程 replay 防护、生产 SLO、性能/WCAG、独立安全/供应链/可访问性审计均为 `U`。
+- 下一步：补齐持久化更新 journal 与性能/WCAG 审计清单前，不得勾选 G27 AC；真实 R 级证据需发布机、release cohort 和独立 assessor。
 ## 7. P0/P1 未完成点（外部状态阻塞，保持 `U`）按点任务
 
 > 本节每个点都被外部状态阻塞（macOS runner、真实 CI、可核验 `.git`、代表性语料、发布机）。任务 = 在外部状态可得时按验收闭环；不可得时保持 `U` 并记录阻塞，**不得伪造通过**。可在不影响当前 Goal 的前提下准备脚本与验收清单。

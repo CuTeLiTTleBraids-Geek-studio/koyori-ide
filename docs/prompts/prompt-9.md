@@ -585,7 +585,7 @@
 
 ## GOAL P9-G27（P2）：建立发布运营、SLO、更新回滚与外部审计
 
-**现状与证据：** 没有可核验的真实 crash/startup/edit durability 数据、稳定发布历史或独立安全/供应链/可访问性审计。
+**现状与证据：** G27 Phase 1 已建立 T 级签名更新候选/回滚授权契约和默认关闭的本地运营事件 schema；仍没有可核验的真实 crash/startup/edit durability 数据、稳定发布历史或独立安全/供应链/可访问性审计。Phase 1 的进程内 replay tracking 不是持久化发布防重放证据。
 
 **范围：** signed update、rollback、channel、指标、隐私、性能、可访问性、安全、供应链和支持策略。
 
@@ -728,7 +728,7 @@ npm audit --registry=https://registry.npmjs.org --audit-level=high
 | P9-G24 | 完成 | 4/4 | T/I/P | 2026-08-11 | packaged manifest `status=passed`，24/24 fixtures；artifact SHA-256 `7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181`，source fingerprint `690aa31cad880bf803037ab734207a9e1f7281d9e05140f65daaef15bd7b6180`，`recordedAt=2026-08-11T03:23:53.760Z`；corpus 11/11，10 包全 blocked；首次本轮 `disabled=true`/`active=true` 失败、lifecycle stop handshake 修复、低内存 Git `0xc0000142` 后 true skip-build 通过均已记录；无 git/CI 声称 |
 | P9-G25 | 进行中 | 0/4 | T/U | 2026-08-10 | ICU plural 解析（Intl.PluralRules 选类，含 ru/pl/ar 真实 few/many/zero/two 验证）、locale 元数据（独立 localeMetadata.test.ts，en/zh/ja 静态 + ru/pl/ar 类别 + RTL 检测 + Intl 缺失 fallback）、formatNumber、missing-key 监测已 T 级实现（i18n 全量 53 测试）；profile 版本化导入导出（schema v1、顶层 aiApiKey + 嵌套 aiProviderConfigs[].apiKey redact、1MiB 限制、非法 JSON/未知版本/原型污染键 fail-closed 拒绝）已 T 级实现（12 个新 Go 测试）；packaged 矩阵与恶意文件跨平台导入 U；AC 0/4 正式勾选 |
 | P9-G26 | 进行中 | 0/4 | T/U | 2026-08-11 | Workspace URI/Scope、Linux no-follow 本地 Host Adapter、非 Linux fail-closed、Windows MoveFileEx 原子替换代码、SSH verified HostID/随机 instance nonce/命令 approval 完整 scope 绑定已 T 级实现；真实 Windows NTFS、remote agent、host-issued workspace、FS/watch/PTY/Git/LSP/Test/DAP、重连和 packaged 证据仍为 U；AC 0/4 |
-| P9-G27 | 未开始 | 0/4 | U | 2026-08-04 | 最终运营 Goal |
+| P9-G27 | 进行中 | 0/4 | T/U | 2026-08-12 | T 级 Ed25519 manifest/channel/platform/artifact/digest/降级授权与事务状态契约已实现；默认关闭、无网络、隐私闭合的本地运营事件 v1 buffer 已实现；真实三平台签名 release/rollback、生产 SLO 窗口、性能/WCAG 门禁和三类独立外部审计仍为 U；AC 0/4 |
 
 ## 9. 每次会话交付模板
 
