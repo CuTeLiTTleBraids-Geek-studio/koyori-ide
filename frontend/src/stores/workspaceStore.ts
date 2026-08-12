@@ -298,6 +298,17 @@ export function applyWorkspaceSnapshot(snapshot: WorkspaceAuthoritySnapshot): bo
   // F-3: single and multi-root activation use the same committed root list.
   triggerWorkspaceContainsForFolders(roots);
 
+  // LSP re-detection: the backend workspace root changes on project open, but
+  // detectLSPServers() is only called once at bootstrap (no workspace open).
+  // Re-detect now so language servers discovered against the real root (e.g.
+  // rust-analyzer, workspace-local typescript-language-server) become
+  // available/activatable. Best-effort; failures are logged by the store.
+  void import("@/stores/lsp").then(({ detectLSPServers }) => {
+    void detectLSPServers();
+  }).catch((error) => {
+    console.warn("[workspace] LSP re-detect after project open failed:", error);
+  });
+
   const primaryRoot = roots[0] ?? "";
   if (!primaryRoot) return true;
   // prompt-4 Task 10: 打开项目时同步快照工作区根，激活智能回滚。

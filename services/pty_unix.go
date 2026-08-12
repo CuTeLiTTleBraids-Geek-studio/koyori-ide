@@ -74,10 +74,28 @@ func (u *unixPty) close() error {
 	return closeErr
 }
 
+// defaultPtyWinsize is the initial PTY geometry used before the renderer's
+// first resize arrives. TUI applications (yazi, vim, htop) size their alt
+// buffer from the winsize at spawn time; starting at 0x0 makes them render a
+// blank screen. A conservative 80x24 matches xterm's own default.
+var defaultPtyWinsize = pty.Winsize{
+	Cols: 80,
+	Rows: 24,
+}
+
 func startPty(shell []string, workingDir string) (io.ReadWriteCloser, error) {
 	cmd := exec.Command(shell[0], shell[1:]...)
 	cmd.Dir = workingDir
-	ptmx, err := pty.Start(cmd)
+	// TERM must be a real terminal capability set. TUI apps (yazi, vim, htop)
+	// query terminal capabilities (e.g. yazi's Terminal Response / DSR queries)
+	// and refuse to render when TERM is unset or "dumb". Inherit the host TERM
+	// when it looks usable, otherwise fall back to a widely-supported value.
+	if term := os.Getenv("TERM"); term != "" && term != "dumb" {
+		cmd.Env = append(os.Environ(), "TERM="+term)
+	} else {
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	}
+	ptmx, err := pty.StartWithSize(cmd, &defaultPtyWinsize)
 	if err != nil {
 		return nil, err
 	}

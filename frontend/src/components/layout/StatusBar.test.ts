@@ -43,6 +43,8 @@ const mocks = vi.hoisted(() => ({
     enabled: true,
   },
   restartLSPServer: vi.fn(),
+  detectLSPServers: vi.fn(),
+  startLSPServer: vi.fn(),
   setLSPEnabled: vi.fn(),
 }));
 
@@ -55,6 +57,8 @@ vi.mock("@/stores/lsp", () => ({
   lspStatusLabel: { value: "LSP" },
   lspStatusDetail: { value: "" },
   restartLSPServer: mocks.restartLSPServer,
+  detectLSPServers: mocks.detectLSPServers,
+  startLSPServer: mocks.startLSPServer,
   setLSPEnabled: mocks.setLSPEnabled,
 }));
 vi.mock("@/stores/toolchain", () => ({
