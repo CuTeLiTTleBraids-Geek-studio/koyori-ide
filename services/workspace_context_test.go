@@ -188,6 +188,10 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 		t.Fatalf("abs: %v", err)
 	}
 	wantA = filepath.Clean(wantA)
+	// G-CI-10: on macOS t.TempDir() lives under /var/folders (a symlink to
+	// /private/var/folders); the services resolve symlinks, so normalize the
+	// expected root the same way or the comparison fails only on macOS.
+	wantA = resolveSymlinks(wantA)
 
 	// AC: Plan / Goal / Diff / Snapshot / executor all read A's canonical root
 	// under the same generation.
@@ -278,6 +282,7 @@ func TestWorkspaceContextRollbackKeepsSingleWorkspace(t *testing.T) {
 		t.Fatalf("abs: %v", err)
 	}
 	wantA = filepath.Clean(wantA)
+	wantA = resolveSymlinks(wantA)
 	genA := g.ctx.Generation()
 
 	// A regular file is not a valid workspace: FileService.SetWorkspaceRoot
@@ -342,4 +347,14 @@ func TestWorkspaceContextSettersAreHiddenFromRenderer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// resolveSymlinks normalizes a path by resolving symlinks (macOS resolves
+// /var -> /private/var, which would otherwise make path comparisons fail on
+// that platform only).
+func resolveSymlinks(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }

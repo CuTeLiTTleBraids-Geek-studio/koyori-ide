@@ -198,9 +198,11 @@ test("CI and package workflows verify untracked ownership before generation", as
     assert.ok(ownership >= 0 && ownership < generation, `${relative} ownership gate order`);
   }
   const packageWorkflow = await readRepositoryFile(".github/workflows/package.yml");
+  // G-CI-09: one ownership gate per packaging platform job (macOS, Linux,
+  // Windows). The assertion was written when only two jobs existed.
   assert.equal(
     packageWorkflow.match(/node scripts\/check-bindings-ownership\.mjs/g)?.length,
-    2,
+    3,
   );
 });
 

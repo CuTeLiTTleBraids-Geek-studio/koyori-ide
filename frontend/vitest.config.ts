@@ -21,6 +21,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    // G-CI-11: clear timers registered by @wailsio/runtime module side
+    // effects (drag polling) so nothing fires after jsdom teardown.
+    setupFiles: ["src/test-setup.ts"],
     // N-130: coverage configuration. Run with `npm run test:coverage`.
     // Reports go to frontend/coverage/. v8 provider requires no extra deps.
     coverage: {

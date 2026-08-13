@@ -12,6 +12,10 @@ interface NotifyOptions {
 }
 
 export function notify(options: NotifyOptions): void {
+  // G-CI-11: element-plus needs a live DOM; degrade to a no-op instead of
+  // throwing when called without one (e.g. a late async callback after the
+  // jsdom environment has been torn down in tests).
+  if (typeof document === "undefined") return;
   const type = options.type ?? "info";
   const duration = options.duration ?? 3000;
   ElNotification({
