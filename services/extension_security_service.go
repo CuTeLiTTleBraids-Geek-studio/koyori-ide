@@ -333,7 +333,7 @@ func computeFileSHA256(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open file for sha256: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", fmt.Errorf("hash file: %w", err)
@@ -687,8 +687,6 @@ func (s *ExtensionSecurityService) setExtensionEnabled(extensionID string, enabl
 		// calling SetExtensionEnabled. Restricted is the hard gate
 		// because network access is the highest-risk capability.
 		entry.PendingReview = false
-	} else {
-		// Disabling always succeeds (subject to blacklist above).
 	}
 	entry.Enabled = enabled
 

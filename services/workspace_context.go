@@ -208,24 +208,6 @@ func normalizeWindowsWorkspaceIdentityPath(path string) string {
 	return strings.ToLower(filepath.Clean(path))
 }
 
-// restoreState puts back an exact (root, generation) pair recorded before a
-// workspace switch was attempted.
-//
-// Rollback must not advance the generation. A switch that aborted never took
-// effect, so capabilities minted for the still-current workspace have to remain
-// valid; bumping the generation here would revoke them for no reason. Callers
-// are trusted bootstrap/rollback paths, so the directory check in Set is
-// deliberately skipped: the previous root was already validated when it was
-// installed, and refusing to restore it would leave the process in a worse
-// state than the one being undone.
-func (c *WorkspaceContext) restoreState(root string, generation uint64) {
-	roots := []string{}
-	if root != "" {
-		roots = []string{root}
-	}
-	c.restoreSnapshot(WorkspaceSnapshot{Root: root, Roots: roots, Generation: generation})
-}
-
 func (c *WorkspaceContext) restoreSnapshot(snapshot WorkspaceSnapshot) {
 	if c == nil {
 		return

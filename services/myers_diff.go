@@ -30,9 +30,9 @@ func myersDiff(filePath string, oldText string, newText string) string {
 	diff := computeDiff(oldLines, newLines)
 
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", filePath, filePath))
-	buf.WriteString(fmt.Sprintf("--- a/%s\n", filePath))
-	buf.WriteString(fmt.Sprintf("+++ b/%s\n", filePath))
+	fmt.Fprintf(&buf, "diff --git a/%s b/%s\n", filePath, filePath)
+	fmt.Fprintf(&buf, "--- a/%s\n", filePath)
+	fmt.Fprintf(&buf, "+++ b/%s\n", filePath)
 
 	// Generate hunks with 3 lines of context.
 	writeHunks(&buf, diff, oldLines, newLines, 3)
@@ -220,7 +220,7 @@ func writeHunks(buf *bytes.Buffer, ops []diffOp, oldLines, newLines []string, co
 
 		// Compute the hunk header (old start, old count, new start, new count).
 		oldStart, oldCount, newStart, newCount := computeHunkBounds(ops, hunkStart, hunkEnd, oldLines, newLines)
-		buf.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount))
+		fmt.Fprintf(buf, "@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
 
 		// Write the hunk lines.
 		for k := hunkStart; k < hunkEnd; k++ {
@@ -245,15 +245,16 @@ func computeHunkBounds(ops []diffOp, hunkStart, hunkEnd int, oldLines, newLines 
 	oldStart, newStart := 0, 0
 	if hunkStart < len(ops) {
 		op := ops[hunkStart]
-		if op.kind == diffEqual {
+		switch op.kind {
+		case diffEqual:
 			oldStart = op.oldIdx
 			newStart = op.newIdx
-		} else if op.kind == diffDelete {
+		case diffDelete:
 			oldStart = op.oldIdx
 			// For delete at hunkStart, newStart is the newIdx of the
 			// next equal or insert op, or 0 if none.
 			newStart = findNewStart(ops, hunkStart)
-		} else {
+		default:
 			newStart = op.newIdx
 			oldStart = findOldStart(ops, hunkStart)
 		}

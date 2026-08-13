@@ -61,16 +61,6 @@ func NewWindowServiceWithWorkspaceContext(workspaceContext *WorkspaceContext) *W
 	return &WindowService{workspaceContext: workspaceContext}
 }
 
-// setWorkspaceContext binds renderer-requested external paths to the active
-// workspace. Non-workspace window controls remain available without a root.
-//
-//wails:ignore
-func (w *WindowService) setWorkspaceContext(ctx *WorkspaceContext) {
-	w.mu.Lock()
-	w.workspaceContext = ctx
-	w.mu.Unlock()
-}
-
 //wails:ignore
 func (w *WindowService) setRecoveryService(recovery *RecoveryService) {
 	w.mu.Lock()

@@ -500,7 +500,7 @@ func (s *SymbolIndexService) GetAutoImportCandidates(ctx context.Context, name, 
 	return out, nil
 }
 
-// GetIndexStats returns basic statistics about the index for diagnostics.
+// IndexStats contains basic statistics about the index for diagnostics.
 type IndexStats struct {
 	SymbolCount   int    `json:"symbolCount"`
 	FileCount     int    `json:"fileCount"`
@@ -509,6 +509,7 @@ type IndexStats struct {
 	IndexVersion  int    `json:"indexVersion"`
 }
 
+// GetIndexStats returns basic statistics about the index for diagnostics.
 func (s *SymbolIndexService) GetIndexStats() IndexStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -957,7 +958,7 @@ func sourceFileMetadataWithLimit(filePath string, maxBytes int64) (string, int64
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("open source file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	content, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("read source file: %w", err)
@@ -1158,7 +1159,7 @@ func findGoModPath(workspaceRoot string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1176,7 +1177,7 @@ func parseGoExports(filePath, workspaceRoot string) []IndexedSymbol {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return parseGoExportsReader(f, filePath, workspaceRoot)
 }
 
@@ -1647,7 +1648,7 @@ func parseESTSExports(filePath, workspaceRoot string, isTS bool) []IndexedSymbol
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return parseESTSExportsReader(f, filePath, workspaceRoot, isTS)
 }
 
@@ -1829,7 +1830,7 @@ func parseCJSExports(filePath, workspaceRoot string) []IndexedSymbol {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return parseCJSExportsReader(f, filePath, workspaceRoot)
 }
 

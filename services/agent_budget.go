@@ -238,11 +238,3 @@ func (s *AgentService) auditEvent(msg string, keyvals ...any) {
 	}
 	slog.Default().Info(msg, keyvals...)
 }
-
-// consumeToolBudget reserves one tool call against the active budget.
-//
-// Returns the epoch the call is bound to. The caller must embed that epoch in
-// the capability it issues so a token cannot be redeemed after a budget reset.
-func (s *AgentService) consumeToolBudget() (uint64, error) {
-	return s.ensureBudget().reserve()
-}

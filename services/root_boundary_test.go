@@ -12,11 +12,22 @@ import (
 
 func TestRootSetters_are_unavailable_to_Wails(t *testing.T) {
 	// Given
-	files, err := parser.ParseDir(token.NewFileSet(), ".", func(info os.FileInfo) bool {
-		return strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go")
-	}, parser.ParseComments)
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parse services package: %v", err)
+		t.Fatalf("read services package: %v", err)
+	}
+	fset := token.NewFileSet()
+	files := make([]*ast.File, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fset, name, nil, parser.ParseComments)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", name, parseErr)
+		}
+		files = append(files, file)
 	}
 	forbiddenExports := map[string]bool{
 		"SetProjectRoot":    true,
@@ -26,7 +37,7 @@ func TestRootSetters_are_unavailable_to_Wails(t *testing.T) {
 	foundInternal := 0
 
 	// When
-	for _, file := range files["services"].Files {
+	for _, file := range files {
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
 			if !ok || function.Recv == nil {

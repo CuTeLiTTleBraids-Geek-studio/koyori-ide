@@ -1015,7 +1015,9 @@ func (s *GitRebaseService) commitRewordCommit(
 		return fmt.Errorf("create controlled reword message file: %w", err)
 	}
 	messagePath := messageFile.Name()
-	defer os.Remove(messagePath)
+	defer func() {
+		_ = os.Remove(messagePath)
+	}()
 	if err := os.Chmod(messagePath, 0o600); err != nil {
 		_ = messageFile.Close()
 		return fmt.Errorf("protect reword message file: %w", err)
@@ -1340,7 +1342,9 @@ func readSafeRebaseFile(
 	if err != nil {
 		return nil, 0, fmt.Errorf("open rebase administrative file %q: %w", name, err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return nil, 0, fmt.Errorf("reinspect rebase administrative file %q: %w", name, err)
@@ -1397,7 +1401,9 @@ func writeSafeRebaseFile(
 		return fmt.Errorf("create temporary rebase administrative file: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer func() {
+		_ = os.Remove(temporaryPath)
+	}()
 	if _, err := temporary.Write(content); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write temporary rebase administrative file: %w", err)
@@ -1444,7 +1450,7 @@ func readGitRebaseState(rebaseDir string) (gitRebasePersistentState, error) {
 		return gitRebasePersistentState{}, fmt.Errorf("decode Koyori IDE rebase state: %w", ErrInvalidInput)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return gitRebasePersistentState{}, fmt.Errorf("Koyori IDE rebase state contains trailing data: %w", ErrInvalidInput)
+		return gitRebasePersistentState{}, fmt.Errorf("koyori IDE rebase state contains trailing data: %w", ErrInvalidInput)
 	}
 	if err := validateGitRebaseState(state); err != nil {
 		return gitRebasePersistentState{}, err
@@ -1462,7 +1468,7 @@ func writeGitRebaseState(rebaseDir string, state gitRebasePersistentState) error
 	}
 	content = append(content, '\n')
 	if len(content) > gitRebaseMaxStateSize {
-		return fmt.Errorf("Koyori IDE rebase state is too large: %w", ErrInvalidInput)
+		return fmt.Errorf("koyori IDE rebase state is too large: %w", ErrInvalidInput)
 	}
 	if err := writeSafeRebaseFile(rebaseDir, gitRebaseStateFileName, content, 0o600, false); err != nil {
 		return fmt.Errorf("write Koyori IDE rebase state: %w", err)
@@ -1529,14 +1535,14 @@ func validateGitRebaseState(state gitRebasePersistentState) error {
 		}
 	}
 	if len(state.Actions) == 0 {
-		return fmt.Errorf("Koyori IDE rebase state has no action snapshot: %w", ErrInvalidInput)
+		return fmt.Errorf("koyori IDE rebase state has no action snapshot: %w", ErrInvalidInput)
 	}
 	canonicalActions, err := canonicalizeGitRebaseActions(state.Actions, state.ExpectedCommits)
 	if err != nil {
 		return fmt.Errorf("invalid action snapshot in Koyori IDE rebase state: %w", err)
 	}
 	if !reflect.DeepEqual(canonicalActions, state.Actions) {
-		return fmt.Errorf("Koyori IDE rebase action snapshot is not canonical: %w", ErrInvalidInput)
+		return fmt.Errorf("koyori IDE rebase action snapshot is not canonical: %w", ErrInvalidInput)
 	}
 	serialized, plannedRewords, err := prepareGitRebaseActions(state.Actions, state.ExpectedCommits)
 	if err != nil {

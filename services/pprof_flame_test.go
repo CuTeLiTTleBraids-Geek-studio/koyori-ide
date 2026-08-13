@@ -155,12 +155,14 @@ func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
 		t.Fatalf("StartMutexProfile: %v", err)
 	}
 	var mu sync.Mutex
+	acquired := false
 	mu.Lock()
 	locked := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
 		close(locked)
 		mu.Lock()
+		acquired = true
 		mu.Unlock()
 		close(finished)
 	}()
@@ -168,6 +170,9 @@ func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	mu.Unlock()
 	<-finished
+	if !acquired {
+		t.Fatal("contending goroutine did not acquire the mutex")
+	}
 	if err := svc.StopMutexProfile(mutexPath); err != nil {
 		t.Fatalf("StopMutexProfile: %v", err)
 	}

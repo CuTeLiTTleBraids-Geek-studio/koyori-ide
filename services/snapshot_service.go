@@ -128,22 +128,6 @@ func hashContent(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// storeBlob 存储文件内容到内容寻址存储（Step 4）。
-// 相同 hash 的文件不重复存储。
-func (s *SnapshotService) storeBlob(data []byte) (string, error) {
-	hash := hashContent(data)
-	blobPath := filepath.Join(s.blobDir, hash)
-	// 检查是否已存在（内容寻址去重）
-	if _, err := os.Stat(blobPath); err == nil {
-		return hash, nil // 已存在，跳过
-	}
-	// 原子写入 blob
-	if err := atomicWriteFile(blobPath, data, 0o644); err != nil {
-		return "", fmt.Errorf("store blob %s: %w", hash, err)
-	}
-	return hash, nil
-}
-
 // storeBlobFromFile streams the file at path into content-addressable
 // storage without buffering the entire file in memory. M-4: replaces the
 // previous os.ReadFile + hash.Write(data) pattern in CreateSnapshot which
@@ -159,7 +143,7 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	blobDir := s.blobDir
 	if err := os.MkdirAll(blobDir, 0o755); err != nil {
@@ -172,8 +156,8 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 	tmpName := tmp.Name()
 	// 失败路径清理：关闭并删除临时文件
 	cleanupTmp := func() {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 	}
 
 	h := sha256.New()
@@ -189,7 +173,7 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 		return "", fmt.Errorf("sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return "", fmt.Errorf("close temp file: %w", err)
 	}
 	hash := hex.EncodeToString(h.Sum(nil))
@@ -197,15 +181,15 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 	blobPath := filepath.Join(blobDir, hash)
 	if _, err := os.Stat(blobPath); err == nil {
 		// 已存在（内容寻址去重），删除本次临时文件
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return hash, nil
 	}
 	if err := os.Chmod(tmpName, 0o644); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return "", fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, blobPath); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return "", fmt.Errorf("rename temp to blob: %w", err)
 	}
 	return hash, nil
@@ -231,7 +215,7 @@ func isValidHash(h string) bool {
 		return false
 	}
 	for _, c := range h {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

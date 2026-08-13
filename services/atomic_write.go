@@ -28,9 +28,9 @@ func atomicWriteJSON(path string, data interface{}, perm os.FileMode) error {
 	// Clean up temp file on any failure path.
 	defer func() {
 		if tmp != nil {
-			tmp.Close()
+			_ = tmp.Close()
 		}
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 	}()
 	enc := json.NewEncoder(tmp)
 	enc.SetIndent("", "  ")
@@ -74,9 +74,9 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	tmpName := tmp.Name()
 	defer func() {
 		if tmp != nil {
-			tmp.Close()
+			_ = tmp.Close()
 		}
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 	}()
 	if _, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("write temp file: %w", err)

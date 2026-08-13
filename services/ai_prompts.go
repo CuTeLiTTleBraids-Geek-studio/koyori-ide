@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -544,14 +543,4 @@ func BuildPromptWithMeta(template, code, language, filePath string) string {
 	result = strings.ReplaceAll(result, "{{language}}", language)
 	result = strings.ReplaceAll(result, "{{filepath}}", filePath)
 	return result
-}
-
-// sortedPresetNames returns preset names in deterministic order for tests.
-func sortedPresetNames() []string {
-	names := make([]string, 0, len(PresetPrompts))
-	for name := range PresetPrompts {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }

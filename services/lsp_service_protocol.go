@@ -68,14 +68,6 @@ func cloneStringSlicePointer(value *[]string) *[]string {
 	return &cloned
 }
 
-func cloneLSPRangePointer(value *LSPRange) *LSPRange {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
-}
-
 func completionTextEditFromJSON(edit completionTextEditJSON) TextEdit {
 	mapped := TextEdit{NewText: edit.NewText}
 	if edit.Range != nil {
@@ -337,7 +329,7 @@ func pathToURI(p string) string {
 	// Windows (filepath.Abs would incorrectly prefix the drive).
 	if !filepath.IsAbs(p) {
 		isPOSIXAbs := strings.HasPrefix(p, "/")
-		if !(runtime.GOOS == "windows" && isPOSIXAbs) {
+		if runtime.GOOS != "windows" || !isPOSIXAbs {
 			if abs, err := filepath.Abs(p); err == nil {
 				p = abs
 			}

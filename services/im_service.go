@@ -395,7 +395,9 @@ func (s *IMService) sendToProvider(ctx context.Context, provider *IMProvider, pa
 	if err != nil {
 		return fmt.Errorf("im request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	// G-SEC-07：限制响应体 64KB，防止内存爆炸。
 	limited := io.LimitReader(resp.Body, 64*1024)
 	respBody, _ := io.ReadAll(limited)

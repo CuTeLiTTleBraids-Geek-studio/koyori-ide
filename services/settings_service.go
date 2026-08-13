@@ -444,6 +444,9 @@ func (s *SettingsService) SaveSettings(settings Settings) error {
 	return s.saveSettingsLocked(settings)
 }
 
+// ErrSettingsConflict is returned when settings CAS fails (prompt-7 Task F).
+var ErrSettingsConflict = fmt.Errorf("settings version conflict: disk was modified by another window")
+
 // saveSettingsLocked encrypts the API key and writes to disk. Caller MUST
 // hold s.pathMu (read or write). Used internally by LoadSettings (which
 // already holds the lock) and SaveSettings.
@@ -453,9 +456,6 @@ func (s *SettingsService) SaveSettings(settings Settings) error {
 // saves unrelated changes with empty + configured=true), the existing
 // on-disk key is preserved so unrelated saves don't wipe the stored key. A
 // genuine clear passes AIApiKeyConfigured=false, so the key is written empty.
-// ErrSettingsConflict is returned when settings CAS fails (prompt-7 Task F).
-var ErrSettingsConflict = fmt.Errorf("settings version conflict: disk was modified by another window")
-
 func (s *SettingsService) saveSettingsLocked(settings Settings) error {
 	// Make a shallow copy so we don't mutate the caller's struct.
 	copy := settings
@@ -695,15 +695,6 @@ func (s *SettingsService) getAPIKeyForConfig(configID string) (string, error) {
 		}
 	}
 	return "", nil
-}
-
-// saveSettingsInternal is kept for backward compatibility with callers that
-// don't hold the lock. It acquires the read lock and delegates to
-// saveSettingsLocked. Prefer SaveSettings for new code.
-func (s *SettingsService) saveSettingsInternal(settings Settings) error {
-	s.pathMu.RLock()
-	defer s.pathMu.RUnlock()
-	return s.saveSettingsLocked(settings)
 }
 
 // IsAPIKeyEncryptedOnDisk reads the raw settings file and returns true if the

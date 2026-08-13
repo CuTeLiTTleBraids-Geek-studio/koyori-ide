@@ -213,7 +213,7 @@ type githubReview struct {
 }
 
 func mapGitHubUser(user githubUser) PullRequestUser {
-	return PullRequestUser{Login: user.Login, AvatarURL: user.AvatarURL}
+	return PullRequestUser(user)
 }
 
 func mapGitHubPullRequest(input githubPullRequest) PullRequest {

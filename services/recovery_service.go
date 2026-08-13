@@ -170,12 +170,11 @@ type RecoveryScan struct {
 // RecoveryService persists unsaved editor buffers so they survive an abnormal
 // exit.
 type RecoveryService struct {
-	mu          sync.Mutex
-	rootDir     string
-	wsCtx       *WorkspaceContext
-	enabled     bool
-	fileService *FileService
-	lifecycle   map[uint64]recoveryLifecycleEntry
+	mu        sync.Mutex
+	rootDir   string
+	wsCtx     *WorkspaceContext
+	enabled   bool
+	lifecycle map[uint64]recoveryLifecycleEntry
 }
 
 // NewRecoveryService creates the service. Journaling defaults to enabled: the
@@ -197,16 +196,6 @@ func (s *RecoveryService) setWorkspaceContext(ctx *WorkspaceContext) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.wsCtx = ctx
-}
-
-// setFileService links FileService so conflict scans read disk content through
-// the same sandbox the editor uses.
-//
-//wails:ignore
-func (s *RecoveryService) setFileService(f *FileService) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.fileService = f
 }
 
 func recoveryDecisionKey(windowID, path string) string {
@@ -740,28 +729,6 @@ func (s *RecoveryService) ClearWorkspaceJournal() error {
 		return err
 	}
 	if err := os.RemoveAll(wsDir); err != nil {
-		return fmt.Errorf("clear workspace recovery journal: %w", err)
-	}
-	return nil
-}
-
-// clearJournalForRoot removes the journal for an explicit root, used when the
-// workspace is being removed and the shared context may already have moved on.
-//
-//wails:ignore
-func (s *RecoveryService) clearJournalForRoot(root string) error {
-	if root == "" {
-		return fmt.Errorf("workspace root is required: %w", ErrInvalidInput)
-	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return fmt.Errorf("resolve workspace root: %w", err)
-	}
-	s.mu.Lock()
-	rootDir := s.rootDir
-	s.mu.Unlock()
-	target := filepath.Join(rootDir, hashContent([]byte(filepath.Clean(abs))))
-	if err := os.RemoveAll(target); err != nil {
 		return fmt.Errorf("clear workspace recovery journal: %w", err)
 	}
 	return nil

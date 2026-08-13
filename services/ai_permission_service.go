@@ -227,7 +227,7 @@ func (s *AIPermissionService) appendUsage(rec UsageRecord) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, _ = f.Write(data)
 }
 
@@ -449,6 +449,7 @@ func (s *AIPermissionService) CheckBudget(budget BudgetAlert) string {
 }
 
 // ---------------------------------------------------------------------------
+
 // ResetUsage 清除所有用量记录（用于测试/重置）。
 func (s *AIPermissionService) ResetUsage() error {
 	s.mu.Lock()

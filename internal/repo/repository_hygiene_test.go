@@ -45,6 +45,12 @@ func TestG17RepositoryHygieneAndIgnoreRules(t *testing.T) {
 func TestG17LocalClaudeSettingsContainOnlyPermissions(t *testing.T) {
 	raw, err := os.ReadFile("../../.claude/settings.local.json")
 	if err != nil {
+		if os.IsNotExist(err) {
+			// G-CI-05: .claude/ is gitignored and only present on developer
+			// machines; a fresh checkout (e.g. CI) never has it. This is a
+			// local-only hygiene gate, so skip instead of failing.
+			t.Skip("local-only check: .claude/settings.local.json not present in this checkout")
+		}
 		t.Fatal(err)
 	}
 	var settings map[string]json.RawMessage

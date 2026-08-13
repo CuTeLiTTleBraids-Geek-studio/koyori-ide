@@ -768,7 +768,7 @@ func (s *LSPService) startLSPServer(language string, allowSwitching bool) error 
 		frameworkName := strings.ToUpper(definition.framework[:1]) + definition.framework[1:]
 		err := fmt.Errorf("%s language server is only available in an %s project workspace", frameworkName, frameworkName)
 		if definition.framework == "vue" {
-			err = fmt.Errorf("Vue language server is only available in a Vue project workspace")
+			err = fmt.Errorf("vue language server is only available in a Vue project workspace")
 		}
 		s.setLastError(language, err)
 		return err

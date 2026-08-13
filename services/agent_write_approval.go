@@ -24,7 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -270,14 +269,3 @@ func (s *AgentService) ExecuteApprovedWrite(targetPath, content, token string) e
 	}
 	return nil
 }
-
-// discardWriteApproval cancels a token that was issued but will not be used.
-func (s *AgentService) discardWriteApproval(token string) {
-	s.writeApprovalMu.Lock()
-	delete(s.writeApprovals, token)
-	s.writeApprovalMu.Unlock()
-}
-
-// writeApprovalsInit is a once-initialised mutex guard used by Close to drain
-// pending write approvals alongside command approvals.
-var _ sync.Mutex // keep import live

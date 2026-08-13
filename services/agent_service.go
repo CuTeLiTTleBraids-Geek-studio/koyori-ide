@@ -679,21 +679,6 @@ func (s *AgentService) CallMCPTool(ctx context.Context, namespace string, args m
 	return nil, fmt.Errorf("backend MCP approval token required: %w", ErrInvalidInput)
 }
 
-func (s *AgentService) callMCPTool(ctx context.Context, namespace string, args map[string]interface{}) (*MCPToolResult, error) {
-	s.mu.Lock()
-	mcp := s.mcpService
-	s.mu.Unlock()
-	if mcp == nil {
-		return nil, fmt.Errorf("MCP service not configured: %w", ErrInvalidInput)
-	}
-	parts := strings.SplitN(namespace, ".", 3)
-	if len(parts) != 3 || parts[0] != "mcp" {
-		return nil, fmt.Errorf("invalid MCP namespace %q: %w", namespace, ErrInvalidInput)
-	}
-	server, tool := parts[1], parts[2]
-	return mcp.callTool(ctx, server, tool, args)
-}
-
 // ExecResult is the outcome of a synchronous command execution.
 type ExecResult struct {
 	Command     string    `json:"command"`

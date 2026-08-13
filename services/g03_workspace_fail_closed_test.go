@@ -56,7 +56,7 @@ func TestG03MCPProtocolHelperProcess(t *testing.T) {
 		if request.ID == nil {
 			continue
 		}
-		result := map[string]interface{}{}
+		var result map[string]interface{}
 		switch request.Method {
 		case "initialize":
 			result = map[string]interface{}{

@@ -832,16 +832,6 @@ func (t *sseTransport) waitForPostURL(ctx context.Context) (string, error) {
 	}
 }
 
-// validateSSEPostURL enforces C-2: the postURL advertised by an SSE server
-// must be same-origin (scheme + host + port) with the URL we initially
-// connected to, and must independently pass the SSRF check — otherwise a
-// malicious server could funnel JSON-RPC bodies (which may include file
-// contents or Authorization headers) to an attacker or an internal service.
-func validateSSEPostURL(baseURL, postURL string) error {
-	_, err := normalizeSSEPostURL(baseURL, postURL)
-	return err
-}
-
 func normalizeSSEPostURL(baseURL, postURL string) (string, error) {
 	base, err := url.Parse(baseURL)
 	if err != nil {

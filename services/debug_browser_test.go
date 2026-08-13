@@ -585,8 +585,8 @@ func targetIDs(targets []browserTarget) []string {
 }
 
 func lastPathComponent(path string) string {
-	path = strings.TrimRight(path, `/\\`)
-	if i := strings.LastIndexAny(path, `/\\`); i >= 0 {
+	path = strings.TrimRight(path, `/\`)
+	if i := strings.LastIndexAny(path, `/\`); i >= 0 {
 		return path[i+1:]
 	}
 	return path

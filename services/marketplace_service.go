@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -713,7 +714,9 @@ func (s *MarketplaceService) DownloadAndInstallExtension(publisher, name, versio
 	if err != nil {
 		return fmt.Errorf("download VSIX: %w", err)
 	}
-	defer os.Remove(tmpPath) // 安装完成后删除临时文件
+	defer func() {
+		_ = os.Remove(tmpPath) // 安装完成后删除临时文件
+	}()
 	// G-SEC-12 req. 3: SHA-256 验证。流式哈希与 wantHash 比对。
 	if !strings.EqualFold(gotHash, wantHash) {
 		return fmt.Errorf("SHA-256 verification failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
@@ -777,7 +780,9 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 	if err != nil {
 		return fmt.Errorf("download VSIX: %w", err)
 	}
-	defer os.Remove(tmpPath)
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 	if !strings.EqualFold(gotHash, wantHash) {
 		return fmt.Errorf("SHA-256 verification failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
 	}
@@ -1024,7 +1029,9 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", "", fmt.Errorf("registry returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -1039,8 +1046,8 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	// 失败路径清理临时文件
 	defer func() {
 		if err != nil {
-			tmp.Close()
-			os.Remove(tmpPath)
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
 			tmpPath = ""
 		}
 	}()
@@ -1212,12 +1219,16 @@ func (s *MarketplaceService) installFromVSIXFile(tmpPath, wantHash, publisher, n
 
 // extractVSIXFromFile (P2-4) 从磁盘 VSIX 文件解压到 targetDir。
 // 用 zip.OpenReader 直接从磁盘读取，避免 ReaderAt 需要全量在内存。
-func extractVSIXFromFile(tmpPath, targetDir string) error {
+func extractVSIXFromFile(tmpPath, targetDir string) (err error) {
 	zr, err := zip.OpenReader(tmpPath)
 	if err != nil {
 		return fmt.Errorf("open VSIX zip: %w", err)
 	}
-	defer zr.Close()
+	defer func() {
+		if closeErr := zr.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close VSIX zip: %w", closeErr))
+		}
+	}()
 	// zr 是 *zip.ReadCloser，嵌入值类型 zip.Reader；&zr.Reader 取其地址。
 	return extractVSIXEntries(&zr.Reader, targetDir)
 }
@@ -1232,7 +1243,9 @@ func (s *MarketplaceService) installFromVSIXData(vsix []byte, wantHash, publishe
 		return fmt.Errorf("create temporary VSIX: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 	if _, err := tmp.Write(vsix); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write temporary VSIX: %w", err)
@@ -1749,12 +1762,6 @@ func (s *MarketplaceService) saveExtensionStateLocked(state mpExtensionStateFile
 	return atomicWriteJSON(path, state, 0600)
 }
 
-func (s *MarketplaceService) saveExtensionState(state mpExtensionStateFile) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveExtensionStateLocked(state)
-}
-
 // extensionStateKey is the map key for an extension's persisted state, also
 // used as the on-disk directory name: "<publisher>.<name>".
 func extensionStateKey(publisher, name string) string {
@@ -1790,7 +1797,9 @@ func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("registry returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -1825,7 +1834,6 @@ const (
 // cannot slip under per-entry limits.
 type vsixExtractStats struct {
 	totalBytes int64
-	entryCount int
 }
 
 func extractVSIXEntries(zr *zip.Reader, targetDir string) error {
@@ -1852,7 +1860,7 @@ func extractVSIXEntries(zr *zip.Reader, targetDir string) error {
 // symlink bit) are rejected — an extension should not install symlinks.
 // G20: quotas are enforced on both the header-declared sizes and the actual
 // streamed bytes (a lying header cannot bypass the budget).
-func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, seen map[string]struct{}) error {
+func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, seen map[string]struct{}) (err error) {
 	name := f.Name
 	// Normalize separators to the OS form and clean. Reject absolute paths
 	// and parent traversal before joining.
@@ -1921,12 +1929,20 @@ func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, see
 	if err != nil {
 		return fmt.Errorf("open VSIX entry %q: %w", f.Name, err)
 	}
-	defer rc.Close()
+	defer func() {
+		if closeErr := rc.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close VSIX entry %q: %w", f.Name, closeErr))
+		}
+	}()
 	w, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("create file %q: %w", f.Name, err)
 	}
-	defer w.Close()
+	defer func() {
+		if closeErr := w.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close file %q: %w", f.Name, closeErr))
+		}
+	}()
 	// G20: budget the ACTUAL streamed bytes (defeats lying headers); the
 	// per-entry limit uses LimitReader so a bomb cannot over-allocate.
 	written, copyErr := io.Copy(w, io.LimitReader(rc, vsixMaxEntryBytes+1))

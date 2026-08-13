@@ -252,7 +252,9 @@ func (r *JSONSchemaResolver) fetch(ctx context.Context, rawURL string) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("download schema: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("download schema: HTTP %d", response.StatusCode)
 	}
@@ -547,7 +549,9 @@ func readLimitedFile(filePath string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err

@@ -125,8 +125,8 @@ func doWithRetry(do func() (*http.Response, error)) (*http.Response, error) {
 		// return the error immediately.
 		if err != nil && isContextError(err) {
 			if resp != nil {
-				io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
 			}
 			return nil, err
 		}
@@ -152,8 +152,8 @@ func doWithRetry(do func() (*http.Response, error)) (*http.Response, error) {
 					"attempt", attempt+1, "maxAttempts", maxRetries+1,
 					"status", resp.StatusCode, "backoffMs", backoff.Milliseconds())
 			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			time.Sleep(backoff)
 			continue
 		}
@@ -162,8 +162,8 @@ func doWithRetry(do func() (*http.Response, error)) (*http.Response, error) {
 		// TLS handshake — these may be transient).
 		if err != nil {
 			if resp != nil {
-				io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
 			}
 			slog.Warn("ai retry: network error",
 				"attempt", attempt+1, "maxAttempts", maxRetries+1, "err", err)

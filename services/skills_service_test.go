@@ -207,7 +207,7 @@ func TestMergeSystemPrompts_PriorityOrder(t *testing.T) {
 	if highPos < 0 || midPos < 0 || lowPos < 0 {
 		t.Fatalf("missing prompts: high=%d mid=%d low=%d", highPos, midPos, lowPos)
 	}
-	if !(highPos < midPos && midPos < lowPos) {
+	if highPos >= midPos || midPos >= lowPos {
 		t.Errorf("expected high < mid < low, got high=%d mid=%d low=%d", highPos, midPos, lowPos)
 	}
 	// 验证头部包含最高优先级 Name 标记。

@@ -24,7 +24,6 @@ package services
 // 配置持久化用 atomicWriteJSON（0600），复用既有原子写实现。
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	crypto_rand "crypto/rand"
@@ -34,7 +33,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/png"
 	"io"
 	"log/slog"
 	"os"
@@ -737,7 +735,7 @@ func parseComputerUseOperation(action, details string) (canonical string, safety
 			return "", nil, "", err
 		}
 		canonical, err = marshalComputerUseDetails(parsed)
-		return canonical, coordsArg{X: parsed.X, Y: parsed.Y}, fmt.Sprintf("coordinates=(%d,%d)", parsed.X, parsed.Y), err
+		return canonical, coordsArg(parsed), fmt.Sprintf("coordinates=(%d,%d)", parsed.X, parsed.Y), err
 	case "mouse_click":
 		var parsed mouseClickOperationDetails
 		if err := decodeComputerUseDetails(details, &parsed); err != nil {
@@ -966,18 +964,4 @@ func (s *ComputerUseService) recordAction(action, args string) {
 		Action:    action,
 		Args:      args,
 	})
-}
-
-// ---------------------------------------------------------------------------
-// 辅助：PNG 编码（Step 2，供平台实现使用）
-// ---------------------------------------------------------------------------
-
-// encodePNG 将 image.Image 编码为 PNG 字节。
-// 供平台实现（computer_use_windows.go 等）复用。
-func encodePNG(img image.Image) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, fmt.Errorf("png encode: %w", err)
-	}
-	return buf.Bytes(), nil
 }

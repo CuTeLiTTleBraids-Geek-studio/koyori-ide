@@ -727,7 +727,7 @@ func (s *AIGoalService) ListCheckpoints(id string) ([]Checkpoint, error) {
 // 成本控制（Step 6）
 // ---------------------------------------------------------------------------
 
-// GetCostReport 返回成本报告。
+// CostReport 描述目标执行的成本和令牌用量。
 type CostReport struct {
 	TotalCost     float64 `json:"totalCost"`
 	MaxCost       float64 `json:"maxCost"`

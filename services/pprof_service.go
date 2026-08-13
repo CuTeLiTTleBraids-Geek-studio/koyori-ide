@@ -109,7 +109,7 @@ func (s *PProfService) ActiveProfile() string {
 }
 
 // CaptureHeapProfile 使用 pprof.WriteHeapProfile 将当前堆 profile 写入 outputPath。
-func (s *PProfService) CaptureHeapProfile(outputPath string) error {
+func (s *PProfService) CaptureHeapProfile(outputPath string) (err error) {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
 	}
@@ -117,7 +117,11 @@ func (s *PProfService) CaptureHeapProfile(outputPath string) error {
 	if err != nil {
 		return fmt.Errorf("create heap profile file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close heap profile file: %w", closeErr))
+		}
+	}()
 	if err := pprof.WriteHeapProfile(f); err != nil {
 		return fmt.Errorf("write heap profile: %w", err)
 	}
@@ -127,7 +131,7 @@ func (s *PProfService) CaptureHeapProfile(outputPath string) error {
 // CaptureGoroutineProfile 将 goroutine profile 写入 outputPath。
 // 使用 pprof.Lookup("goroutine").WriteTo。
 // debug 为 0 时输出二进制格式，>0 时输出可读文本（1=单行/栈，2=同 1 且带运行时元信息）。
-func (s *PProfService) CaptureGoroutineProfile(outputPath string, debug int) error {
+func (s *PProfService) CaptureGoroutineProfile(outputPath string, debug int) (err error) {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
 	}
@@ -139,7 +143,11 @@ func (s *PProfService) CaptureGoroutineProfile(outputPath string, debug int) err
 	if err != nil {
 		return fmt.Errorf("create goroutine profile file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close goroutine profile file: %w", closeErr))
+		}
+	}()
 	if err := p.WriteTo(f, debug); err != nil {
 		return fmt.Errorf("write goroutine profile: %w", err)
 	}
@@ -282,7 +290,7 @@ func createProfileFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 }
 
-func writeRuntimeProfile(outputPath, name string) error {
+func writeRuntimeProfile(outputPath, name string) (err error) {
 	profile := pprof.Lookup(name)
 	if profile == nil {
 		return fmt.Errorf("%s profile not available", name)
@@ -291,7 +299,11 @@ func writeRuntimeProfile(outputPath, name string) error {
 	if err != nil {
 		return fmt.Errorf("create %s profile file: %w", name, err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s profile file: %w", name, closeErr))
+		}
+	}()
 	if err := profile.WriteTo(f, 0); err != nil {
 		return fmt.Errorf("write %s profile: %w", name, err)
 	}
@@ -346,7 +358,9 @@ func (s *PProfService) AnalyzeProfile(profilePath string) (*ProfileAnalysis, err
 	if err != nil {
 		return nil, fmt.Errorf("open profile file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat profile file: %w", err)
@@ -361,7 +375,7 @@ func (s *PProfService) AnalyzeProfile(profilePath string) (*ProfileAnalysis, err
 	if headerErr != nil && !errors.Is(headerErr, io.EOF) && !errors.Is(headerErr, io.ErrUnexpectedEOF) {
 		return nil, fmt.Errorf("read profile header: %w", headerErr)
 	}
-	var profileReader io.Reader = io.MultiReader(bytes.NewReader(header[:n]), fileReader)
+	profileReader := io.MultiReader(bytes.NewReader(header[:n]), fileReader)
 	var gr *gzip.Reader
 	// runtime/pprof 写出的 profile 为 gzip 压缩的 protobuf（.pb.gz）。
 	// 检测 gzip 魔数 0x1f 0x8b 并解压，兼容未压缩的裸 protobuf。
@@ -401,7 +415,9 @@ func (s *PProfService) AnalyzeTrace(tracePath, view string) (*ProfileAnalysis, e
 	if err != nil {
 		return nil, err
 	}
-	defer os.Remove(traceInput)
+	defer func() {
+		_ = os.Remove(traceInput)
+	}()
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		return nil, fmt.Errorf("go toolchain is required to analyze traces")
@@ -411,7 +427,9 @@ func (s *PProfService) AnalyzeTrace(tracePath, view string) (*ProfileAnalysis, e
 		return nil, fmt.Errorf("create trace profile temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return nil, fmt.Errorf("secure trace profile temp file: %w", err)
@@ -461,7 +479,9 @@ func copyTraceInput(tracePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open trace file: %w", err)
 	}
-	defer source.Close()
+	defer func() {
+		_ = source.Close()
+	}()
 	openedInfo, err := source.Stat()
 	if err != nil {
 		return "", fmt.Errorf("stat opened trace file: %w", err)
@@ -974,17 +994,19 @@ func parseSample(b []byte) (rawSample, error) {
 	err := iterFields(b, func(num, wire int, v uint64, sub []byte) error {
 		switch num {
 		case 1: // location_id (repeated uint64, packed)
-			if wire == 2 {
+			switch wire {
+			case 2:
 				sm.locationIDs = append(sm.locationIDs, readPackedUints(sub)...)
-			} else if wire == 0 {
+			case 0:
 				sm.locationIDs = append(sm.locationIDs, v)
 			}
 		case 2: // value (repeated int64, packed)
-			if wire == 2 {
+			switch wire {
+			case 2:
 				for _, u := range readPackedUints(sub) {
 					sm.values = append(sm.values, int64(u))
 				}
-			} else if wire == 0 {
+			case 0:
 				sm.values = append(sm.values, int64(v))
 			}
 		}

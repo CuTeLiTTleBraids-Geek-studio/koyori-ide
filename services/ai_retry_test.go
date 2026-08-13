@@ -450,9 +450,8 @@ func TestDoWithRetry_N61_ContextCanceledClosesResponseBody(t *testing.T) {
 
 // closerTracker is an io.ReadCloser that tracks whether Close was called.
 type closerTracker struct {
-	closed   bool
-	onClose  func()
-	contents string
+	closed  bool
+	onClose func()
 }
 
 func (c *closerTracker) Read(p []byte) (int, error) { return 0, io.EOF }

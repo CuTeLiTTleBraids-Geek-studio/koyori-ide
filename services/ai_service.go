@@ -481,9 +481,6 @@ type aiSnapshot struct {
 	app           *application.App
 	presetService *PresetService
 	projectRoot   string
-	// G-SEC-07: settingsService is used to fetch stored API keys when
-	// UseStoredKey is true, so keys never cross the Wails binding.
-	settingsService *SettingsService
 }
 
 // snapshot returns a copy of the service's configuration fields under the
@@ -751,14 +748,8 @@ func (a *AIService) ListPresetsWithSource() []PresetWithSource {
 	result := make([]PresetWithSource, 0, len(builtinPresets))
 	for _, p := range builtinPresets {
 		result = append(result, PresetWithSource{
-			PresetFile: PresetFile{
-				Name:        p.Name,
-				Label:       p.Label,
-				Description: p.Description,
-				Icon:        p.Icon,
-				Prompt:      p.Prompt,
-			},
-			Source: PresetSourceBuiltin,
+			PresetFile: PresetFile(p),
+			Source:     PresetSourceBuiltin,
 		})
 	}
 	return result
@@ -808,12 +799,6 @@ func (a *AIService) DeleteUserPreset(name string) error {
 // N-93: takes a snapshot to avoid racing with SetConfig.
 func (a *AIService) effectiveSystemPrompt() string {
 	return effectiveSystemPromptFrom(a.snapshot().config)
-}
-
-// withSystemPrompt prepends the system prompt to the messages slice.
-// N-93: takes a snapshot to avoid racing with SetConfig.
-func (a *AIService) withSystemPrompt(messages []ChatMessage) []ChatMessage {
-	return withSystemPromptFrom(a.snapshot().config, messages)
 }
 
 func (a *AIService) Send(messages []ChatMessage) (*ChatResponse, error) {
@@ -872,7 +857,7 @@ func (a *AIService) Send(messages []ChatMessage) (*ChatResponse, error) {
 		slog.Error("ai send: http request failed (after retries)", "model", cfg.Model, "err", err)
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := parseAIError(resp)
@@ -943,7 +928,7 @@ func (a *AIService) sendAnthropic(ctx context.Context, cfg AIConfig, fullMessage
 		slog.Error("ai send: http request failed (after retries)", "model", cfg.Model, "err", err)
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := parseAIError(resp)
@@ -1074,7 +1059,7 @@ func (a *AIService) Complete(req CompletionRequest) (*CompletionResponse, error)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, parseAIError(resp)
@@ -1195,7 +1180,7 @@ func (a *AIService) GenerateTitleWithAI(firstMessage string) (string, error) {
 	if err != nil {
 		return fallback, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fallback, parseAIError(resp)
 	}
@@ -1537,7 +1522,7 @@ func (a *AIService) SendStreamWithContext(ctx context.Context, messages []ChatMe
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return parseAIError(resp)
@@ -1569,7 +1554,7 @@ func (a *AIService) SendStreamWithContext(ctx context.Context, messages []ChatMe
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return parseAIError(resp)
@@ -1732,7 +1717,7 @@ func (a *AIService) streamWithEvents(ctx context.Context, messages []ChatMessage
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return parseAIError(resp)
@@ -1784,7 +1769,7 @@ func (a *AIService) streamWithEvents(ctx context.Context, messages []ChatMessage
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return parseAIError(resp)
@@ -1885,7 +1870,7 @@ func (a *AIService) ListModels(baseURL, apiKey string) ([]string, error) {
 		slog.Error("ai listmodels: http request failed", "baseURL", baseURL, "err", err)
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, parseAIError(resp)

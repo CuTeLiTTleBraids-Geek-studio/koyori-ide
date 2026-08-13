@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -98,9 +99,9 @@ func (l *InstanceLock) tryCreateExclusive() error {
 	}
 	// 检查写入错误 (H-5)
 	if writeErr != nil {
-		f.Close()
-		os.Remove(l.lockPath)
-		return fmt.Errorf("write lock file: %w", writeErr)
+		closeErr := f.Close()
+		removeErr := os.Remove(l.lockPath)
+		return fmt.Errorf("write lock file: %w", errors.Join(writeErr, closeErr, removeErr))
 	}
 	l.file = f
 	l.released = false

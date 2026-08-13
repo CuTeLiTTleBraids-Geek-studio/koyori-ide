@@ -255,14 +255,11 @@ func TestDAP_Contract_InitializeLaunchStoppedStackContinue(t *testing.T) {
 	_, _ = d.SetBreakpointEx("/tmp/main.go", 10, "x > 0", "")
 	_, _ = d.SetBreakpointEx("/tmp/main.go", 999, "", "")
 
-	session, err := d.ConnectMockDAP(addr, map[string]interface{}{
+	_, err := d.ConnectMockDAP(addr, map[string]interface{}{
 		"request": "launch", "program": "/tmp/main.go",
 	})
 	if err != nil {
 		t.Fatalf("ConnectMockDAP: %v", err)
-	}
-	if !session.Running && !session.Stopped {
-		// session may report running=false without process; still should stop
 	}
 	// wait for stopped
 	deadline := time.Now().Add(3 * time.Second)
@@ -306,13 +303,6 @@ func TestDAP_Contract_InitializeLaunchStoppedStackContinue(t *testing.T) {
 	}
 	if !sawUnverified {
 		t.Errorf("expected unverified bp at L999: %+v", st.Breakpoints)
-	}
-
-	// condition preserved client-side
-	for _, b := range st.Breakpoints {
-		if b.Line == 10 && b.Condition != "x > 0" {
-			// condition may be lost after apply if mock doesn't echo — check client list
-		}
 	}
 
 	ev, err := d.Evaluate("x+1")
@@ -436,14 +426,11 @@ func TestDebugService_P5_SetFunctionBreakpoints(t *testing.T) {
 	defer mock.close()
 
 	d := NewDebugService()
-	session, err := d.ConnectMockDAP(addr, map[string]interface{}{
+	_, err := d.ConnectMockDAP(addr, map[string]interface{}{
 		"request": "launch", "program": "/tmp/main.go",
 	})
 	if err != nil {
 		t.Fatalf("ConnectMockDAP: %v", err)
-	}
-	if !session.Running && !session.Stopped {
-		// some platforms report running=false; rely on waitStopped below
 	}
 	waitStopped(t, d, 3*time.Second)
 

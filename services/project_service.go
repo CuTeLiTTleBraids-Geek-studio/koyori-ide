@@ -550,7 +550,7 @@ func isValidProjectID(id string) bool {
 		return false
 	}
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '-') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') && c != '-' {
 			return false
 		}
 	}
@@ -629,24 +629,6 @@ func (p *ProjectService) removeProject(id string) error {
 		}
 	}
 	return fmt.Errorf("project not found: %s", id)
-}
-
-// isSameWorkspacePath reports whether two paths denote the same workspace.
-// Both sides are canonicalized because the context stores a cleaned absolute
-// path while the persisted project record keeps whatever the user supplied.
-func (p *ProjectService) isSameWorkspacePath(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	absA, err := filepath.Abs(a)
-	if err != nil {
-		return false
-	}
-	absB, err := filepath.Abs(b)
-	if err != nil {
-		return false
-	}
-	return sameWorkspaceIdentityPath(absA, absB)
 }
 
 func sortProjectsByRecency(projects []Project) {
@@ -753,7 +735,7 @@ var builtInTemplates = []ProjectTemplate{
 }
 
 // ListProjectTemplates returns the available project templates for the wizard.
-func (s *ProjectService) ListProjectTemplates() []ProjectTemplate {
+func (p *ProjectService) ListProjectTemplates() []ProjectTemplate {
 	out := make([]ProjectTemplate, len(builtInTemplates))
 	copy(out, builtInTemplates)
 	return out
@@ -764,7 +746,7 @@ func (s *ProjectService) ListProjectTemplates() []ProjectTemplate {
 // and module names, ensures the target directory is safe, walks the embedded
 // template tree, renders each .tmpl file with text/template, and writes the
 // results to disk. The created project path is returned.
-func (s *ProjectService) CreateProject(req CreateProjectRequest) (string, error) {
+func (p *ProjectService) CreateProject(req CreateProjectRequest) (string, error) {
 	if !isValidTemplateID(req.TemplateID) {
 		return "", fmt.Errorf("invalid template ID: %q", req.TemplateID)
 	}
@@ -1306,9 +1288,7 @@ func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, e
 	if err != nil {
 		return nil, err
 	}
-	for _, s := range singleSetters {
-		snaps = append(snaps, s)
-	}
+	snaps = append(snaps, singleSetters...)
 	return snaps, nil
 }
 

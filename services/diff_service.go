@@ -306,9 +306,10 @@ func (s *DiffService) ComputeFileDiff(path, oldContent, newContent string) FileD
 	added, removed := 0, 0
 	for _, h := range hunks {
 		for _, l := range h.Lines {
-			if l.Type == DiffLineAdded {
+			switch l.Type {
+			case DiffLineAdded:
 				added++
-			} else if l.Type == DiffLineRemoved {
+			case DiffLineRemoved:
 				removed++
 			}
 		}
@@ -533,18 +534,18 @@ func (s *DiffService) ReviewPR(diff MultiFileDiff, reviews []FileReview) ReviewP
 func (s *DiffService) ExportMarkdown(diff MultiFileDiff, reviews []FileReview) string {
 	var b strings.Builder
 	b.WriteString("# Diff Review Report\n\n")
-	b.WriteString(fmt.Sprintf("**Files:** %d  | **+%d / -%d**\n\n", len(diff.Files), diff.TotalAdded, diff.TotalRemoved))
+	fmt.Fprintf(&b, "**Files:** %d  | **+%d / -%d**\n\n", len(diff.Files), diff.TotalAdded, diff.TotalRemoved)
 
 	for _, f := range diff.Files {
-		b.WriteString(fmt.Sprintf("## %s (+%d / -%d)\n\n", f.Path, f.AddedLines, f.RemovedLines))
+		fmt.Fprintf(&b, "## %s (+%d / -%d)\n\n", f.Path, f.AddedLines, f.RemovedLines)
 		// 查找此文件的审查意见
 		for _, r := range reviews {
 			if r.Path == f.Path {
 				for _, c := range r.Comments {
 					emoji := severityEmoji(c.Severity)
-					b.WriteString(fmt.Sprintf("- %s **%s**: %s", emoji, c.Severity, c.Message))
+					fmt.Fprintf(&b, "- %s **%s**: %s", emoji, c.Severity, c.Message)
 					if c.Suggestion != "" {
-						b.WriteString(fmt.Sprintf("\n  > Suggestion: %s", c.Suggestion))
+						fmt.Fprintf(&b, "\n  > Suggestion: %s", c.Suggestion)
 					}
 					b.WriteString("\n")
 				}
@@ -552,7 +553,7 @@ func (s *DiffService) ExportMarkdown(diff MultiFileDiff, reviews []FileReview) s
 		}
 		// 输出 diff hunk
 		for _, h := range f.Hunks {
-			b.WriteString(fmt.Sprintf("```diff\n@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount))
+			fmt.Fprintf(&b, "```diff\n@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount)
 			for _, l := range h.Lines {
 				switch l.Type {
 				case DiffLineAdded:
@@ -593,10 +594,10 @@ func severityEmoji(s AICommentSeverity) string {
 func (s *DiffService) ExportUnifiedDiff(diff MultiFileDiff) string {
 	var b strings.Builder
 	for _, f := range diff.Files {
-		b.WriteString(fmt.Sprintf("--- a/%s\n", f.Path))
-		b.WriteString(fmt.Sprintf("+++ b/%s\n", f.Path))
+		fmt.Fprintf(&b, "--- a/%s\n", f.Path)
+		fmt.Fprintf(&b, "+++ b/%s\n", f.Path)
 		for _, h := range f.Hunks {
-			b.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount))
+			fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount)
 			for _, l := range h.Lines {
 				switch l.Type {
 				case DiffLineAdded:
@@ -621,9 +622,9 @@ func (s *DiffService) ExportHTML(diff MultiFileDiff) string {
 	b.WriteString("</head><body>")
 
 	for _, f := range diff.Files {
-		b.WriteString(fmt.Sprintf("<div class=\"file\"><h2>%s (+%d / -%d)</h2>", f.Path, f.AddedLines, f.RemovedLines))
+		fmt.Fprintf(&b, "<div class=\"file\"><h2>%s (+%d / -%d)</h2>", f.Path, f.AddedLines, f.RemovedLines)
 		for _, h := range f.Hunks {
-			b.WriteString(fmt.Sprintf("<div class=\"hunk\">@@ -%d,%d +%d,%d @@", h.OldStart, h.OldCount, h.NewStart, h.NewCount))
+			fmt.Fprintf(&b, "<div class=\"hunk\">@@ -%d,%d +%d,%d @@", h.OldStart, h.OldCount, h.NewStart, h.NewCount)
 			for _, l := range h.Lines {
 				cls := "context"
 				prefix := " "
@@ -635,7 +636,7 @@ func (s *DiffService) ExportHTML(diff MultiFileDiff) string {
 					cls = "removed"
 					prefix = "-"
 				}
-				b.WriteString(fmt.Sprintf("<div class=\"%s\">%s%s</div>", cls, prefix, escapeHTML(l.Content)))
+				fmt.Fprintf(&b, "<div class=\"%s\">%s%s</div>", cls, prefix, escapeHTML(l.Content))
 			}
 			b.WriteString("</div>")
 		}
@@ -695,7 +696,7 @@ func parseUnifiedDiff(diffText, oldContent, newContent string) []Hunk {
 func parseHunkHeader(line string) Hunk {
 	// 格式: @@ -1,5 +1,7 @@
 	var oldStart, oldCount, newStart, newCount int
-	fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &oldStart, &oldCount, &newStart, &newCount)
+	_, _ = fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &oldStart, &oldCount, &newStart, &newCount)
 	if oldCount == 0 {
 		oldCount = 1
 	}

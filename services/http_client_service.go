@@ -308,7 +308,9 @@ func (s *HTTPClientService) SendRequest(input HTTPRequest, options HTTPRequestOp
 		}
 		return result, fmt.Errorf("send HTTP request: %s", safeMessage)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return result, fmt.Errorf("read HTTP response: %s", sanitizeHTTPError(err.Error(), secretValues, sensitiveURLs...))

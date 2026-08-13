@@ -423,16 +423,6 @@ type SSHFileSystem struct {
 
 const maxSSHReadFileSize = int64(64 * 1024 * 1024)
 
-// newSSHFileSystem 基于 *ssh.Client 创建一个 SSHFileSystem。
-// 同时初始化 SFTP 子系统客户端。
-func newSSHFileSystem(client *ssh.Client) (*SSHFileSystem, error) {
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return nil, fmt.Errorf("open sftp session: %w", err)
-	}
-	return &SSHFileSystem{client: client, sftp: sc}, nil
-}
-
 // ReadFile 通过 SFTP 读取远程文件。
 func (s *SSHFileSystem) ReadFile(path string) ([]byte, error) {
 	if path == "" {
@@ -442,7 +432,7 @@ func (s *SSHFileSystem) ReadFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return readRemoteFileLimited(f, maxSSHReadFileSize)
 }
 
@@ -458,7 +448,7 @@ func readRemoteFileLimited(r io.Reader, maxSize int64) ([]byte, error) {
 }
 
 // WriteFile 通过 SFTP 写入远程文件。
-func (s *SSHFileSystem) WriteFile(path string, data []byte) error {
+func (s *SSHFileSystem) WriteFile(path string, data []byte) (err error) {
 	if path == "" {
 		return errors.New("path is empty")
 	}
@@ -472,7 +462,9 @@ func (s *SSHFileSystem) WriteFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		err = errors.Join(err, f.Close())
+	}()
 	_, err = f.Write(data)
 	return err
 }
@@ -985,7 +977,7 @@ func (r *RemoteService) executeCommandContext(ctx context.Context, name string, 
 			"argc", len(argv), "failure_stage", "session_open")
 		return "", fmt.Errorf("open ssh session: %w", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr

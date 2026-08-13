@@ -332,10 +332,7 @@ func (s *RulesService) loadMergedConfig(projectRoot string) (RulesConfig, rulesC
 
 	// Built-in defaults.
 	for _, c := range defaultRulesCandidates() {
-		merged.Candidates = append(merged.Candidates, RulesCandidateConfig{
-			Path:   c.Path,
-			Source: c.Source,
-		})
+		merged.Candidates = append(merged.Candidates, RulesCandidateConfig(c))
 	}
 
 	// User global.
@@ -414,10 +411,7 @@ func (s *RulesService) loadMergedCandidates(projectRoot string) ([]rulesCandidat
 	}
 	out := make([]rulesCandidateEntry, 0, len(cfg.Candidates))
 	for _, c := range cfg.Candidates {
-		out = append(out, rulesCandidateEntry{
-			Path:   c.Path,
-			Source: c.Source,
-		})
+		out = append(out, rulesCandidateEntry(c))
 	}
 	return out, nil
 }

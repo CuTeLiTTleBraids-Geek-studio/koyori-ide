@@ -34,7 +34,7 @@ func (s *PullRequestService) doJSON(repository PullRequestRepository, token, met
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	data, err := readPullRequestResponseBody(response.Body, pullRequestMaxJSONBody)
 	if err != nil {
 		return nil, err
@@ -55,7 +55,7 @@ func (s *PullRequestService) doRaw(repository PullRequestRepository, token, meth
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	data, err := readPullRequestResponseBody(response.Body, pullRequestMaxDiffBody)
 	if err != nil {
 		return "", err

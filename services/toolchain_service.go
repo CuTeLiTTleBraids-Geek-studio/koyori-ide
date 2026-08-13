@@ -1287,12 +1287,17 @@ func parseGoCompiler(output, source string) []ToolchainDiagnostic {
 		if m == nil {
 			continue
 		}
+		lineNo, err := strconv.Atoi(m[2])
+		if err != nil {
+			continue
+		}
 		col := 0
 		if m[3] != "" {
-			fmt.Sscanf(m[3], "%d", &col)
+			col, err = strconv.Atoi(m[3])
+			if err != nil {
+				continue
+			}
 		}
-		var lineNo int
-		fmt.Sscanf(m[2], "%d", &lineNo)
 		severity := "error"
 		if strings.Contains(m[4], "warning") || strings.HasPrefix(line, "warning:") {
 			severity = "warning"
@@ -1322,9 +1327,11 @@ func parseGolangciLint(output string) []ToolchainDiagnostic {
 		if m == nil {
 			continue
 		}
-		var lineNo, col int
-		fmt.Sscanf(m[2], "%d", &lineNo)
-		fmt.Sscanf(m[3], "%d", &col)
+		lineNo, lineErr := strconv.Atoi(m[2])
+		col, colErr := strconv.Atoi(m[3])
+		if lineErr != nil || colErr != nil {
+			continue
+		}
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1351,9 +1358,11 @@ func parseTypeScript(output string) []ToolchainDiagnostic {
 		if m == nil {
 			continue
 		}
-		var lineNo, col int
-		fmt.Sscanf(m[2], "%d", &lineNo)
-		fmt.Sscanf(m[3], "%d", &col)
+		lineNo, lineErr := strconv.Atoi(m[2])
+		col, colErr := strconv.Atoi(m[3])
+		if lineErr != nil || colErr != nil {
+			continue
+		}
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1384,9 +1393,11 @@ func parseESLint(output string) []ToolchainDiagnostic {
 		if !looksLikeSourceFile(m[1]) {
 			continue
 		}
-		var lineNo, col int
-		fmt.Sscanf(m[2], "%d", &lineNo)
-		fmt.Sscanf(m[3], "%d", &col)
+		lineNo, lineErr := strconv.Atoi(m[2])
+		col, colErr := strconv.Atoi(m[3])
+		if lineErr != nil || colErr != nil {
+			continue
+		}
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1412,10 +1423,8 @@ func splitToolchainLines(s string) []string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	lines := strings.Split(s, "\n")
 	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		// Keep blank lines so indices stay stable if ever needed; the
-		// parsers simply won't match them.
-		out = append(out, l)
-	}
+	// Keep blank lines so indices stay stable if ever needed; the parsers
+	// simply won't match them.
+	out = append(out, lines...)
 	return out
 }

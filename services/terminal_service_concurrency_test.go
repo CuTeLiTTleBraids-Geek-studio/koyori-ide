@@ -71,12 +71,6 @@ func (m *mockConn) isClosed() bool {
 	return m.closed
 }
 
-func (m *mockConn) getWritten() []byte {
-	m.writeMu.Lock()
-	defer m.writeMu.Unlock()
-	return m.written
-}
-
 func (m *mockConn) ExitCode() (int, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

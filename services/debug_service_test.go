@@ -133,8 +133,8 @@ func TestDebugService_ListSessionsReleasesRegistryBeforeSessionSnapshot(t *testi
 	registryAvailable := make(chan struct{})
 	go func() {
 		d.sessionsMu.Lock()
-		d.sessionsMu.Unlock()
 		close(registryAvailable)
+		d.sessionsMu.Unlock()
 	}()
 	select {
 	case <-registryAvailable:

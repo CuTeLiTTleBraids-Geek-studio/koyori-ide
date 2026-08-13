@@ -1043,10 +1043,10 @@ func (g *GitService) diffUntrackedFile(repoPath, filePath string) (string, error
 		return "", err
 	}
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", filePath, filePath))
+	fmt.Fprintf(&buf, "diff --git a/%s b/%s\n", filePath, filePath)
 	buf.WriteString("new file mode 100644\n")
 	buf.WriteString("--- /dev/null\n")
-	buf.WriteString(fmt.Sprintf("+++ b/%s\n", filePath))
+	fmt.Fprintf(&buf, "+++ b/%s\n", filePath)
 	for _, line := range strings.Split(string(data), "\n") {
 		buf.WriteString("+" + line + "\n")
 	}
@@ -1166,10 +1166,10 @@ func (g *GitService) getFileFromIndex(repo *git.Repository, filePath string) (st
 // formatNewFileDiff returns a diff for a newly added file.
 func (g *GitService) formatNewFileDiff(filePath string, content string) string {
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", filePath, filePath))
+	fmt.Fprintf(&buf, "diff --git a/%s b/%s\n", filePath, filePath)
 	buf.WriteString("new file mode 100644\n")
 	buf.WriteString("--- /dev/null\n")
-	buf.WriteString(fmt.Sprintf("+++ b/%s\n", filePath))
+	fmt.Fprintf(&buf, "+++ b/%s\n", filePath)
 	for _, line := range strings.Split(content, "\n") {
 		buf.WriteString("+" + line + "\n")
 	}
@@ -1213,7 +1213,7 @@ func (g *GitService) GetFullDiff(repoPath string) (string, error) {
 		if d == "" {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("=== %s ===\n", c.Path))
+		fmt.Fprintf(&buf, "=== %s ===\n", c.Path)
 		buf.WriteString(d)
 		if !strings.HasSuffix(d, "\n") {
 			buf.WriteString("\n")
@@ -1694,8 +1694,8 @@ func (g *GitService) GetBlameAtRevision(repoPath, filePath string, startLine, en
 	if err := g.validateFilePath(repoPath, filePath); err != nil {
 		return nil, err
 	}
-	if !((startLine == 0 && endLine == 0) ||
-		(startLine > 0 && endLine >= startLine && endLine-startLine+1 <= maxBlameRange)) {
+	if (startLine != 0 || endLine != 0) &&
+		(startLine <= 0 || endLine < startLine || endLine-startLine+1 > maxBlameRange) {
 		return nil, fmt.Errorf("invalid blame range %d:%d", startLine, endLine)
 	}
 	release, err := g.acquireRepoMutation(repoPath)
@@ -2481,7 +2481,7 @@ func validateStashRef(stashRef string) error {
 // validateTagName 校验 tagName 是否为合法的 git 标签名。
 func validateTagName(name string) error {
 	if !tagNameRe.MatchString(name) {
-		return fmt.Errorf("invalid tag name %q: must start with alphanumeric and contain only alphanumeric, -, _, .", name)
+		return fmt.Errorf("invalid tag name %q: must start with alphanumeric and contain only alphanumeric, hyphen, underscore, or period", name)
 	}
 	return nil
 }

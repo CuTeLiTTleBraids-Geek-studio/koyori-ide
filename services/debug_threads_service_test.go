@@ -210,7 +210,7 @@ func TestDebugThreadsService_ListThreadsAndPaginatedStack(t *testing.T) {
 		return json.RawMessage(`{"threads":[{"id":1,"name":"worker"},{"id":2,"name":""}]}`), nil
 	})
 	backend.setHandler("stackTrace", func(_ DebugThreadsRunIdentity, args map[string]any) (json.RawMessage, error) {
-		start := int(args["startFrame"].(int))
+		start := args["startFrame"].(int)
 		if start == 0 {
 			return json.RawMessage(`{
 				"stackFrames":[
@@ -1364,7 +1364,8 @@ func TestDebugThreadsService_Validation(t *testing.T) {
 	if _, err := svc.GetThreadStackTrace(context.Background(), "default", 1, 0, -1); err == nil {
 		t.Fatal("negative levels should fail")
 	}
-	if _, err := svc.ListThreads(nil, "default"); err == nil {
+	var nilContext context.Context
+	if _, err := svc.ListThreads(nilContext, "default"); err == nil {
 		t.Fatal("nil context should fail")
 	}
 	if err := svc.StepThread(context.Background(), "default", 1, "sideways"); err == nil {

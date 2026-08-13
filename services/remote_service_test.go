@@ -7,9 +7,8 @@ package services
 //   - SSHConfig 校验: 空 Host、无效 Port、空 User、缺少认证
 //   - RemoteService: 无效主机连接失败、断开未连接会话、空连接列表
 //
-// 注意：完整的 SSH 连接测试需要 mock SSH server；task-4.md 要求通过
-// skipIfNoSSHServer 跳过此类测试。本测试集仅做配置校验与失败路径测试，
-// 不依赖外部 SSH 服务器，可在 CI 中无网络环境下稳定运行。
+// 注意：完整的 SSH 连接测试需要 mock SSH server。本测试集仅做配置校验与
+// 失败路径测试，不依赖外部 SSH 服务器，可在 CI 中无网络环境下稳定运行。
 
 import (
 	"bytes"
@@ -29,15 +28,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
-
-// skipIfNoSSHServer 跳过依赖真实 SSH 服务器的测试。
-// 当前测试集不使用此 helper（所有测试均为离线测试），保留以便未来扩展。
-func skipIfNoSSHServer(t *testing.T) {
-	t.Helper()
-	if os.Getenv("KOYORI_IDE_SSH_TEST_HOST") == "" {
-		t.Skip("skipping SSH server test; set KOYORI_IDE_SSH_TEST_HOST to enable")
-	}
-}
 
 func TestLocalFileSystem_WatchCancellationClosesChannel(t *testing.T) {
 	dir := t.TempDir()

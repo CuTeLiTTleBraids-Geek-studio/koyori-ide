@@ -413,7 +413,7 @@ func (c *nodeCDPClient) callResultContext(ctx context.Context, method string, pa
 			c.logProtocol("<-", map[string]interface{}{"method": method, "error": err.Error()})
 			return nil, err
 		}
-		c.logProtocol("<-", map[string]interface{}{"method": method, "result": json.RawMessage(result)})
+		c.logProtocol("<-", map[string]interface{}{"method": method, "result": result})
 		return result, nil
 	}
 	id := atomic.AddInt64(&c.seq, 1)
@@ -614,11 +614,6 @@ func (c *nodeCDPClient) handleEvent(ev cdpResponse) {
 		path := f.URL
 		if strings.HasPrefix(path, "file:///") {
 			path = strings.TrimPrefix(path, "file:///")
-			if len(path) >= 2 && path[1] == ':' {
-				// windows file:///C:/...
-			} else if strings.HasPrefix(path, "/") {
-				// unix
-			}
 		} else if strings.HasPrefix(path, "file://") {
 			path = strings.TrimPrefix(path, "file://")
 		}

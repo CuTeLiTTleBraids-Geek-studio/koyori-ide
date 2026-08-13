@@ -338,7 +338,7 @@ func isBinary(path string) bool {
 	if err != nil {
 		return true
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, 4096)
 	n, _ := f.Read(buf)
 	return bytes.IndexByte(buf[:n], 0) >= 0
@@ -477,7 +477,7 @@ func searchFile(ctx context.Context, path string, re *regexp.Regexp, budget *sea
 	if err != nil {
 		return nil, nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var matches []SearchMatch
 	scanner := bufio.NewScanner(f)

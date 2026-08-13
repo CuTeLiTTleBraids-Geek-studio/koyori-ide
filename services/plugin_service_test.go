@@ -551,12 +551,9 @@ func TestPluginService_SetPluginEnabled_ToggleBack(t *testing.T) {
 	if err := svc.SetPluginEnabled("alpha", true); err != nil {
 		t.Fatalf("SetPluginEnabled true: %v", err)
 	}
-	plugins, err := svc.ListPlugins("")
+	_, err := svc.ListPlugins("")
 	if err != nil {
 		t.Fatalf("ListPlugins: %v", err)
-	}
-	if len(plugins) != 0 {
-		// No plugin directory created, so ListPlugins returns empty.
 	}
 	// State file should reflect enabled=true.
 	state := svc.loadPluginState()
