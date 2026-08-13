@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.19"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Check repository text encoding
@@ -67,7 +67,10 @@ jobs:
   wails-bindings:
     name: Wails bindings (required)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # G-CI-06: apt GUI deps + cold compile of the pinned wails3 CLI can take
+    # well over 15 minutes on a fresh runner; 15m previously made this job
+    # fail spuriously (the CLI build is cached by setup-go on later runs).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -76,7 +79,7 @@ jobs:
           cache: true
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.19"
       # G-CI-02: generate-bindings.mjs compiles the pinned wails3 CLI from
       # source; on Linux that requires the GUI development headers (the
       # wails-build job installs the same set).
@@ -121,7 +124,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.19"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -233,7 +236,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.19"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -296,7 +299,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.19"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -344,7 +347,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.19"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -396,7 +399,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "20.19"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -512,7 +515,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '20.19'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies (lockfile + official registry)
@@ -539,7 +542,7 @@ jobs:
         run: go install golang.org/x/tools/gopls@v0.21.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '20.19'
       - name: Install pinned TypeScript language servers
         run: npm install -g typescript@5.9.2 typescript-language-server@5.3.0 @vtsls/language-server@0.3.0
       - name: Require every matrix command on PATH
