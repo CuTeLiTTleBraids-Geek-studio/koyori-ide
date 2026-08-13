@@ -52,7 +52,7 @@ jobs:
           - arch: arm64
             runner: macos-14          # Apple Silicon (M1)
           - arch: amd64
-            runner: macos-13          # Intel
+            runner: macos-15          # Intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
