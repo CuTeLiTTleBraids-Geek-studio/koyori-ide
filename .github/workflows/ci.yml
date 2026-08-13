@@ -152,20 +152,40 @@ jobs:
         run: go vet ./services/... . ./internal/repo/...
 
       - name: Build
-        run: go build .
+        # Output to bin/ (gitignored): on Windows `go build .` would leave
+        # koyori-ide.exe in the repo root, failing the G17 hygiene test.
+        run: go build -o bin/ .
 
       # N-129: test the root package (main_test.go covers CSP nonce
       # injection), services, and the repository governance tests. The
       # previous `./services/...` skipped the root. We don't use `./...` for
       # the same reason as Vet.
+      # G-CI-14: GitHub Windows runners point TEMP/TMP at the 8.3 short path
+      # (C:\Users\RUNNER~1\...). Services resolve symlinks and return the long
+      # name, so tests comparing os.TempDir()-derived expectations fail with a
+      # RUNNER~1 vs runneradmin mismatch. runner.temp is the canonical runner
+      # path, free of short-name aliases.
+      # G-CI-18: headless macOS runners can accept keychain `add` but return
+      # an empty password from `find` (partition-list ACLs), breaking the
+      # encrypt/decrypt roundtrip tests. Force the deterministic cross-platform
+      # AES fallback for the test run.
       - name: Test
         # Keep the CI leg equivalent to the local G07 gate: do not let the Go
         # test cache turn a changed platform leg into an unexecuted pass.
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          KOYORI_DISABLE_KEYCHAIN: "1"
         run: go test -race ./services/... . ./internal/repo/... -count=1
 
       # Compiles and exercises the test-only loopback hook (internal/e2e) on
       # every supported source platform. This is not a packaged artifact run.
       - name: E2E build-tag hook contract (not an artifact run)
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: go test -race -tags e2e ./internal/e2e/... -count=1
 
   # N-128: Go lint. golangci-lint runs vet + a suite of additional linters
