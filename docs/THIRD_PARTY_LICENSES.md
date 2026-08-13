@@ -8,12 +8,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 - `go.mod`: `c50c5c816bd097599af5a2c731573286a601b9fb0fcb7c32d0234a48cf5a7190`
 - `go.sum`: `9048fc023832e4352fb617e570b776872b9a4667a69dba949744c0006c960229`
-- `frontend/package-lock.json`: `772df69b3e7115849d6e56a0b26848b3cfa1cb1a82abfb217bda70e61b459989`
+- `frontend/package-lock.json`: `52d16b3b59ad35e83a2e738868e45279ebb4c1f7c4eb2f16a786bd5f3e29e56d`
 
 ## Review Summary
 
 - Go modules: 51
-- Distinct npm package/version pairs: 373
+- Distinct npm package/version pairs: 396
 - Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
 - Documented Go source exceptions requiring release review: 0
@@ -153,6 +153,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @emmetio/abbreviation | 2.3.3 | MIT | package-lock.json |
 | @emmetio/css-abbreviation | 2.1.8 | MIT | package-lock.json |
 | @emmetio/scanner | 1.0.4 | MIT | package-lock.json |
+| @emnapi/wasi-threads | 1.2.2 | MIT | package-lock.json |
 | @eslint-community/eslint-utils | 4.9.1 | MIT | package-lock.json |
 | @eslint-community/regexpp | 4.12.2 | MIT | package-lock.json |
 | @eslint/config-array | 0.21.2 | Apache-2.0 | package-lock.json |
@@ -183,14 +184,36 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @oxc-project/types | 0.143.0 | MIT | package-lock.json |
 | @pkgjs/parseargs | 0.11.0 | MIT | package-lock.json |
 | @popperjs/core | 2.11.8 | MIT | package-lock.json |
+| @rolldown/binding-android-arm64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-darwin-arm64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-darwin-x64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-freebsd-x64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-arm-gnueabihf | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-arm64-gnu | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-arm64-musl | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-ppc64-gnu | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-s390x-gnu | 1.2.3 | MIT | package-lock.json |
 | @rolldown/binding-linux-x64-gnu | 1.2.3 | MIT | package-lock.json |
 | @rolldown/binding-linux-x64-musl | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-openharmony-arm64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-win32-arm64-msvc | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-win32-x64-msvc | 1.2.3 | MIT | package-lock.json |
 | @rolldown/pluginutils | 1.0.1 | MIT | package-lock.json |
 | @standard-schema/spec | 1.1.0 | MIT | package-lock.json |
 | @tailwindcss/node | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-android-arm64 | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-darwin-arm64 | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-darwin-x64 | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-freebsd-x64 | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-linux-arm-gnueabihf | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-linux-arm64-gnu | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-linux-arm64-musl | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide-linux-x64-gnu | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide-linux-x64-musl | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-wasm32-wasi | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-win32-arm64-msvc | 4.3.2 | MIT | package-lock.json |
+| @tailwindcss/oxide-win32-x64-msvc | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/vite | 4.3.2 | MIT | package-lock.json |
 | @types/chai | 5.2.3 | MIT | package-lock.json |
 | @types/deep-eql | 4.0.2 | MIT | package-lock.json |
