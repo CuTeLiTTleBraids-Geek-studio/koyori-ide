@@ -53,6 +53,7 @@ const npmLicenseOverrides = new Map([
   ["convert-source-map@2.0.0", "MIT"],
   ["csstype@3.2.3", "MIT"],
   ["vitest@4.1.10", "MIT"],
+  ["vue-demi@0.14.10", "MIT"],
   ["vue@3.5.41", "MIT"],
 ]);
 
