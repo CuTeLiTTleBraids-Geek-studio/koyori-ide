@@ -8,12 +8,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 - `go.mod`: `c50c5c816bd097599af5a2c731573286a601b9fb0fcb7c32d0234a48cf5a7190`
 - `go.sum`: `9048fc023832e4352fb617e570b776872b9a4667a69dba949744c0006c960229`
-- `frontend/package-lock.json`: `5c0daf3b2649adc00ba09e04529a9023fa1d9e694727f2d6fec9526e3104d0b1`
+- `frontend/package-lock.json`: `aac20fa640702ea762a77762e4f8ca526cdd52630ec32461a14a9faff6130dc1`
 
 ## Review Summary
 
 - Go modules: 51
-- Distinct npm package/version pairs: 419
+- Distinct npm package/version pairs: 418
 - Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
 - Documented Go source exceptions requiring release review: 0
@@ -228,7 +228,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @types/lodash | 4.17.24 | MIT | package-lock.json |
 | @types/lodash-es | 4.17.12 | MIT | package-lock.json |
 | @types/marked | 5.0.2 | MIT | package-lock.json |
-| @types/node | 26.1.2 | MIT | package-lock.json |
 | @types/trusted-types | 2.0.7 | MIT | package-lock.json |
 | @types/web-bluetooth | 0.0.21 | MIT | package-lock.json |
 | @typescript-eslint/eslint-plugin | 8.66.0 | MIT | package-lock.json |
@@ -242,14 +241,14 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @typescript-eslint/utils | 8.66.0 | MIT | package-lock.json |
 | @typescript-eslint/visitor-keys | 8.66.0 | MIT | package-lock.json |
 | @vitejs/plugin-vue | 6.0.8 | MIT | package-lock.json |
-| @vitest/coverage-v8 | 4.1.10 | MIT | package-lock.json |
-| @vitest/expect | 4.1.10 | MIT | package-lock.json |
-| @vitest/mocker | 4.1.10 | MIT | package-lock.json |
-| @vitest/pretty-format | 4.1.10 | MIT | package-lock.json |
-| @vitest/runner | 4.1.10 | MIT | package-lock.json |
-| @vitest/snapshot | 4.1.10 | MIT | package-lock.json |
-| @vitest/spy | 4.1.10 | MIT | package-lock.json |
-| @vitest/utils | 4.1.10 | MIT | package-lock.json |
+| @vitest/coverage-v8 | 4.1.9 | MIT | package-lock.json |
+| @vitest/expect | 4.1.9 | MIT | package-lock.json |
+| @vitest/mocker | 4.1.9 | MIT | package-lock.json |
+| @vitest/pretty-format | 4.1.9 | MIT | package-lock.json |
+| @vitest/runner | 4.1.9 | MIT | package-lock.json |
+| @vitest/snapshot | 4.1.9 | MIT | package-lock.json |
+| @vitest/spy | 4.1.9 | MIT | package-lock.json |
+| @vitest/utils | 4.1.9 | MIT | package-lock.json |
 | @volar/language-core | 2.4.28 | MIT | package-lock.json |
 | @volar/source-map | 2.4.28 | MIT | package-lock.json |
 | @volar/typescript | 2.4.28 | MIT | package-lock.json |
@@ -331,7 +330,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | enhanced-resolve | 5.21.6 | MIT | package-lock.json |
 | entities | 7.0.1 | BSD-2-Clause | package-lock.json |
 | entities | 8.0.0 | BSD-2-Clause | package-lock.json |
-| es-module-lexer | 2.3.0 | MIT | package-lock.json |
+| es-module-lexer | 2.3.1 | MIT | package-lock.json |
 | escape-string-regexp | 4.0.0 | MIT | package-lock.json |
 | eslint | 9.39.4 | MIT | package-lock.json |
 | eslint-plugin-vue | 9.33.0 | MIT | package-lock.json |
@@ -359,6 +358,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | flat-cache | 4.0.1 | MIT | package-lock.json |
 | flatted | 3.4.2 | ISC | package-lock.json |
 | foreground-child | 3.3.1 | ISC | package-lock.json |
+| fsevents | 2.3.3 | MIT | package-lock.json |
 | glob | 10.5.0 | ISC | package-lock.json |
 | glob-parent | 6.0.2 | ISC | package-lock.json |
 | globals | 13.24.0 | MIT | package-lock.json |
@@ -414,9 +414,9 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | lightningcss-linux-arm64-musl | 1.32.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-arm64-musl | 1.33.0 | MIT | package-lock.json |
 | lightningcss-linux-x64-gnu | 1.32.0 | MPL-2.0 | package-lock.json |
-| lightningcss-linux-x64-gnu | 1.33.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-x64-gnu | 1.33.0 | MIT | package-lock.json |
 | lightningcss-linux-x64-musl | 1.32.0 | MPL-2.0 | package-lock.json |
-| lightningcss-linux-x64-musl | 1.33.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-x64-musl | 1.33.0 | MIT | package-lock.json |
 | lightningcss-win32-arm64-msvc | 1.32.0 | MPL-2.0 | package-lock.json |
 | lightningcss-win32-arm64-msvc | 1.33.0 | MIT | package-lock.json |
 | lightningcss-win32-x64-msvc | 1.32.0 | MPL-2.0 | package-lock.json |
@@ -449,7 +449,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | nopt | 7.2.1 | ISC | package-lock.json |
 | normalize-wheel-es | 1.2.0 | BSD-3-Clause | package-lock.json |
 | nth-check | 2.1.1 | BSD-2-Clause | package-lock.json |
-| obug | 2.1.3 | MIT | package-lock.json |
+| obug | 2.1.4 | MIT | package-lock.json |
 | optionator | 0.9.4 | MIT | package-lock.json |
 | p-limit | 3.1.0 | MIT | package-lock.json |
 | p-locate | 5.0.0 | MIT | package-lock.json |
@@ -487,7 +487,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | source-map-js | 1.2.1 | BSD-3-Clause | package-lock.json |
 | stackback | 0.0.2 | MIT | package-lock.json |
 | state-local | 1.0.7 | MIT | package-lock.json |
-| std-env | 4.1.0 | MIT | package-lock.json |
+| std-env | 4.2.0 | MIT | package-lock.json |
 | string-width | 4.2.3 | MIT | package-lock.json |
 | string-width | 5.1.2 | MIT | package-lock.json |
 | string-width-cjs | 4.2.3 | MIT | package-lock.json |
@@ -501,9 +501,9 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | tailwindcss | 4.3.3 | MIT | package-lock.json |
 | tapable | 2.3.3 | MIT | package-lock.json |
 | tinybench | 2.9.0 | MIT | package-lock.json |
-| tinyexec | 1.2.4 | MIT | package-lock.json |
+| tinyexec | 1.3.0 | MIT | package-lock.json |
 | tinyglobby | 0.2.17 | MIT | package-lock.json |
-| tinyrainbow | 3.1.0 | MIT | package-lock.json |
+| tinyrainbow | 3.1.1 | MIT | package-lock.json |
 | tldts | 7.4.5 | MIT | package-lock.json |
 | tldts-core | 7.4.5 | MIT | package-lock.json |
 | tough-cookie | 6.0.1 | BSD-3-Clause | package-lock.json |
@@ -517,13 +517,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | typescript-language-server | 5.3.0 | Apache-2.0 | package-lock.json |
 | ufo | 1.6.4 | MIT | package-lock.json |
 | undici | 7.29.0 | MIT | package-lock.json |
-| undici-types | 8.3.0 | MIT | package-lock.json |
 | unplugin | 3.3.0 | MIT | package-lock.json |
 | unplugin-utils | 0.3.2 | MIT | package-lock.json |
 | uri-js | 4.4.1 | BSD-2-Clause | package-lock.json |
 | util-deprecate | 1.0.2 | MIT | package-lock.json |
 | vite | 8.2.1 | MIT | package-lock.json |
-| vitest | 4.1.10 | MIT | package-lock.json |
+| vitest | 4.1.9 | MIT | package-lock.json |
 | vscode-uri | 3.1.0 | MIT | package-lock.json |
 | vue | 3.5.41 | MIT | package-lock.json |
 | vue-component-type-helpers | 3.3.6 | MIT | package-lock.json |

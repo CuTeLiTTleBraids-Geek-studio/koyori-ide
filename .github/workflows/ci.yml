@@ -158,6 +158,18 @@ jobs:
       # injection), services, and the repository governance tests. The
       # previous `./services/...` skipped the root. We don't use `./...` for
       # the same reason as Vet.
+      # G-CI-14: GitHub Windows runners point TEMP/TMP at the 8.3 short path
+      # (C:\Users\RUNNER~1\...). Services resolve symlinks and return the long
+      # name, so tests comparing t.TempDir()-derived expectations fail with a
+      # RUNNER~1 vs runneradmin mismatch. Normalize to the long name.
+      - name: Normalize Windows temp paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:TEMP = (Resolve-Path $env:TEMP).Path
+          $env:TMP = (Resolve-Path $env:TMP).Path
+          "TEMP=$env:TEMP" | Out-File -Append $env:GITHUB_ENV
+          "TMP=$env:TMP" | Out-File -Append $env:GITHUB_ENV
       - name: Test
         # Keep the CI leg equivalent to the local G07 gate: do not let the Go
         # test cache turn a changed platform leg into an unexecuted pass.
