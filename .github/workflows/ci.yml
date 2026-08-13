@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
           cache: npm
@@ -77,7 +77,7 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
       # G-CI-02: generate-bindings.mjs compiles the pinned wails3 CLI from
@@ -122,7 +122,7 @@ jobs:
       # bindings via its prebuild hook; on Linux the wails3 CLI needs the GUI
       # development headers to compile (same set as the wails-build job).
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
           cache: npm
@@ -185,7 +185,7 @@ jobs:
       # the go-test job) or lint fails with "pattern all:frontend/dist: no
       # matching files found".
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
           cache: npm
@@ -253,7 +253,7 @@ jobs:
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
           cache: npm
@@ -316,7 +316,7 @@ jobs:
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
           cache: npm
@@ -364,7 +364,7 @@ jobs:
           go-version: "1.25"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
           cache: npm
@@ -416,7 +416,7 @@ jobs:
           go-version: "1.25"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.19"
           cache: npm
@@ -539,7 +539,7 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20.19'
           cache: 'npm'
@@ -566,7 +566,7 @@ jobs:
           go-version: '1.25'
       - name: Install gopls
         run: go install golang.org/x/tools/gopls@v0.21.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20.19'
       - name: Install pinned TypeScript language servers
