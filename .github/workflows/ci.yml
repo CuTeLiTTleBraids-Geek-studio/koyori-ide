@@ -165,17 +165,10 @@ jobs:
       # name, so tests comparing os.TempDir()-derived expectations fail with a
       # RUNNER~1 vs runneradmin mismatch. runner.temp is the canonical runner
       # path, free of short-name aliases.
-      # G-CI-18: the default macOS runner keychain is locked, so
-      # `security add/find-generic-password` (used by secrets_darwin.go when
-      # the CLI is present) stores a marker but cannot read it back — the
-      # IM/AI encryption roundtrip tests then see empty values. Create and
-      # unlock a dedicated CI keychain.
-      - name: Set up CI keychain (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          security create-keychain -p "" ci.keychain
-          security default-keychain -s ci.keychain
-          security unlock-keychain -p "" ci.keychain
+      # G-CI-18: headless macOS runners can accept keychain `add` but return
+      # an empty password from `find` (partition-list ACLs), breaking the
+      # encrypt/decrypt roundtrip tests. Force the deterministic cross-platform
+      # AES fallback for the test run.
       - name: Test
         # Keep the CI leg equivalent to the local G07 gate: do not let the Go
         # test cache turn a changed platform leg into an unexecuted pass.
@@ -183,6 +176,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          KOYORI_DISABLE_KEYCHAIN: "1"
         run: go test -race ./services/... . ./internal/repo/... -count=1
 
       # Compiles and exercises the test-only loopback hook (internal/e2e) on
