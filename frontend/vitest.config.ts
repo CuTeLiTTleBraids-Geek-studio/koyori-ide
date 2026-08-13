@@ -21,6 +21,11 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    // G-CI-15: the threads pool occasionally tears down while a worker console
+    // message is still in flight on busy runners ("Closing rpc while
+    // onUserConsoleLog was pending"), failing green runs. forks is the
+    // recommended stable pool for this scenario.
+    pool: "forks",
     // G-CI-11: clear timers registered by @wailsio/runtime module side
     // effects (drag polling) so nothing fires after jsdom teardown.
     setupFiles: ["src/test-setup.ts"],
