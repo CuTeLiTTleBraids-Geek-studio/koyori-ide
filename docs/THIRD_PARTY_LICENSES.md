@@ -6,15 +6,15 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 ## Source Digests
 
-- `go.mod`: `d9228883172bdd6339d4ec2ac42fccd86d76433e53a9438c4dd6e80c1a94f57a`
-- `go.sum`: `9e8d88579ac642abe7605513a75e5c84c0db8e047df27046a0554184d7ea5bfb`
-- `frontend/package-lock.json`: `777242b79e28611d1b8c7e8820bc1f065dac11938585a483a4afb800c390e895`
+- `go.mod`: `ca06bac09681f53b8f02ad9dfd68ee353d484ba8b4c5960bf24c6dc64e3fa724`
+- `go.sum`: `4d3b7b1671d645f633c3689a55b18612c9fd9774694ef25979c127ffc666b47c`
+- `frontend/package-lock.json`: `08f7af75ce62337b480c8c82f927ad4997adb98362595c38bf5890769b0dcdc2`
 
 ## Review Summary
 
-- Go modules: 53
-- Distinct npm package/version pairs: 411
-- Unknown or unclassified licenses: 0
+- Go modules: 52
+- Distinct npm package/version pairs: 420
+- Unknown or unclassified licenses: 26
 - Strong-copyleft identifiers detected by the generator: 0
 - Documented Go source exceptions requiring release review: 0
 - npm lockfile omissions were manually checked against installed package manifests and are listed below.
@@ -50,15 +50,15 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/UserExistsError/conpty | v0.1.4 | MIT | LICENSE |
 | github.com/adrg/xdg | v0.5.3 | MIT | LICENSE |
 | github.com/cloudflare/circl | v1.6.3 | BSD-3-Clause | LICENSE |
-| github.com/coder/websocket | v1.8.14 | ISC | LICENSE.txt |
+| github.com/coder/websocket | v1.8.15 | ISC | LICENSE.txt |
 | github.com/creack/pty | v1.1.24 | MIT | LICENSE |
 | github.com/cyphar/filepath-securejoin | v0.6.1 | BSD-3-Clause; BSD-3-Clause AND MPL-2.0; MPL-2.0 | COPYING.md, LICENSE.BSD, LICENSE.MPL-2.0 |
 | github.com/dustin/go-humanize | v1.0.1 | MIT | LICENSE |
 | github.com/emirpasic/gods | v1.18.1 | ISC | LICENSE |
-| github.com/fsnotify/fsnotify | v1.9.0 | BSD-3-Clause | LICENSE |
+| github.com/fsnotify/fsnotify | v1.10.1 | BSD-3-Clause | LICENSE |
 | github.com/go-git/gcfg | v1.5.1-0.20230307220236-3a3c6141e376 | BSD-3-Clause | LICENSE |
 | github.com/go-git/go-billy/v5 | v5.9.0 | Apache-2.0 | LICENSE |
-| github.com/go-git/go-git/v5 | v5.19.1 | Apache-2.0 | LICENSE |
+| github.com/go-git/go-git/v5 | v5.19.2 | Apache-2.0 | LICENSE |
 | github.com/go-ole/go-ole | v1.3.0 | MIT | LICENSE |
 | github.com/go-sql-driver/mysql | v1.10.0 | MPL-2.0 | LICENSE |
 | github.com/godbus/dbus/v5 | v5.2.2 | BSD-2-Clause | LICENSE |
@@ -74,7 +74,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/kevinburke/ssh_config | v1.4.0 | MIT | LICENSE |
 | github.com/klauspost/cpuid/v2 | v2.3.0 | MIT | LICENSE |
 | github.com/kr/fs | v0.1.0 | BSD-3-Clause | LICENSE |
-| github.com/mattn/go-isatty | v0.0.20 | MIT | LICENSE |
+| github.com/mattn/go-isatty | v0.0.24 | MIT | LICENSE |
 | github.com/ncruces/go-strftime | v1.0.0 | MIT | LICENSE |
 | github.com/pjbgf/sha1cd | v0.6.0 | Apache-2.0 | LICENSE |
 | github.com/pkg/sftp | v1.13.11 | BSD-2-Clause | LICENSE |
@@ -85,17 +85,16 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/wailsapp/wails/webview2 | v1.0.27 | MIT | LICENSE |
 | github.com/xanzy/ssh-agent | v0.3.3 | Apache-2.0 | LICENSE |
 | golang.org/x/crypto | v0.54.0 | BSD-3-Clause | LICENSE |
-| golang.org/x/exp | v0.0.0-20260410095643-746e56fc9e2f | BSD-3-Clause | LICENSE |
 | golang.org/x/net | v0.56.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sync | v0.22.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sys | v0.47.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/text | v0.40.0 | BSD-3-Clause | LICENSE |
 | gopkg.in/warnings.v0 | v0.1.2 | BSD-2-Clause | LICENSE |
 | gopkg.in/yaml.v3 | v3.0.1 | Apache-2.0 | LICENSE |
-| modernc.org/libc | v1.67.6 | BSD-2-Clause | LICENSE |
+| modernc.org/libc | v1.74.4 | BSD-2-Clause | LICENSE |
 | modernc.org/mathutil | v1.7.1 | BSD-2-Clause | LICENSE |
 | modernc.org/memory | v1.11.0 | BSD-2-Clause | LICENSE |
-| modernc.org/sqlite | v1.44.3 | BSD-3-Clause | LICENSE |
+| modernc.org/sqlite | v1.56.0 | BSD-3-Clause | LICENSE |
 
 ## npm Packages
 
@@ -158,26 +157,25 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @monaco-editor/loader | 1.7.0 | MIT | package-lock.json |
 | @napi-rs/wasm-runtime | 1.1.6 | MIT | package-lock.json |
 | @one-ini/wasm | 0.1.1 | MIT | package-lock.json |
-| @oxc-project/types | 0.138.0 | MIT | package-lock.json |
+| @oxc-project/types | 0.143.0 | MIT | package-lock.json |
 | @pkgjs/parseargs | 0.11.0 | MIT | package-lock.json |
 | @popperjs/core | 2.11.8 | MIT | package-lock.json |
-| @rolldown/binding-android-arm64 | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-darwin-arm64 | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-darwin-x64 | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-freebsd-x64 | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-linux-arm-gnueabihf | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-linux-arm64-gnu | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-linux-arm64-musl | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-linux-ppc64-gnu | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-linux-s390x-gnu | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-linux-x64-gnu | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-linux-x64-musl | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-openharmony-arm64 | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-wasm32-wasi | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-win32-arm64-msvc | 1.1.4 | MIT | package-lock.json |
-| @rolldown/binding-win32-x64-msvc | 1.1.4 | MIT | package-lock.json |
+| @rolldown/binding-android-arm64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-darwin-arm64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-darwin-x64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-freebsd-x64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-arm-gnueabihf | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-arm64-gnu | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-arm64-musl | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-ppc64-gnu | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-s390x-gnu | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-x64-gnu | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-linux-x64-musl | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-openharmony-arm64 | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-win32-arm64-msvc | 1.2.3 | MIT | package-lock.json |
+| @rolldown/binding-win32-x64-msvc | 1.2.3 | MIT | package-lock.json |
 | @rolldown/pluginutils | 1.0.1 | MIT | package-lock.json |
-| @standard-schema/spec | 1.1.0 | MIT | package-lock.json |
+| @standard-schema/spec | 1.1.0 | UNKNOWN | license metadata missing |
 | @tailwindcss/node | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide-android-arm64 | 4.3.2 | MIT | package-lock.json |
@@ -194,8 +192,8 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @tailwindcss/oxide-win32-x64-msvc | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/vite | 4.3.2 | MIT | package-lock.json |
 | @tybys/wasm-util | 0.10.3 | MIT | package-lock.json |
-| @types/chai | 5.2.3 | MIT | package-lock.json |
-| @types/deep-eql | 4.0.2 | MIT | package-lock.json |
+| @types/chai | 5.2.3 | UNKNOWN | license metadata missing |
+| @types/deep-eql | 4.0.2 | UNKNOWN | license metadata missing |
 | @types/dompurify | 3.0.5 | MIT | package-lock.json |
 | @types/estree | 1.0.9 | MIT | package-lock.json |
 | @types/jsesc | 2.5.1 | MIT | package-lock.json |
@@ -206,43 +204,42 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @types/node | 26.1.2 | MIT | package-lock.json |
 | @types/trusted-types | 2.0.7 | MIT | package-lock.json |
 | @types/web-bluetooth | 0.0.21 | MIT | package-lock.json |
-| @typescript-eslint/eslint-plugin | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/parser | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/project-service | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/scope-manager | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/tsconfig-utils | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/type-utils | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/types | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/typescript-estree | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/utils | 8.62.1 | MIT | package-lock.json |
-| @typescript-eslint/visitor-keys | 8.62.1 | MIT | package-lock.json |
-| @vitejs/plugin-vue | 6.0.7 | MIT | package-lock.json |
-| @vitest/coverage-v8 | 4.1.9 | MIT | package-lock.json |
-| @vitest/expect | 4.1.9 | MIT | package-lock.json |
-| @vitest/mocker | 4.1.9 | MIT | package-lock.json |
-| @vitest/pretty-format | 4.1.9 | MIT | package-lock.json |
-| @vitest/runner | 4.1.9 | MIT | package-lock.json |
-| @vitest/snapshot | 4.1.9 | MIT | package-lock.json |
-| @vitest/spy | 4.1.9 | MIT | package-lock.json |
-| @vitest/utils | 4.1.9 | MIT | package-lock.json |
-| @volar/language-core | 2.4.15 | MIT | package-lock.json |
-| @volar/source-map | 2.4.15 | MIT | package-lock.json |
-| @volar/typescript | 2.4.15 | MIT | package-lock.json |
+| @typescript-eslint/eslint-plugin | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/parser | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/project-service | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/scope-manager | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/tsconfig-utils | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/type-utils | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/types | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/typescript-estree | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/utils | 8.66.0 | MIT | package-lock.json |
+| @typescript-eslint/visitor-keys | 8.66.0 | MIT | package-lock.json |
+| @vitejs/plugin-vue | 6.0.8 | MIT | package-lock.json |
+| @vitest/coverage-v8 | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/expect | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/mocker | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/pretty-format | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/runner | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/snapshot | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/spy | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/utils | 4.1.10 | UNKNOWN | license metadata missing |
+| @volar/language-core | 2.4.28 | MIT | package-lock.json |
+| @volar/source-map | 2.4.28 | MIT | package-lock.json |
+| @volar/typescript | 2.4.28 | MIT | package-lock.json |
 | @vue-macros/common | 3.1.2 | MIT | package-lock.json |
-| @vue/compiler-core | 3.5.39 | MIT | package-lock.json |
-| @vue/compiler-dom | 3.5.39 | MIT | package-lock.json |
-| @vue/compiler-sfc | 3.5.39 | MIT | package-lock.json |
-| @vue/compiler-ssr | 3.5.39 | MIT | package-lock.json |
-| @vue/compiler-vue2 | 2.7.16 | MIT | package-lock.json |
+| @vue/compiler-core | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/compiler-dom | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/compiler-sfc | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/compiler-ssr | 3.5.41 | UNKNOWN | license metadata missing |
 | @vue/devtools-api | 8.1.5 | MIT | package-lock.json |
 | @vue/devtools-kit | 8.1.5 | MIT | package-lock.json |
 | @vue/devtools-shared | 8.1.5 | MIT | package-lock.json |
-| @vue/language-core | 2.2.12 | MIT | package-lock.json |
-| @vue/reactivity | 3.5.39 | MIT | package-lock.json |
-| @vue/runtime-core | 3.5.39 | MIT | package-lock.json |
-| @vue/runtime-dom | 3.5.39 | MIT | package-lock.json |
-| @vue/server-renderer | 3.5.39 | MIT | package-lock.json |
-| @vue/shared | 3.5.39 | MIT | package-lock.json |
+| @vue/language-core | 3.3.9 | MIT | package-lock.json |
+| @vue/reactivity | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/runtime-core | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/runtime-dom | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/server-renderer | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/shared | 3.5.41 | UNKNOWN | license metadata missing |
 | @vue/test-utils | 2.4.11 | MIT | package-lock.json |
 | @vueuse/core | 14.3.0 | MIT | package-lock.json |
 | @vueuse/metadata | 14.3.0 | MIT | package-lock.json |
@@ -254,14 +251,14 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | acorn | 8.17.0 | MIT | package-lock.json |
 | acorn-jsx | 5.3.2 | MIT | package-lock.json |
 | ajv | 6.15.0 | MIT | package-lock.json |
-| alien-signals | 1.0.13 | MIT | package-lock.json |
+| alien-signals | 3.2.1 | MIT | package-lock.json |
 | animate.css | 4.1.1 | MIT | package-lock.json |
 | ansi-regex | 5.0.1 | MIT | package-lock.json |
 | ansi-regex | 6.2.2 | MIT | package-lock.json |
 | ansi-styles | 4.3.0 | MIT | package-lock.json |
 | ansi-styles | 6.2.3 | MIT | package-lock.json |
 | argparse | 2.0.1 | Python-2.0 | package-lock.json |
-| assertion-error | 2.0.1 | MIT | package-lock.json |
+| assertion-error | 2.0.1 | UNKNOWN | license metadata missing |
 | ast-kit | 2.2.0 | MIT | package-lock.json |
 | ast-v8-to-istanbul | 1.0.4 | MIT | package-lock.json |
 | ast-walker-scope | 0.9.0 | MIT | package-lock.json |
@@ -273,9 +270,9 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | boolbase | 1.0.0 | ISC | package-lock.json |
 | brace-expansion | 1.1.18 | MIT | manual package.json override |
 | brace-expansion | 2.1.4 | MIT | manual package.json override |
-| brace-expansion | 5.0.9 | MIT | manual package.json override |
+| brace-expansion | 5.0.9 | MIT | package-lock.json |
 | callsites | 3.1.0 | MIT | package-lock.json |
-| chai | 6.2.2 | MIT | package-lock.json |
+| chai | 6.2.2 | UNKNOWN | license metadata missing |
 | chalk | 4.1.2 | MIT | package-lock.json |
 | chokidar | 5.0.0 | MIT | package-lock.json |
 | color-convert | 2.0.1 | MIT | package-lock.json |
@@ -285,14 +282,13 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | confbox | 0.1.8 | MIT | package-lock.json |
 | confbox | 0.2.4 | MIT | package-lock.json |
 | config-chain | 1.1.13 | MIT | package-lock.json |
-| convert-source-map | 2.0.0 | MIT | package-lock.json |
+| convert-source-map | 2.0.0 | UNKNOWN | license metadata missing |
 | cross-spawn | 7.0.6 | MIT | package-lock.json |
 | css-tree | 3.2.1 | MIT | package-lock.json |
 | cssesc | 3.0.0 | MIT | package-lock.json |
-| csstype | 3.2.3 | MIT | package-lock.json |
+| csstype | 3.2.3 | UNKNOWN | license metadata missing |
 | data-urls | 7.0.0 | MIT | package-lock.json |
 | dayjs | 1.11.21 | MIT | package-lock.json |
-| de-indent | 1.0.2 | MIT | package-lock.json |
 | debug | 4.4.3 | MIT | package-lock.json |
 | decimal.js | 10.6.0 | MIT | package-lock.json |
 | deep-is | 0.1.4 | MIT | package-lock.json |
@@ -344,13 +340,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | globals | 15.15.0 | MIT | package-lock.json |
 | graceful-fs | 4.2.11 | ISC | package-lock.json |
 | has-flag | 4.0.0 | MIT | package-lock.json |
-| he | 1.2.0 | MIT | package-lock.json |
 | highlight.js | 11.11.1 | BSD-3-Clause | package-lock.json |
 | hookable | 5.5.3 | MIT | package-lock.json |
 | html-encoding-sniffer | 6.0.0 | MIT | package-lock.json |
 | html-escaper | 2.0.2 | MIT | package-lock.json |
 | ignore | 5.3.2 | MIT | package-lock.json |
-| ignore | 7.0.5 | MIT | package-lock.json |
+| ignore | 7.0.6 | MIT | package-lock.json |
 | import-fresh | 3.3.1 | MIT | package-lock.json |
 | imurmurhash | 0.1.4 | MIT | package-lock.json |
 | ini | 1.3.8 | ISC | package-lock.json |
@@ -377,17 +372,29 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | keyv | 4.5.4 | MIT | package-lock.json |
 | levn | 0.4.1 | MIT | package-lock.json |
 | lightningcss | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-android-arm64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-android-arm64 | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-darwin-arm64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-darwin-arm64 | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-darwin-x64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-darwin-x64 | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-freebsd-x64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-freebsd-x64 | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-arm-gnueabihf | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-arm-gnueabihf | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-arm64-gnu | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-arm64-gnu | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-arm64-musl | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-arm64-musl | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-x64-gnu | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-x64-gnu | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-x64-musl | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-x64-musl | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-win32-arm64-msvc | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-win32-arm64-msvc | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-win32-x64-msvc | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-win32-x64-msvc | 1.33.0 | MPL-2.0 | package-lock.json |
 | local-pkg | 1.2.1 | MIT | package-lock.json |
 | locate-path | 6.0.0 | MIT | package-lock.json |
 | lodash | 4.18.1 | MIT | package-lock.json |
@@ -403,7 +410,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | marked | 18.0.5 | MIT | package-lock.json |
 | mdn-data | 2.27.1 | CC0-1.0 | package-lock.json |
 | memoize-one | 6.0.0 | MIT | package-lock.json |
-| minimatch | 10.2.5 | BlueOak-1.0.0 | package-lock.json |
+| minimatch | 10.2.6 | BlueOak-1.0.0 | package-lock.json |
 | minimatch | 3.1.5 | ISC | package-lock.json |
 | minimatch | 9.0.9 | ISC | package-lock.json |
 | minipass | 7.1.3 | BlueOak-1.0.0 | package-lock.json |
@@ -430,7 +437,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | pathe | 2.0.3 | MIT | package-lock.json |
 | perfect-debounce | 2.1.0 | MIT | package-lock.json |
 | picocolors | 1.1.1 | ISC | package-lock.json |
-| picomatch | 4.0.4 | MIT | package-lock.json |
+| picomatch | 4.0.5 | MIT | package-lock.json |
 | pkg-types | 1.3.1 | MIT | package-lock.json |
 | pkg-types | 2.3.1 | MIT | package-lock.json |
 | postcss | 8.5.25 | MIT | manual package.json override |
@@ -443,7 +450,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | readdirp | 5.0.0 | MIT | package-lock.json |
 | require-from-string | 2.0.2 | MIT | package-lock.json |
 | resolve-from | 4.0.0 | MIT | package-lock.json |
-| rolldown | 1.1.4 | MIT | package-lock.json |
+| rolldown | 1.2.3 | MIT | package-lock.json |
 | saxes | 6.0.0 | ISC | package-lock.json |
 | scule | 1.3.0 | MIT | package-lock.json |
 | semver | 7.8.5 | ISC | package-lock.json |
@@ -465,6 +472,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | supports-color | 7.2.0 | MIT | package-lock.json |
 | symbol-tree | 3.2.4 | MIT | package-lock.json |
 | tailwindcss | 4.3.2 | MIT | package-lock.json |
+| tailwindcss | 4.3.3 | MIT | package-lock.json |
 | tapable | 2.3.3 | MIT | package-lock.json |
 | tinybench | 2.9.0 | MIT | package-lock.json |
 | tinyexec | 1.2.4 | MIT | package-lock.json |
@@ -479,7 +487,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | type-check | 0.4.0 | MIT | package-lock.json |
 | type-fest | 0.20.2 | (MIT OR CC0-1.0) | package-lock.json |
 | typescript | 5.9.3 | Apache-2.0 | package-lock.json |
-| typescript-eslint | 8.62.1 | MIT | package-lock.json |
+| typescript-eslint | 8.66.0 | MIT | package-lock.json |
 | typescript-language-server | 5.3.0 | Apache-2.0 | package-lock.json |
 | ufo | 1.6.4 | MIT | package-lock.json |
 | undici | 7.29.0 | MIT | package-lock.json |
@@ -488,15 +496,15 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | unplugin-utils | 0.3.2 | MIT | package-lock.json |
 | uri-js | 4.4.1 | BSD-2-Clause | package-lock.json |
 | util-deprecate | 1.0.2 | MIT | package-lock.json |
-| vite | 8.1.3 | MIT | package-lock.json |
-| vitest | 4.1.9 | MIT | package-lock.json |
+| vite | 8.2.1 | MIT | package-lock.json |
+| vitest | 4.1.10 | UNKNOWN | license metadata missing |
 | vscode-uri | 3.1.0 | MIT | package-lock.json |
-| vue | 3.5.39 | MIT | package-lock.json |
+| vue | 3.5.41 | UNKNOWN | license metadata missing |
 | vue-component-type-helpers | 3.3.6 | MIT | package-lock.json |
 | vue-demi | 0.14.10 | MIT | package-lock.json |
 | vue-eslint-parser | 9.4.3 | MIT | package-lock.json |
 | vue-router | 5.1.0 | MIT | package-lock.json |
-| vue-tsc | 2.2.12 | MIT | package-lock.json |
+| vue-tsc | 3.3.9 | MIT | package-lock.json |
 | w3c-xmlserializer | 5.0.0 | MIT | package-lock.json |
 | webidl-conversions | 8.0.1 | BSD-2-Clause | package-lock.json |
 | webpack-virtual-modules | 0.6.2 | MIT | package-lock.json |
@@ -512,4 +520,33 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | xmlchars | 2.2.0 | MIT | package-lock.json |
 | yaml | 2.9.0 | ISC | package-lock.json |
 | yocto-queue | 0.1.0 | MIT | package-lock.json |
+
+## Unresolved Items
+
+- npm: `@standard-schema/spec@1.1.0` (license metadata missing)
+- npm: `@types/chai@5.2.3` (license metadata missing)
+- npm: `@types/deep-eql@4.0.2` (license metadata missing)
+- npm: `@vitest/coverage-v8@4.1.10` (license metadata missing)
+- npm: `@vitest/expect@4.1.10` (license metadata missing)
+- npm: `@vitest/mocker@4.1.10` (license metadata missing)
+- npm: `@vitest/pretty-format@4.1.10` (license metadata missing)
+- npm: `@vitest/runner@4.1.10` (license metadata missing)
+- npm: `@vitest/snapshot@4.1.10` (license metadata missing)
+- npm: `@vitest/spy@4.1.10` (license metadata missing)
+- npm: `@vitest/utils@4.1.10` (license metadata missing)
+- npm: `@vue/compiler-core@3.5.41` (license metadata missing)
+- npm: `@vue/compiler-dom@3.5.41` (license metadata missing)
+- npm: `@vue/compiler-sfc@3.5.41` (license metadata missing)
+- npm: `@vue/compiler-ssr@3.5.41` (license metadata missing)
+- npm: `@vue/reactivity@3.5.41` (license metadata missing)
+- npm: `@vue/runtime-core@3.5.41` (license metadata missing)
+- npm: `@vue/runtime-dom@3.5.41` (license metadata missing)
+- npm: `@vue/server-renderer@3.5.41` (license metadata missing)
+- npm: `@vue/shared@3.5.41` (license metadata missing)
+- npm: `assertion-error@2.0.1` (license metadata missing)
+- npm: `chai@6.2.2` (license metadata missing)
+- npm: `convert-source-map@2.0.0` (license metadata missing)
+- npm: `csstype@3.2.3` (license metadata missing)
+- npm: `vitest@4.1.10` (license metadata missing)
+- npm: `vue@3.5.41` (license metadata missing)
 
