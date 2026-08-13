@@ -37,7 +37,7 @@
     "highlight.js": "^11.11.1",
     "marked": "^18.0.5",
     "monaco-editor": "^0.52.2",
-    "tailwindcss": "^4.3.2",
+    "tailwindcss": "^4.3.3",
     "vue": "^3.2.45",
     "vue-router": "^5.1.0"
   },
