@@ -3,7 +3,7 @@
   "strategy": "untracked-generate-before-use",
   "generator": {
     "module": "github.com/wailsapp/wails/v3",
-    "version": "v3.0.0-alpha2.111",
+    "version": "v3.0.0-beta.5",
     "flags": [
       "-clean=true",
       "-ts",
@@ -41,7 +41,7 @@
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/lspservice.ts": "3395c3aee3922a255a3553eeb9b72c425717312717fb64cda4e327f257ece51f",
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/marketplaceservice.ts": "5e462401f253107f82c2c66671f67fb3b10de93ce527f7d2444cc326b31e087f",
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/mcpservice.ts": "7f1fccd5f0fbc4f1e918ffce2d46a78974a7d8c107ab45b5356c129b0b5767aa",
-    "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/models.ts": "a031cc5352baa59dbc42ae1697f7d304c0533ee4dbdfd020680dce0694bce3bb",
+    "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/models.ts": "c29743a7d48ce5b82871580fe8dd36a59877d454778a9d1e85014633b97352a0",
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/personaservice.ts": "59ab3e26df5d92f775e06be4f7aca8dd63feeafef363c517f5dfe4b299a36c8f",
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/pluginservice.ts": "c1ff5aa476dcba434a7a48b3749c848b8c9c169f7f220d8a0324225789d52d11",
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/pprofservice.ts": "dd855510bde8e4f13f68abc4f3b8eacc0fe32ebbb67b2cd1256271185fd0e8bf",
@@ -64,8 +64,8 @@
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/workflowservice.ts": "c12c14344da3c9ace7c04ef7001c7bae672dacb83a9e1abf54a8902d62340b42",
     "github.com/wailsapp/wails/v3/internal/eventcreate.ts": "6eaeafcf797a1670e8ae925e7d125ef4eff930171874462e37e767b1c52cf7ed",
     "github.com/wailsapp/wails/v3/internal/eventdata.d.ts": "a6f65a428faf3d5a8e2e492f6a6ee8502e7598bd9a149e006b490be9d3079e07",
-    "time/index.ts": "49756f38483847a49a1e02baa9fbff0214274c46d72443ca325e285bf8fa30ed",
-    "time/models.ts": "03ca17c1b98288cfd7f44b7a50d07d85f5bff34c4c2072036388dc3086b58df4"
+    "time/index.ts": "1eb86920cb98193f1e4c68b7e572b45463647d3f8c2ebd41bcd652c764092d1a",
+    "time/models.ts": "8ec7f67468fe669ffda91a5a78300c125ba8f403b3d573a98352b754e1daa0c4"
   },
   "exports": {
     "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/activationservice.ts": [

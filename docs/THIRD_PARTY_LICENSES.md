@@ -6,15 +6,15 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 ## Source Digests
 
-- `go.mod`: `ca06bac09681f53b8f02ad9dfd68ee353d484ba8b4c5960bf24c6dc64e3fa724`
-- `go.sum`: `4d3b7b1671d645f633c3689a55b18612c9fd9774694ef25979c127ffc666b47c`
-- `frontend/package-lock.json`: `08f7af75ce62337b480c8c82f927ad4997adb98362595c38bf5890769b0dcdc2`
+- `go.mod`: `c50c5c816bd097599af5a2c731573286a601b9fb0fcb7c32d0234a48cf5a7190`
+- `go.sum`: `9048fc023832e4352fb617e570b776872b9a4667a69dba949744c0006c960229`
+- `frontend/package-lock.json`: `2696d0e0f7305898d78e927ec9bf515e857b6bf256c20f20b00ee60a52ea1438`
 
 ## Review Summary
 
-- Go modules: 52
+- Go modules: 51
 - Distinct npm package/version pairs: 420
-- Unknown or unclassified licenses: 26
+- Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
 - Documented Go source exceptions requiring release review: 0
 - npm lockfile omissions were manually checked against installed package manifests and are listed below.
@@ -26,13 +26,40 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 | Package | Reviewed license expression | Reason |
 |---|---|---|
+| @standard-schema/spec@1.1.0 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @types/chai@5.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @types/deep-eql@4.0.2 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/coverage-v8@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/expect@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/mocker@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/pretty-format@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/runner@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/snapshot@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/spy@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/utils@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-core@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-sfc@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-ssr@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/reactivity@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/runtime-core@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/runtime-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/server-renderer@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/shared@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @wailsio/runtime@3.0.0-beta.5 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| assertion-error@2.0.1 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@1.1.18 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@2.1.4 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@5.0.9 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| chai@6.2.2 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| convert-source-map@2.0.0 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| csstype@3.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | dompurify@3.4.12 | (MPL-2.0 OR Apache-2.0) | package-lock v3 entry omitted license; checked installed package.json |
 | glob@10.5.0 | ISC | package-lock v3 entry omitted license; checked installed package.json |
 | nanoid@3.3.17 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | postcss@8.5.25 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| vitest@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| vue@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 
 ## Go Source Exceptions
 
@@ -81,8 +108,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/remyoudompheng/bigfft | v0.0.0-20230129092748-24d4a6f8daec | BSD-3-Clause | LICENSE |
 | github.com/sergi/go-diff | v1.4.0 | MIT | LICENSE |
 | github.com/skeema/knownhosts | v1.3.2 | Apache-2.0 | LICENSE |
-| github.com/wailsapp/wails/v3 | v3.0.0-alpha2.111 | MIT | LICENSE |
-| github.com/wailsapp/wails/webview2 | v1.0.27 | MIT | LICENSE |
+| github.com/wailsapp/wails/v3 | v3.0.0-beta.5 | MIT | LICENSE |
 | github.com/xanzy/ssh-agent | v0.3.3 | Apache-2.0 | LICENSE |
 | golang.org/x/crypto | v0.54.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/net | v0.56.0 | BSD-3-Clause | LICENSE |
@@ -175,7 +201,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @rolldown/binding-win32-arm64-msvc | 1.2.3 | MIT | package-lock.json |
 | @rolldown/binding-win32-x64-msvc | 1.2.3 | MIT | package-lock.json |
 | @rolldown/pluginutils | 1.0.1 | MIT | package-lock.json |
-| @standard-schema/spec | 1.1.0 | UNKNOWN | license metadata missing |
+| @standard-schema/spec | 1.1.0 | MIT | manual package.json override |
 | @tailwindcss/node | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide-android-arm64 | 4.3.2 | MIT | package-lock.json |
@@ -192,8 +218,8 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @tailwindcss/oxide-win32-x64-msvc | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/vite | 4.3.2 | MIT | package-lock.json |
 | @tybys/wasm-util | 0.10.3 | MIT | package-lock.json |
-| @types/chai | 5.2.3 | UNKNOWN | license metadata missing |
-| @types/deep-eql | 4.0.2 | UNKNOWN | license metadata missing |
+| @types/chai | 5.2.3 | MIT | manual package.json override |
+| @types/deep-eql | 4.0.2 | MIT | manual package.json override |
 | @types/dompurify | 3.0.5 | MIT | package-lock.json |
 | @types/estree | 1.0.9 | MIT | package-lock.json |
 | @types/jsesc | 2.5.1 | MIT | package-lock.json |
@@ -215,36 +241,36 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @typescript-eslint/utils | 8.66.0 | MIT | package-lock.json |
 | @typescript-eslint/visitor-keys | 8.66.0 | MIT | package-lock.json |
 | @vitejs/plugin-vue | 6.0.8 | MIT | package-lock.json |
-| @vitest/coverage-v8 | 4.1.10 | UNKNOWN | license metadata missing |
-| @vitest/expect | 4.1.10 | UNKNOWN | license metadata missing |
-| @vitest/mocker | 4.1.10 | UNKNOWN | license metadata missing |
-| @vitest/pretty-format | 4.1.10 | UNKNOWN | license metadata missing |
-| @vitest/runner | 4.1.10 | UNKNOWN | license metadata missing |
-| @vitest/snapshot | 4.1.10 | UNKNOWN | license metadata missing |
-| @vitest/spy | 4.1.10 | UNKNOWN | license metadata missing |
-| @vitest/utils | 4.1.10 | UNKNOWN | license metadata missing |
+| @vitest/coverage-v8 | 4.1.10 | MIT | manual package.json override |
+| @vitest/expect | 4.1.10 | MIT | manual package.json override |
+| @vitest/mocker | 4.1.10 | MIT | manual package.json override |
+| @vitest/pretty-format | 4.1.10 | MIT | manual package.json override |
+| @vitest/runner | 4.1.10 | MIT | manual package.json override |
+| @vitest/snapshot | 4.1.10 | MIT | manual package.json override |
+| @vitest/spy | 4.1.10 | MIT | manual package.json override |
+| @vitest/utils | 4.1.10 | MIT | manual package.json override |
 | @volar/language-core | 2.4.28 | MIT | package-lock.json |
 | @volar/source-map | 2.4.28 | MIT | package-lock.json |
 | @volar/typescript | 2.4.28 | MIT | package-lock.json |
 | @vue-macros/common | 3.1.2 | MIT | package-lock.json |
-| @vue/compiler-core | 3.5.41 | UNKNOWN | license metadata missing |
-| @vue/compiler-dom | 3.5.41 | UNKNOWN | license metadata missing |
-| @vue/compiler-sfc | 3.5.41 | UNKNOWN | license metadata missing |
-| @vue/compiler-ssr | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/compiler-core | 3.5.41 | MIT | manual package.json override |
+| @vue/compiler-dom | 3.5.41 | MIT | manual package.json override |
+| @vue/compiler-sfc | 3.5.41 | MIT | manual package.json override |
+| @vue/compiler-ssr | 3.5.41 | MIT | manual package.json override |
 | @vue/devtools-api | 8.1.5 | MIT | package-lock.json |
 | @vue/devtools-kit | 8.1.5 | MIT | package-lock.json |
 | @vue/devtools-shared | 8.1.5 | MIT | package-lock.json |
 | @vue/language-core | 3.3.9 | MIT | package-lock.json |
-| @vue/reactivity | 3.5.41 | UNKNOWN | license metadata missing |
-| @vue/runtime-core | 3.5.41 | UNKNOWN | license metadata missing |
-| @vue/runtime-dom | 3.5.41 | UNKNOWN | license metadata missing |
-| @vue/server-renderer | 3.5.41 | UNKNOWN | license metadata missing |
-| @vue/shared | 3.5.41 | UNKNOWN | license metadata missing |
+| @vue/reactivity | 3.5.41 | MIT | manual package.json override |
+| @vue/runtime-core | 3.5.41 | MIT | manual package.json override |
+| @vue/runtime-dom | 3.5.41 | MIT | manual package.json override |
+| @vue/server-renderer | 3.5.41 | MIT | manual package.json override |
+| @vue/shared | 3.5.41 | MIT | manual package.json override |
 | @vue/test-utils | 2.4.11 | MIT | package-lock.json |
 | @vueuse/core | 14.3.0 | MIT | package-lock.json |
 | @vueuse/metadata | 14.3.0 | MIT | package-lock.json |
 | @vueuse/shared | 14.3.0 | MIT | package-lock.json |
-| @wailsio/runtime | 3.0.0-alpha.95 | MIT | package-lock.json |
+| @wailsio/runtime | 3.0.0-beta.5 | MIT | manual package.json override |
 | @xterm/addon-fit | 0.11.0 | MIT | package-lock.json |
 | @xterm/xterm | 6.0.0 | MIT | package-lock.json |
 | abbrev | 2.0.0 | ISC | package-lock.json |
@@ -258,7 +284,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | ansi-styles | 4.3.0 | MIT | package-lock.json |
 | ansi-styles | 6.2.3 | MIT | package-lock.json |
 | argparse | 2.0.1 | Python-2.0 | package-lock.json |
-| assertion-error | 2.0.1 | UNKNOWN | license metadata missing |
+| assertion-error | 2.0.1 | MIT | manual package.json override |
 | ast-kit | 2.2.0 | MIT | package-lock.json |
 | ast-v8-to-istanbul | 1.0.4 | MIT | package-lock.json |
 | ast-walker-scope | 0.9.0 | MIT | package-lock.json |
@@ -272,7 +298,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | brace-expansion | 2.1.4 | MIT | manual package.json override |
 | brace-expansion | 5.0.9 | MIT | package-lock.json |
 | callsites | 3.1.0 | MIT | package-lock.json |
-| chai | 6.2.2 | UNKNOWN | license metadata missing |
+| chai | 6.2.2 | MIT | manual package.json override |
 | chalk | 4.1.2 | MIT | package-lock.json |
 | chokidar | 5.0.0 | MIT | package-lock.json |
 | color-convert | 2.0.1 | MIT | package-lock.json |
@@ -282,11 +308,11 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | confbox | 0.1.8 | MIT | package-lock.json |
 | confbox | 0.2.4 | MIT | package-lock.json |
 | config-chain | 1.1.13 | MIT | package-lock.json |
-| convert-source-map | 2.0.0 | UNKNOWN | license metadata missing |
+| convert-source-map | 2.0.0 | MIT | manual package.json override |
 | cross-spawn | 7.0.6 | MIT | package-lock.json |
 | css-tree | 3.2.1 | MIT | package-lock.json |
 | cssesc | 3.0.0 | MIT | package-lock.json |
-| csstype | 3.2.3 | UNKNOWN | license metadata missing |
+| csstype | 3.2.3 | MIT | manual package.json override |
 | data-urls | 7.0.0 | MIT | package-lock.json |
 | dayjs | 1.11.21 | MIT | package-lock.json |
 | debug | 4.4.3 | MIT | package-lock.json |
@@ -497,9 +523,9 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | uri-js | 4.4.1 | BSD-2-Clause | package-lock.json |
 | util-deprecate | 1.0.2 | MIT | package-lock.json |
 | vite | 8.2.1 | MIT | package-lock.json |
-| vitest | 4.1.10 | UNKNOWN | license metadata missing |
+| vitest | 4.1.10 | MIT | manual package.json override |
 | vscode-uri | 3.1.0 | MIT | package-lock.json |
-| vue | 3.5.41 | UNKNOWN | license metadata missing |
+| vue | 3.5.41 | MIT | manual package.json override |
 | vue-component-type-helpers | 3.3.6 | MIT | package-lock.json |
 | vue-demi | 0.14.10 | MIT | package-lock.json |
 | vue-eslint-parser | 9.4.3 | MIT | package-lock.json |
@@ -520,33 +546,4 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | xmlchars | 2.2.0 | MIT | package-lock.json |
 | yaml | 2.9.0 | ISC | package-lock.json |
 | yocto-queue | 0.1.0 | MIT | package-lock.json |
-
-## Unresolved Items
-
-- npm: `@standard-schema/spec@1.1.0` (license metadata missing)
-- npm: `@types/chai@5.2.3` (license metadata missing)
-- npm: `@types/deep-eql@4.0.2` (license metadata missing)
-- npm: `@vitest/coverage-v8@4.1.10` (license metadata missing)
-- npm: `@vitest/expect@4.1.10` (license metadata missing)
-- npm: `@vitest/mocker@4.1.10` (license metadata missing)
-- npm: `@vitest/pretty-format@4.1.10` (license metadata missing)
-- npm: `@vitest/runner@4.1.10` (license metadata missing)
-- npm: `@vitest/snapshot@4.1.10` (license metadata missing)
-- npm: `@vitest/spy@4.1.10` (license metadata missing)
-- npm: `@vitest/utils@4.1.10` (license metadata missing)
-- npm: `@vue/compiler-core@3.5.41` (license metadata missing)
-- npm: `@vue/compiler-dom@3.5.41` (license metadata missing)
-- npm: `@vue/compiler-sfc@3.5.41` (license metadata missing)
-- npm: `@vue/compiler-ssr@3.5.41` (license metadata missing)
-- npm: `@vue/reactivity@3.5.41` (license metadata missing)
-- npm: `@vue/runtime-core@3.5.41` (license metadata missing)
-- npm: `@vue/runtime-dom@3.5.41` (license metadata missing)
-- npm: `@vue/server-renderer@3.5.41` (license metadata missing)
-- npm: `@vue/shared@3.5.41` (license metadata missing)
-- npm: `assertion-error@2.0.1` (license metadata missing)
-- npm: `chai@6.2.2` (license metadata missing)
-- npm: `convert-source-map@2.0.0` (license metadata missing)
-- npm: `csstype@3.2.3` (license metadata missing)
-- npm: `vitest@4.1.10` (license metadata missing)
-- npm: `vue@3.5.41` (license metadata missing)
 

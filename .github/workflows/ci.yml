@@ -379,9 +379,9 @@ jobs:
         run: npm ci --registry=https://registry.npmjs.org
         working-directory: frontend
 
-      # Match the wails v3 version pinned in go.mod (v3.0.0-alpha2.111).
+      # Match the wails v3 version pinned in go.mod (v3.0.0-beta.5).
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
 
       - name: Wails build
         run: wails3 build -tags desktop,production
@@ -436,7 +436,7 @@ jobs:
       # Must match the wails v3 version pinned in go.mod. check-wails-pin.mjs
       # enforces that this stays in sync.
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
 
       - name: Install real Go language server fixture dependency
         run: go install golang.org/x/tools/gopls@v0.21.1

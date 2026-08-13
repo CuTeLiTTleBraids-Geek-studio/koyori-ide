@@ -24,6 +24,36 @@ const npmLicenseOverrides = new Map([
   ["glob@10.5.0", "ISC"],
   ["nanoid@3.3.17", "MIT"],
   ["postcss@8.5.25", "MIT"],
+  // G-CI-13: npm 9 lockfile regeneration drops the license field for these
+  // entries; every expression below was verified against the registry
+  // metadata for the exact pinned version.
+  ["@standard-schema/spec@1.1.0", "MIT"],
+  ["@types/chai@5.2.3", "MIT"],
+  ["@types/deep-eql@4.0.2", "MIT"],
+  ["@vitest/coverage-v8@4.1.10", "MIT"],
+  ["@vitest/expect@4.1.10", "MIT"],
+  ["@vitest/mocker@4.1.10", "MIT"],
+  ["@vitest/pretty-format@4.1.10", "MIT"],
+  ["@vitest/runner@4.1.10", "MIT"],
+  ["@vitest/snapshot@4.1.10", "MIT"],
+  ["@vitest/spy@4.1.10", "MIT"],
+  ["@vitest/utils@4.1.10", "MIT"],
+  ["@vue/compiler-core@3.5.41", "MIT"],
+  ["@vue/compiler-dom@3.5.41", "MIT"],
+  ["@vue/compiler-sfc@3.5.41", "MIT"],
+  ["@vue/compiler-ssr@3.5.41", "MIT"],
+  ["@vue/reactivity@3.5.41", "MIT"],
+  ["@vue/runtime-core@3.5.41", "MIT"],
+  ["@vue/runtime-dom@3.5.41", "MIT"],
+  ["@vue/server-renderer@3.5.41", "MIT"],
+  ["@vue/shared@3.5.41", "MIT"],
+  ["@wailsio/runtime@3.0.0-beta.5", "MIT"],
+  ["assertion-error@2.0.1", "MIT"],
+  ["chai@6.2.2", "MIT"],
+  ["convert-source-map@2.0.0", "MIT"],
+  ["csstype@3.2.3", "MIT"],
+  ["vitest@4.1.10", "MIT"],
+  ["vue@3.5.41", "MIT"],
 ]);
 
 // This module can appear in the pinned Wails module graph without being part

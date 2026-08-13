@@ -31,7 +31,7 @@ service signatures at runtime. Binding generation therefore uses the
 version-addressed repository wrapper rather than whichever `wails3` is on PATH.
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
 node scripts/generate-bindings.mjs
 node scripts/check-bindings.mjs
 ```
