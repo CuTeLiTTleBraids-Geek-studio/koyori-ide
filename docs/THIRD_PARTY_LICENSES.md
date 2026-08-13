@@ -8,12 +8,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 - `go.mod`: `c50c5c816bd097599af5a2c731573286a601b9fb0fcb7c32d0234a48cf5a7190`
 - `go.sum`: `9048fc023832e4352fb617e570b776872b9a4667a69dba949744c0006c960229`
-- `frontend/package-lock.json`: `52d16b3b59ad35e83a2e738868e45279ebb4c1f7c4eb2f16a786bd5f3e29e56d`
+- `frontend/package-lock.json`: `2f47e28c75a45be3e73555f23daf795e67f8e6bfca445a3d2561780097247440`
 
 ## Review Summary
 
 - Go modules: 51
-- Distinct npm package/version pairs: 396
+- Distinct npm package/version pairs: 401
 - Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
 - Documented Go source exceptions requiring release review: 0
@@ -153,6 +153,8 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @emmetio/abbreviation | 2.3.3 | MIT | package-lock.json |
 | @emmetio/css-abbreviation | 2.1.8 | MIT | package-lock.json |
 | @emmetio/scanner | 1.0.4 | MIT | package-lock.json |
+| @emnapi/core | 1.11.1 | MIT | package-lock.json |
+| @emnapi/runtime | 1.11.1 | MIT | package-lock.json |
 | @emnapi/wasi-threads | 1.2.2 | MIT | package-lock.json |
 | @eslint-community/eslint-utils | 4.9.1 | MIT | package-lock.json |
 | @eslint-community/regexpp | 4.12.2 | MIT | package-lock.json |
@@ -180,6 +182,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @jridgewell/sourcemap-codec | 1.5.5 | MIT | package-lock.json |
 | @jridgewell/trace-mapping | 0.3.31 | MIT | package-lock.json |
 | @monaco-editor/loader | 1.7.0 | MIT | package-lock.json |
+| @napi-rs/wasm-runtime | 1.1.4 | MIT | package-lock.json |
 | @one-ini/wasm | 0.1.1 | MIT | package-lock.json |
 | @oxc-project/types | 0.143.0 | MIT | package-lock.json |
 | @pkgjs/parseargs | 0.11.0 | MIT | package-lock.json |
@@ -215,6 +218,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @tailwindcss/oxide-win32-arm64-msvc | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/oxide-win32-x64-msvc | 4.3.2 | MIT | package-lock.json |
 | @tailwindcss/vite | 4.3.2 | MIT | package-lock.json |
+| @tybys/wasm-util | 0.10.2 | MIT | package-lock.json |
 | @types/chai | 5.2.3 | MIT | package-lock.json |
 | @types/deep-eql | 4.0.2 | MIT | package-lock.json |
 | @types/dompurify | 3.0.5 | MIT | package-lock.json |
@@ -487,6 +491,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | tough-cookie | 6.0.1 | BSD-3-Clause | package-lock.json |
 | tr46 | 6.0.0 | MIT | package-lock.json |
 | ts-api-utils | 2.5.0 | MIT | package-lock.json |
+| tslib | 2.8.1 | 0BSD | package-lock.json |
 | type-check | 0.4.0 | MIT | package-lock.json |
 | type-fest | 0.20.2 | (MIT OR CC0-1.0) | package-lock.json |
 | typescript | 5.9.3 | Apache-2.0 | package-lock.json |
