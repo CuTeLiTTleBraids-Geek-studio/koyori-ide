@@ -96,11 +96,16 @@ $MsiPath = Join-Path $BinDir "$AppName-v$Version-windows-$Arch.msi"
 $WixArch = if ($Arch -eq "amd64") { "x64" } else { "arm64" }
 
 Write-Host "[INFO]  ?? MSI: $MsiPath"
+Write-Host "[INFO]  candle defines: Version=$MsiVersion UpgradeCode=$UpgradeCode"
+# G-CI-12: pass -d definitions as explicit string arguments. Unquoted
+# `-dVersion=$MsiVersion` can be passed through with the variable name
+# unexpanded on some hosts, making candle see a literal `$MsiVersion`
+# (CNDL0108 on the Product/@Version attribute).
 & $Candle -nologo -arch $WixArch `
-    -dVersion=$MsiVersion `
-    -dAppExe=$ExePath `
-    -dIcon=$Icon `
-    -dUpgradeCode=$UpgradeCode `
+    "-dVersion=$MsiVersion" `
+    "-dAppExe=$ExePath" `
+    "-dIcon=$Icon" `
+    "-dUpgradeCode=$UpgradeCode" `
     -out $WixObj `
     $WxsPath
 if ($LASTEXITCODE -ne 0) {
