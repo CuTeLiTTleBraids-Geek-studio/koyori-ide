@@ -8,12 +8,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 - `go.mod`: `c50c5c816bd097599af5a2c731573286a601b9fb0fcb7c32d0234a48cf5a7190`
 - `go.sum`: `9048fc023832e4352fb617e570b776872b9a4667a69dba949744c0006c960229`
-- `frontend/package-lock.json`: `f0bbf7fd0f259eaac250c539e50ee7e6d7e5767357ae06c499604fb8b10f90eb`
+- `frontend/package-lock.json`: `5c0daf3b2649adc00ba09e04529a9023fa1d9e694727f2d6fec9526e3104d0b1`
 
 ## Review Summary
 
 - Go modules: 51
-- Distinct npm package/version pairs: 410
+- Distinct npm package/version pairs: 419
 - Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
 - Documented Go source exceptions requiring release review: 0
@@ -400,18 +400,27 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | lightningcss | 1.32.0 | MPL-2.0 | package-lock.json |
 | lightningcss | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-android-arm64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-android-arm64 | 1.33.0 | MIT | package-lock.json |
 | lightningcss-darwin-arm64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-darwin-arm64 | 1.33.0 | MIT | package-lock.json |
 | lightningcss-darwin-x64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-darwin-x64 | 1.33.0 | MIT | package-lock.json |
 | lightningcss-freebsd-x64 | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-freebsd-x64 | 1.33.0 | MIT | package-lock.json |
 | lightningcss-linux-arm-gnueabihf | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-arm-gnueabihf | 1.33.0 | MIT | package-lock.json |
 | lightningcss-linux-arm64-gnu | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-arm64-gnu | 1.33.0 | MIT | package-lock.json |
 | lightningcss-linux-arm64-musl | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-linux-arm64-musl | 1.33.0 | MIT | package-lock.json |
 | lightningcss-linux-x64-gnu | 1.32.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-x64-gnu | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-x64-musl | 1.32.0 | MPL-2.0 | package-lock.json |
 | lightningcss-linux-x64-musl | 1.33.0 | MPL-2.0 | package-lock.json |
 | lightningcss-win32-arm64-msvc | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-win32-arm64-msvc | 1.33.0 | MIT | package-lock.json |
 | lightningcss-win32-x64-msvc | 1.32.0 | MPL-2.0 | package-lock.json |
+| lightningcss-win32-x64-msvc | 1.33.0 | MIT | package-lock.json |
 | local-pkg | 1.2.1 | MIT | package-lock.json |
 | locate-path | 6.0.0 | MIT | package-lock.json |
 | lodash | 4.18.1 | MIT | package-lock.json |
