@@ -34,7 +34,7 @@
     "dompurify": "^3.4.13",
     "element-plus": "^2.14.2",
     "emmet-monaco-es": "5.7.0",
-    "highlight.js": "^11.11.1",
+    "highlight.js": "^11.12.0",
     "marked": "^18.0.5",
     "monaco-editor": "^0.52.2",
     "tailwindcss": "^4.3.3",
