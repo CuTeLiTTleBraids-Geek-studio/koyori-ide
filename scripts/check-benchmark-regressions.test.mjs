@@ -43,3 +43,14 @@ test("fails for a significant sec/op regression above the threshold", () => {
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /BenchmarkLatency sec\/op \+21\.00%/);
 });
+
+test("discovers comparison columns in benchstat tables with config keys", () => {
+  const result = runGate([
+    "pkg,name,sec/op,CI,sec/op,CI,vs base,P",
+    "services,BenchmarkLatency,1e-7,1%,1.1e-7,1%,+10.00%,p=0.001 n=10",
+    "",
+  ].join("\n"));
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /passed \(1 comparable rows\)/);
+});

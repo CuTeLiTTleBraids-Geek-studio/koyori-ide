@@ -572,7 +572,7 @@ jobs:
         run: |
           set -euo pipefail
           go run golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d \
-            -format csv benchmark_baseline.txt benchmark_results.txt > benchmark_stats.csv
+            -format csv benchmark_baseline.txt benchmark_results.txt | tee benchmark_stats.csv
           node scripts/check-benchmark-regressions.mjs benchmark_stats.csv
       - name: Remove base worktree
         if: always()

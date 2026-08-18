@@ -19,10 +19,11 @@ const regressions = [];
 
 for (let index = 0; index < rows.length; index += 1) {
   const header = rows[index];
-  if (header.length < 6 || header[5] !== "vs base" || !metrics.has(header[1])) {
+  const deltaIndex = header.indexOf("vs base");
+  const metric = header.find((value) => metrics.has(value));
+  if (deltaIndex < 0 || !metric) {
     continue;
   }
-  const metric = header[1];
   for (let rowIndex = index + 1; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex];
     if (row.length === 0 || row.every((value) => value === "")) {
@@ -30,11 +31,11 @@ for (let index = 0; index < rows.length; index += 1) {
     }
     // Also stop at the next table header in case an upstream formatter omits
     // the usual blank separator.
-    if (row[5] === "vs base") {
+    if (row[deltaIndex] === "vs base") {
       break;
     }
     if (row[0] === "geomean" || row[0]) {
-      const delta = row[5] ?? "";
+      const delta = row[deltaIndex] ?? "";
       if (delta === "") {
         continue;
       }
@@ -43,8 +44,8 @@ for (let index = 0; index < rows.length; index += 1) {
         continue;
       }
       const match = /^\+([0-9]+(?:\.[0-9]+)?)%$/.exec(delta);
-      if (match && Number(match[1]) > 20 && row[6] !== "~") {
-        regressions.push(`${row[0]} ${metric} ${delta} (${row[6]})`);
+      if (match && Number(match[1]) > 20 && row[deltaIndex + 1] !== "~") {
+        regressions.push(`${row[0]} ${metric} ${delta} (${row[deltaIndex + 1]})`);
       }
     }
   }
