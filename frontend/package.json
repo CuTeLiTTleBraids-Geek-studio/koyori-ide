@@ -32,7 +32,7 @@
     "@xterm/xterm": "^6.0.0",
     "animate.css": "^4.1.1",
     "dompurify": "^3.4.13",
-    "element-plus": "^2.14.2",
+    "element-plus": "^2.14.4",
     "emmet-monaco-es": "5.7.0",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.5",
