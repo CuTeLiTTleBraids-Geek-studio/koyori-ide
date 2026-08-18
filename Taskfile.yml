@@ -102,6 +102,15 @@ tasks:
       - task: common:build:docker
 
   run:docker:
-    summary: Builds and runs the Docker image
+    summary: Runs the authenticated Docker server with an explicit host bind
+    desc: |
+      Set KOYORI_SERVER_TOKEN to a random value of at least 32 bytes before
+      running this task. The host mapping defaults to 127.0.0.1:8080; pass
+      HOST_IP, PORT, or TAG to select an explicit deployment target. Remote
+      exposure requires the documented TLS/private-proxy deployment.
     cmds:
       - task: common:run:docker
+    vars:
+      HOST_IP: "{{.HOST_IP}}"
+      PORT: "{{.PORT}}"
+      TAG: "{{.TAG}}"

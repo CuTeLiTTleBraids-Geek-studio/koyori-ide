@@ -274,11 +274,13 @@ tasks:
       - wails3 update build-assets -name "{{.APP_NAME}}" -binaryname "{{.APP_NAME}}" -config config.yml -dir .
 
   build:server:
-    summary: Builds the application in server mode (no GUI, HTTP server only)
+    summary: Builds the loopback-only application in server mode
     desc: |
       Builds a production server binary by default: -tags server,production,
       -trimpath and a stripped binary, mirroring the desktop `build` task.
-      Server mode runs as a pure HTTP server without native GUI dependencies.
+      Server mode runs as a pure HTTP server without native GUI dependencies,
+      but the Wails transport is unauthenticated and is forced to loopback.
+      Use the authenticated Docker gateway for remote access.
 
       Usage: task build:server [DEV=true] [OBFUSCATED=true] [EXTRA_TAGS=tag1,tag2]
         DEV=true        development server (-tags server, no strip, inlining kept)
@@ -302,7 +304,7 @@ tasks:
       BUILD_FLAGS: '-tags server{{if eq .DEV "true"}}{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -buildvcs=false -gcflags=all="-l"{{else}},production{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
 
   run:server:
-    summary: Builds and runs a development server (DEV=true)
+    summary: Builds and runs the loopback-only development server (DEV=true)
     deps:
       - task: build:server
         vars:
@@ -318,14 +320,16 @@ tasks:
       Dockerfile generates bindings and builds the frontend from clean source.
 
       Usage: task build:docker [TAG=myapp:latest] [CGO_ENABLED=1] [GO_IMAGE=...] [RUNTIME_IMAGE=...]
-      For CGO apps, set CGO_ENABLED=1 with libc-compatible builder/runtime images, e.g.:
-        task build:docker CGO_ENABLED=1 GO_IMAGE=golang:bookworm RUNTIME_IMAGE=gcr.io/distroless/base-debian12:nonroot
+      GO_IMAGE and RUNTIME_IMAGE are optional for the default CGO-free build;
+      when omitted, Dockerfile.server owns the defaults. CGO_ENABLED=1 requires
+      both overrides. They must be libc-compatible immutable references with a
+      full @sha256 digest; mutable tags are rejected.
     cmds:
       - >-
         docker build
         --build-arg CGO_ENABLED={{.CGO_ENABLED | default "0"}}
-        --build-arg GO_IMAGE={{.GO_IMAGE | default "golang:alpine"}}
-        --build-arg RUNTIME_IMAGE={{.RUNTIME_IMAGE | default "gcr.io/distroless/static-debian12:nonroot"}}
+        {{if .GO_IMAGE}}--build-arg GO_IMAGE={{.GO_IMAGE}}{{end}}
+        {{if .RUNTIME_IMAGE}}--build-arg RUNTIME_IMAGE={{.RUNTIME_IMAGE}}{{end}}
         -t {{.TAG | default (printf "%s:latest" .APP_NAME)}}
         -f build/docker/Dockerfile.server .
     vars:
@@ -337,23 +341,31 @@ tasks:
         msg: "Dockerfile.server not found. Run 'wails3 update build-assets' to generate it."
 
   run:docker:
-    summary: Builds and runs the Docker image
+    summary: Builds and runs the authenticated Docker server with an explicit host bind
     desc: |
-      Builds the Docker image and runs it, exposing port 8080.
-      Usage: task run:docker [TAG=myapp:latest] [PORT=8080]
-      Note: The internal container port is always 8080. The PORT variable
-      only changes the host port mapping. Ensure your app uses port 8080
-      or modify the Dockerfile to match your ServerOptions.Port setting.
-    deps:
+      Builds the Docker image and runs it with token authentication. Set a
+      random KOYORI_SERVER_TOKEN of at least 32 bytes in the environment first;
+      the value is forwarded without placing it in the command line.
+
+      Usage: KOYORI_SERVER_TOKEN="$(openssl rand -hex 32)" task run:docker [TAG=myapp:latest] [PORT=8080] [HOST_IP=127.0.0.1]
+      Note: The internal container port is always 8080. PORT changes the host
+      port mapping and HOST_IP changes the host bind address. The default is
+      127.0.0.1. A non-loopback bind also requires KOYORI_EXTERNAL_ORIGIN to
+      name the public HTTPS origin and should sit behind a trusted HTTPS proxy.
+      See build/docker/SERVER.md for explicit remote deployment topologies.
+    cmds:
       - task: build:docker
         vars:
           TAG:
             ref: .TAG
-    cmds:
-      - docker run --rm -p {{.PORT | default "8080"}}:8080 {{.TAG | default (printf "%s:latest" .APP_NAME)}}
+      - docker run --init --rm -e KOYORI_SERVER_TOKEN -e KOYORI_EXTERNAL_ORIGIN -p {{.HOST_IP | default "127.0.0.1"}}:{{.PORT | default "8080"}}:8080 {{.TAG | default (printf "%s:latest" .APP_NAME)}}
     vars:
       TAG: "{{.TAG}}"
       PORT: "{{.PORT}}"
+      HOST_IP: "{{.HOST_IP}}"
+    preconditions:
+      - sh: 'go run ./build/docker/server-gateway --check-env-token'
+        msg: "Set KOYORI_SERVER_TOKEN to a random value of at least 32 bytes before running the Docker server."
 
   setup:docker:
     summary: Builds Docker image for cross-compilation (~800MB download)

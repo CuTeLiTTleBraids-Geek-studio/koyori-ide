@@ -5,6 +5,12 @@ import test from "node:test";
 
 import { parseExports, root } from "./lib/wails-bindings.mjs";
 
+const goMod = await readFile(path.join(root, "go.mod"), "utf8");
+const moduleMatch = /^module[ \t]+(\S+)[ \t]*$/m.exec(goMod);
+assert.ok(moduleMatch, "go.mod must declare exactly one module path");
+const modulePath = moduleMatch[1];
+const bindingModulePath = `${modulePath}/services/httpclientservice`;
+
 const expectedExports = [
   "CancelRequest",
   "ClearHistory",
@@ -17,10 +23,8 @@ const expectedExports = [
 
 test("HTTP Client production code statically imports the generated binding", async () => {
   const source = await readFile(path.join(root, "frontend", "src", "stores", "httpClient.ts"), "utf8");
-  assert.match(
-    source,
-    /import \* as HTTPClientServiceBindings from "\.\.\/\.\.\/bindings\/github\.com\/koyori-ide\/koyori-ide\/services\/httpclientservice\.js";/,
-  );
+  const expectedImport = `import * as HTTPClientServiceBindings from "../../bindings/${bindingModulePath}.js";`;
+  assert.ok(source.includes(expectedImport), `missing exact generated binding import: ${expectedImport}`);
   assert.doesNotMatch(source, /@vite-ignore|\bbindingPath\b|\bloadBindings\b|import\s*\(/);
 });
 
@@ -29,7 +33,7 @@ test("generated HTTP Client binding and manifest expose the exact required surfa
     root,
     "frontend",
     "bindings",
-    "github.com", "koyori-ide", "koyori-ide",
+    ...modulePath.split("/"),
     "services",
     "httpclientservice.ts",
   );
@@ -41,7 +45,7 @@ test("generated HTTP Client binding and manifest expose the exact required surfa
 
   assert.deepEqual(parseExports(bindingSource), expectedExports);
   assert.deepEqual(
-    manifest.exports["github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/httpclientservice.ts"],
+    manifest.exports[`${bindingModulePath}.ts`],
     expectedExports,
   );
   assert.doesNotMatch(bindingSource, /\$Call\.ByName\s*\(/);

@@ -172,6 +172,8 @@ $RECYCLE.BIN/
 .env.*
 !.env.example
 !.env.*.example
+/.npmrc
+**/.npmrc
 *.pem
 *.key
 *.p12

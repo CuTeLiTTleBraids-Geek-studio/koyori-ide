@@ -13,8 +13,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -256,6 +257,9 @@ func (s *UpdateService) CheckForUpdates(currentVersion string, updateURL string)
 		return nil, fmt.Errorf("parse release response: %w", err)
 	}
 	latest := strings.TrimPrefix(rel.TagName, "v")
+	if !isSupportedUpdateVersion(latest) {
+		return nil, fmt.Errorf("release tag %q is not a supported semantic version", rel.TagName)
+	}
 	info := &UpdateInfo{
 		HasUpdate:      compareSemVer(currentVersion, latest) < 0,
 		LatestVersion:  latest,
@@ -268,27 +272,136 @@ func (s *UpdateService) CheckForUpdates(currentVersion string, updateURL string)
 		PublishedAt: rel.PublishedAt,
 	}
 	approvedDownloads := make(map[string]string)
-	for _, asset := range rel.Assets {
-		checksum, err := parseUpdateDigest(asset.Digest)
-		if err != nil || asset.BrowserDownloadURL == "" {
-			continue
-		}
+	if asset, checksum, ok := selectUpdateAsset(rel.Assets, runtime.GOOS, runtime.GOARCH); ok {
 		u, err := url.Parse(asset.BrowserDownloadURL)
-		if err != nil {
-			continue
+		if err == nil {
+			// Carry GitHub's release-asset digest to DownloadUpdate without adding
+			// another renderer-controlled argument. URL fragments are never sent.
+			u.Fragment = "sha256=" + checksum
+			info.DownloadURL = u.String()
+			u.Fragment = ""
+			approvedDownloads[u.String()] = checksum
 		}
-		// Carry GitHub's release-asset digest to DownloadUpdate without adding
-		// another renderer-controlled argument. URL fragments are never sent.
-		u.Fragment = "sha256=" + checksum
-		info.DownloadURL = u.String()
-		u.Fragment = ""
-		approvedDownloads[u.String()] = checksum
-		break
 	}
 	s.downloadMu.Lock()
 	s.approvedDownloads = approvedDownloads
 	s.downloadMu.Unlock()
 	return info, nil
+}
+
+var semanticVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$`)
+
+type semanticVersion struct {
+	core             [3]string
+	prerelease       []string
+	hasBuildMetadata bool
+}
+
+func isSupportedUpdateVersion(version string) bool {
+	parsed, ok := parseSemanticVersion(version)
+	return ok && !parsed.hasBuildMetadata
+}
+
+func parseSemanticVersion(version string) (semanticVersion, bool) {
+	matches := semanticVersionPattern.FindStringSubmatch(version)
+	if matches == nil {
+		return semanticVersion{}, false
+	}
+
+	parsed := semanticVersion{
+		core:             [3]string{matches[1], matches[2], matches[3]},
+		hasBuildMetadata: matches[5] != "",
+	}
+	if matches[4] == "" {
+		return parsed, true
+	}
+
+	parsed.prerelease = strings.Split(matches[4], ".")
+	for _, identifier := range parsed.prerelease {
+		if isNumericIdentifier(identifier) && len(identifier) > 1 && identifier[0] == '0' {
+			return semanticVersion{}, false
+		}
+	}
+	return parsed, true
+}
+
+// selectUpdateAsset chooses a single verified asset for the running platform.
+// Portable archives are preferred because they are usable without an
+// installer-specific side effect; native installers are only a fallback.
+func selectUpdateAsset(assets []githubReleaseAsset, goos, goarch string) (githubReleaseAsset, string, bool) {
+	if goarch == "aarch64" {
+		goarch = "arm64"
+	}
+	var suffixes []string
+	switch goos {
+	case "windows":
+		suffixes = []string{
+			fmt.Sprintf("windows-%s.zip", goarch),
+			fmt.Sprintf("windows-%s.msi", goarch),
+		}
+	case "linux":
+		suffixes = []string{
+			fmt.Sprintf("linux-%s.tar.gz", goarch),
+			fmt.Sprintf("linux-%s.AppImage", goarch),
+			fmt.Sprintf("linux-%s.deb", goarch),
+			fmt.Sprintf("linux-%s.rpm", goarch),
+		}
+		// nfpm's conventional filenames are retained for compatibility with
+		// older releases built before the canonical linux-* asset names were
+		// introduced. Debian uses the Go architecture spelling; RPM uses the
+		// distribution spelling (x86_64/aarch64).
+		debianArch := goarch
+		rpmArch := goarch
+		if goarch == "amd64" {
+			rpmArch = "x86_64"
+		} else if goarch == "arm64" {
+			rpmArch = "aarch64"
+		}
+		suffixes = append(suffixes,
+			fmt.Sprintf("_%s.deb", debianArch),
+			fmt.Sprintf(".%s.rpm", rpmArch),
+		)
+	case "darwin":
+		suffixes = []string{
+			fmt.Sprintf("darwin-%s.zip", goarch),
+			fmt.Sprintf("macos-%s.dmg", goarch),
+		}
+	default:
+		return githubReleaseAsset{}, "", false
+	}
+
+	for _, suffix := range suffixes {
+		var matches []struct {
+			asset    githubReleaseAsset
+			checksum string
+		}
+		for _, asset := range assets {
+			assetName := strings.ToLower(asset.Name)
+			if !strings.HasPrefix(assetName, "koyori-ide-") && !strings.HasPrefix(assetName, "koyori-ide_") {
+				continue
+			}
+			if !strings.HasSuffix(strings.ToLower(asset.Name), strings.ToLower(suffix)) {
+				continue
+			}
+			checksum, err := parseUpdateDigest(asset.Digest)
+			if err != nil || asset.BrowserDownloadURL == "" {
+				continue
+			}
+			if err := validateGitHubDownloadURL(asset.BrowserDownloadURL); err != nil {
+				continue
+			}
+			matches = append(matches, struct {
+				asset    githubReleaseAsset
+				checksum string
+			}{asset: asset, checksum: checksum})
+		}
+		if len(matches) == 1 {
+			return matches[0].asset, matches[0].checksum, true
+		}
+		// Duplicate matching names are ambiguous; do not select an arbitrary
+		// asset when a release has been tampered with or assembled incorrectly.
+	}
+	return githubReleaseAsset{}, "", false
 }
 
 // DownloadUpdate 下载并校验更新包。downloadURL 必须包含由 CheckForUpdates
@@ -475,91 +588,91 @@ func (s *UpdateService) httpGet(reqURL, accept string) ([]byte, error) {
 	return data, nil
 }
 
-// compareSemVer 对比两个语义化版本字符串。
-// 返回 -1 表示 a < b，0 表示相等，1 表示 a > b。
-// 规则：
-//   - 去掉前导 "v"。
-//   - 以 "." 分割主版本号各段，逐段按整数比较；缺失段视为 0。
-//   - 预发布后缀（"-" 之后的部分）使版本低于无后缀的同版本（1.0.0-beta < 1.0.0）。
-//   - 都有预发布后缀时按字典序比较后缀。
-//   - 解析失败的段按字符串字典序回退比较。
+// compareSemVer compares strict SemVer 2.0 values. A leading "v" is accepted
+// for compatibility with Git tags, and build metadata does not affect
+// precedence. Invalid values retain a deterministic lexical fallback because
+// CompareVersions cannot return a parse error.
 func compareSemVer(a, b string) int {
 	a = strings.TrimPrefix(strings.TrimSpace(a), "v")
 	b = strings.TrimPrefix(strings.TrimSpace(b), "v")
-	if a == b {
+	aVersion, aOK := parseSemanticVersion(a)
+	bVersion, bOK := parseSemanticVersion(b)
+	if !aOK || !bOK {
+		return strings.Compare(a, b)
+	}
+
+	for i := range aVersion.core {
+		if result := compareNumericIdentifier(aVersion.core[i], bVersion.core[i]); result != 0 {
+			return result
+		}
+	}
+
+	if len(aVersion.prerelease) == 0 && len(bVersion.prerelease) == 0 {
 		return 0
 	}
-	aCore, aPre := splitPreRelease(a)
-	bCore, bPre := splitPreRelease(b)
-	if c := compareCore(aCore, bCore); c != 0 {
-		return c
-	}
-	// 同主版本下：无预发布 > 有预发布。
-	if aPre == "" && bPre == "" {
-		return 0
-	}
-	if aPre == "" {
+	if len(aVersion.prerelease) == 0 {
 		return 1
 	}
-	if bPre == "" {
+	if len(bVersion.prerelease) == 0 {
 		return -1
 	}
-	// 都有预发布：按字典序比较。
-	if aPre < bPre {
-		return -1
-	}
-	if aPre > bPre {
-		return 1
-	}
-	return 0
-}
 
-// splitPreRelease 将版本号拆分为核心版本与预发布后缀。
-// "1.0.0-beta" → ("1.0.0", "beta")；"1.0.0" → ("1.0.0", "")。
-func splitPreRelease(v string) (core, pre string) {
-	if idx := strings.Index(v, "-"); idx >= 0 {
-		return v[:idx], v[idx+1:]
+	commonIdentifiers := len(aVersion.prerelease)
+	if len(bVersion.prerelease) < commonIdentifiers {
+		commonIdentifiers = len(bVersion.prerelease)
 	}
-	return v, ""
-}
-
-// compareCore 对比 "." 分割的版本号核心段。
-func compareCore(a, b string) int {
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	n := len(aParts)
-	if len(bParts) > n {
-		n = len(bParts)
-	}
-	for i := 0; i < n; i++ {
-		av := "0"
-		bv := "0"
-		if i < len(aParts) {
-			av = aParts[i]
-		}
-		if i < len(bParts) {
-			bv = bParts[i]
-		}
-		ai, aerr := strconv.Atoi(av)
-		bi, berr := strconv.Atoi(bv)
-		if aerr != nil || berr != nil {
-			// 非数字段按字典序回退比较。
-			if av < bv {
-				return -1
+	for i := 0; i < commonIdentifiers; i++ {
+		aIdentifier := aVersion.prerelease[i]
+		bIdentifier := bVersion.prerelease[i]
+		aNumeric := isNumericIdentifier(aIdentifier)
+		bNumeric := isNumericIdentifier(bIdentifier)
+		switch {
+		case aNumeric && bNumeric:
+			if result := compareNumericIdentifier(aIdentifier, bIdentifier); result != 0 {
+				return result
 			}
-			if av > bv {
-				return 1
-			}
-			continue
-		}
-		if ai < bi {
+		case aNumeric:
 			return -1
-		}
-		if ai > bi {
+		case bNumeric:
 			return 1
+		default:
+			if result := strings.Compare(aIdentifier, bIdentifier); result != 0 {
+				return result
+			}
 		}
 	}
+
+	if len(aVersion.prerelease) < len(bVersion.prerelease) {
+		return -1
+	}
+	if len(aVersion.prerelease) > len(bVersion.prerelease) {
+		return 1
+	}
 	return 0
+}
+
+func isNumericIdentifier(identifier string) bool {
+	if identifier == "" {
+		return false
+	}
+	for _, character := range identifier {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// compareNumericIdentifier avoids machine-integer overflow by comparing the
+// canonical decimal representations by length before lexical order.
+func compareNumericIdentifier(a, b string) int {
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return strings.Compare(a, b)
 }
 
 // validateGitHubDownloadURL 校验下载 URL 是 HTTPS 且来自 github.com。

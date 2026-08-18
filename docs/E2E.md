@@ -24,7 +24,7 @@ x64 run completed on 2026-08-11:
   `7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181`
 - source fingerprint SHA-256:
   `690aa31cad880bf803037ab734207a9e1f7281d9e05140f65daaef15bd7b6180`
-- Wails CLI: `v3.0.0-alpha2.111`
+- Wails CLI: `v3.0.0-beta.8`
 - build tags: `desktop`, `production`, `e2e`
 - screenshot: not retained by this run (`null` in the manifest)
 
@@ -38,7 +38,7 @@ artifact is test-tagged and must not be described as a release artifact.
 Packaged E2E requires the same Wails CLI version as the library in `go.mod`:
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 ```
 
 ## Running the contract smoke

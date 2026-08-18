@@ -17,6 +17,8 @@ assert(!/[xX*]|latest/i.test(pinnedVersion), `[wails-pin] invalid floating versi
 const pinDeclarationFiles = [
   ".github/workflows/ci.yml",
   ".github/workflows/release.yml",
+  ".github/workflows/release-installers.yml",
+  "build/scripts/build-windows.ps1",
   "docs/RELEASING.md",
   "docs/E2E.md",
 ];
@@ -67,6 +69,7 @@ const operationalBindingFiles = [
   "build/android/Taskfile.yml",
   "build/scripts/build-macos.sh",
   "build/scripts/build-linux.sh",
+  "build/scripts/build-windows.ps1",
   "build/scripts/wsl-cross-macos-desktop.sh",
   "build/scripts/wsl-package-all.sh",
   "scripts/build-windows-gui.ps1",
@@ -76,6 +79,7 @@ const operationalBindingFiles = [
   ".github/workflows/ci.yml",
   ".github/workflows/package.yml",
   ".github/workflows/release.yml",
+  ".github/workflows/release-installers.yml",
 ];
 for (const relative of operationalBindingFiles) {
   const source = await readFile(path.join(root, relative), "utf8");
@@ -92,6 +96,7 @@ for (const relative of [
   "build/android/Taskfile.yml",
   "build/scripts/build-macos.sh",
   "build/scripts/build-linux.sh",
+  "build/scripts/build-windows.ps1",
   "build/scripts/wsl-cross-macos-desktop.sh",
   "build/scripts/wsl-package-all.sh",
   "scripts/build-windows-gui.ps1",
@@ -101,6 +106,7 @@ for (const relative of [
   ".github/workflows/ci.yml",
   ".github/workflows/package.yml",
   ".github/workflows/release.yml",
+  ".github/workflows/release-installers.yml",
 ]) {
   const source = await readFile(path.join(root, relative), "utf8");
   assert(
