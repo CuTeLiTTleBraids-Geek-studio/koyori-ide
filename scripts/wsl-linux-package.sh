@@ -16,7 +16,7 @@ for cmd in go nfpm dpkg-deb; do
 done
 
 cd "$ROOT"
-VERSION="$(tr -d '[:space:]' < VERSION)"
+VERSION="$(bash scripts/read-release-version.sh VERSION)"
 echo "[wsl-linux-package] VERSION=$VERSION"
 
 echo "[wsl-linux-package] RUN go build -tags production (linux)"

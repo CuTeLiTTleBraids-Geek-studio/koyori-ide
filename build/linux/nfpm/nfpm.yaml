@@ -24,7 +24,11 @@ contents:
   - src: "./build/linux/koyori-ide.desktop"
     dst: "/usr/share/applications/koyori-ide.desktop"
 
-# Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
+# This checked-in metadata is the GTK4/WebKitGTK 6.0 default used by the
+# Wails Taskfile. The release path is build/scripts/build-linux.sh; it writes
+# build/linux/nfpm/koyori-ide.yaml with dependencies selected from the actual
+# pkg-config result. Do not package a binary built with the gtk3 tag from this
+# static default.
 depends:
   - libgtk-4-1
   - libwebkitgtk-6.0-4

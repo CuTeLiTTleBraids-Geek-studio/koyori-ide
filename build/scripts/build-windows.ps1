@@ -64,9 +64,9 @@ $VersionFile = Join-Path $RootDir "VERSION"
 if (-not (Test-Path $VersionFile)) {
     Write-Fail "VERSION file not found: $VersionFile"
 }
-$Version = (Get-Content $VersionFile -Raw).Trim()
-if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$') {
-    Write-Fail "VERSION contains an invalid SemVer value: $Version"
+$Version = (Get-Content $VersionFile -Raw) -replace '\r?\n$', ''
+if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    Write-Fail "VERSION must be a stable X.Y.Z value: $Version"
 }
 
 Write-Info "构建配置:"
@@ -99,13 +99,17 @@ if (-not $SkipDeps) {
         $env:Path = "$GoBin;$env:Path"
     }
 
-    # Node.js 18+
+    # Vite 8 requires Node ^20.19.0 or >=22.12.0.
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-        Write-Fail "未安装 Node.js。请从 https://nodejs.org/ 安装 Node.js 18+"
+        Write-Fail "未安装 Node.js。请从 https://nodejs.org/ 安装 Node.js 20.19+ 或 22.12+"
     }
-    $NodeMajor = [int]((node --version) -replace '^v', '' -replace '\..*$', '')
-    if ($NodeMajor -lt 18) {
-        Write-Fail "Node.js 版本过低 ($(node --version))，需要 18+"
+    $NodeParts = ((node --version) -replace '^v', '').Split('.')
+    $NodeMajor = [int]$NodeParts[0]
+    $NodeMinor = [int]$NodeParts[1]
+    $NodeSupported = (($NodeMajor -eq 20 -and $NodeMinor -ge 19) -or
+        ($NodeMajor -eq 22 -and $NodeMinor -ge 12) -or $NodeMajor -gt 22)
+    if (-not $NodeSupported) {
+        Write-Fail "Node.js 版本不受支持 ($(node --version))，需要 ^20.19.0 或 >=22.12.0"
     }
     Write-Ok "Node.js: $(node --version)"
 
@@ -117,10 +121,10 @@ if (-not $SkipDeps) {
 
     # wails3 CLI（与 go.mod 锁定版本一致）
     if (-not (Get-Command wails3 -ErrorAction SilentlyContinue)) {
-        Write-Warn "未找到 wails3 CLI，尝试安装 v3.0.0-alpha2.111（与 go.mod 锁定一致）..."
-        go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+        Write-Warn "未找到 wails3 CLI，尝试安装 v3.0.0-beta.8（与 go.mod 锁定一致）..."
+        go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
         if (-not (Get-Command wails3 -ErrorAction SilentlyContinue)) {
-            Write-Fail "wails3 安装失败。请手动执行: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111"
+        Write-Fail "wails3 安装失败。请手动执行: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8"
         }
     }
     Write-Ok "wails3: $((wails3 version 2>$null) -join ' ' | Select-Object -First 1)"
@@ -135,8 +139,13 @@ if (-not $SkipDeps) {
 }
 
 # ============================================================================
-# 2. 生成并校验 Wails bindings（与 CI 一致的门禁）
+# 2. 校验版本元数据并生成 Wails bindings（与 CI 一致的门禁）
 # ============================================================================
+Write-Info "校验 VERSION 与平台元数据..."
+node scripts/sync-release-metadata.mjs --check
+if ($LASTEXITCODE -ne 0) { Write-Fail "release metadata 与 VERSION 不同步" }
+Write-Ok "release metadata 已同步"
+
 Write-Info "生成并校验 Wails bindings..."
 node scripts/generate-bindings.mjs
 if ($LASTEXITCODE -ne 0) { Write-Fail "bindings 生成失败" }

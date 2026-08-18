@@ -40,12 +40,27 @@ $VersionFile = Join-Path $RootDir "VERSION"
 if (-not (Test-Path $VersionFile)) {
     throw "VERSION file not found: $VersionFile"
 }
-$Version = (Get-Content $VersionFile -Raw).Trim()
-if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$') {
-    throw "VERSION contains an invalid SemVer value: $Version"
+$Version = (Get-Content $VersionFile -Raw) -replace '\r?\n$', ''
+$VersionMatch = [regex]::Match($Version, '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+if (-not $VersionMatch.Success) {
+    throw "VERSION must be a stable X.Y.Z value: $Version"
+}
+$MajorVersion = [uint64]$VersionMatch.Groups[1].Value
+$MinorVersion = [uint64]$VersionMatch.Groups[2].Value
+$PatchVersion = [uint64]$VersionMatch.Groups[3].Value
+if ($MajorVersion -gt 255 -or $MinorVersion -gt 255 -or $PatchVersion -gt 65535) {
+    throw "VERSION exceeds MSI limits (major/minor <= 255, patch <= 65535): $Version"
 }
 # MSI ProductVersion ??? X.Y.Z?????????
-$MsiVersion = ($Version -split '-')[0]
+$MsiVersion = "$($VersionMatch.Groups[1].Value).$($VersionMatch.Groups[2].Value).$($VersionMatch.Groups[3].Value)"
+
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    throw "Node.js is required to verify release metadata before building MSI"
+}
+node scripts/sync-release-metadata.mjs --check
+if ($LASTEXITCODE -ne 0) {
+    throw "release metadata is not synchronized with VERSION"
+}
 
 $ExePath = Join-Path $BinDir "$AppName.exe"
 if (-not (Test-Path $ExePath)) {

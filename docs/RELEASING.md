@@ -5,6 +5,11 @@
 The repository root `VERSION` file is authoritative. Nothing else may be edited
 independently:
 
+`VERSION` is a stable `X.Y.Z` value with no leading zeroes, prerelease suffix,
+or build metadata. To remain representable by MSI, major and minor are at most
+255 and patch is at most 65535. Prereleases require a separate workflow because
+Windows and Apple package metadata need platform-specific numeric mappings.
+
 | Artifact | Field | Enforced by |
 |---|---|---|
 | `VERSION` | file contents | — (source of truth) |
@@ -14,13 +19,13 @@ independently:
 | `build/linux/nfpm/nfpm.yaml` | package version | `TestPlatformReleaseMetadataMatchesVERSION` |
 | `build/darwin/Info.plist` | bundle versions | `TestPlatformReleaseMetadataMatchesVERSION` |
 | `docs/CHANGELOG.md` | latest released `## [X.Y.Z]` | `TestReleaseVersionConsistency` |
-| `vX.Y.Z` git tag | tag name | release workflow |
+| `vX.Y.Z` git tag | stable tag name (prerelease tags are excluded) | release workflow |
 
 Run the gate locally before tagging:
 
 ```bash
 node scripts/sync-release-metadata.mjs --check
-go test . -run 'Version|Release|PlatformReleaseMetadata' -count=1
+go test ./internal/repo -run 'Version|Release|PlatformReleaseMetadata' -count=1
 ```
 
 ## Toolchain pins
@@ -31,7 +36,7 @@ service signatures at runtime. Binding generation therefore uses the
 version-addressed repository wrapper rather than whichever `wails3` is on PATH.
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 node scripts/generate-bindings.mjs
 node scripts/check-bindings.mjs
 ```
@@ -43,8 +48,14 @@ binding entry point bypasses the pinned generator.
 Other pins:
 
 - Go `1.25`
-- Node `20`
-- Syft Docker fallback `anchore/syft:v1.29.0`
+- Node `20.19+` (or `22.12+`)
+- Syft release image `anchore/syft:v1.29.0@sha256:e86b0ba0b1d2fe8a2e9f96ed9b22033df9781f43b9a7eb27c57e6c89234946bc`
+
+Release tags are intentionally stable `vX.Y.Z` tags. The workflow trigger
+excludes `vX.Y.Z-*` and `vX.Y.Z+*`, and the first verification step rejects any
+suffix or metadata drift. Do not use a prerelease tag for this workflow; create
+a separate prerelease workflow with its own metadata and signing policy
+instead.
 
 ## License review
 
@@ -106,8 +117,8 @@ product per job and fails on a missing or ambiguous product.
 |---|---|---|
 | Windows amd64 | `koyori-ide-vX.Y.Z-windows-amd64.zip` | PowerShell ZIP |
 | Linux amd64 | `koyori-ide-vX.Y.Z-linux-amd64.tar.gz` | gzip-compressed tar |
-| macOS amd64 | `koyori-ide-vX.Y.Z-darwin-amd64.zip` | ZIP created by `ditto` |
-| macOS arm64 | `koyori-ide-vX.Y.Z-darwin-arm64.zip` | ZIP created by `ditto` |
+| macOS amd64 (`macos-15-intel`) | `koyori-ide-vX.Y.Z-darwin-amd64.zip` | ZIP created by `ditto`; single `x86_64` slice asserted |
+| macOS arm64 (`macos-15`) | `koyori-ide-vX.Y.Z-darwin-arm64.zip` | ZIP created by `ditto`; single `arm64` slice asserted |
 
 Before building, the workflow compares the tag and `VERSION` with
 `build/config.yml`, `build/windows/info.json`,
@@ -120,25 +131,78 @@ shell syntax checks are source-level evidence only. A real tag build, signing,
 notarization, and the four hosted-runner artifacts remain unverified until a
 workflow run URL is recorded.
 
+Before any platform build, the `quality-gate` job verifies the immutable
+annotated tag object, peels it to the exact target commit, and requires the tag
+object or that direct commit to match the tag push event's `GITHUB_SHA`. This
+handles both annotated-tag event representations without treating a tag object
+as a commit. The gate publishes the independently peeled SHA as a job output
+consumed by every portable build checkout, the reusable installer caller, and
+the final publisher checkout/revalidation; consumers never use the event field
+as their checkout ref. It then resolves the newest
+`push` run of the repository's `.github/workflows/ci.yml` on `main` for that
+exact commit and reads every required job from one immutable run ID and attempt.
+Each job's check run must belong to the same check suite and the
+`github-actions` App. A third-party same-name check, a job from another
+workflow, or successful jobs spliced across multiple runs cannot satisfy the
+gate. It requires successful CI jobs for contract
+smoke, bindings, all three Go build/test legs, Go lint, all three frontend
+check/test legs, frontend coverage, the production Wails build, govulncheck,
+the benchmark gate, and npm audit. A missing or stale same-commit check fails
+the release; it is not sufficient that the branch passed checks on a different
+commit. The gate waits for the authoritative run and its in-flight jobs for up
+to 10 minutes and fails closed on missing, ambiguous, foreign, or unsuccessful
+jobs.
+
+After the same-commit CI gate passes, a separate `release-packaged-e2e` job
+checks out only the peeled commit and launches the real packaged Linux desktop
+artifact through `scripts/packaged-e2e.mjs`. It has no signing environment or
+secrets, uploads its evidence even on failure, and blocks every portable build
+and the final publisher. The manual CI qualification job remains accurately
+labelled as such; a tag release does not treat its source-level checks as
+packaged execution evidence.
+
+The reusable installer validator independently fetches and verifies the signed
+annotated tag, emits its peeled 40-character commit as a job output, and every
+build checkout uses only that output. The optional manual `expected_commit`
+input is normalized and validated as a full SHA before the validator's bootstrap
+checkout, then enforced again as an equality constraint; it is never a mutable
+tag or branch fallback.
+The final publisher repeats the signed-tag and peeled-commit check immediately
+before creating the Release.
+
 ## Installer artifacts (`.github/workflows/package.yml`)
 
 The `Package Desktop Apps` workflow produces native installers for all three
 desktop platforms on push to `main`/`master` (path-filtered) or via
 `workflow_dispatch`. Installers are uploaded as workflow artifacts; they are
-not attached to GitHub Releases.
+not attached to GitHub Releases. A shared preflight first requires an exact,
+single-line stable `VERSION` and runs `sync-release-metadata.mjs --check`; every
+platform job depends on that preflight, so a new package name cannot be combined
+with stale executable, installer, or bundle metadata. The platform build scripts
+repeat the metadata check for direct local invocations.
 
 | Platform | Installer | Produced by |
 |---|---|---|
 | Windows amd64 | `koyori-ide-vX.Y.Z-windows-amd64.msi` (WiX v3) | `build/scripts/build-windows.ps1` + `build/scripts/build-msi.ps1` |
-| Linux amd64 / arm64 | `.AppImage` + `.deb` + `.rpm` | `build/scripts/build-linux.sh` |
-| macOS arm64 / amd64 | `.dmg` + `koyori-ide.app` | `build/scripts/build-macos.sh` |
+| Linux amd64 / arm64 | portable `.tar.gz` (binary + AppImage) + `.deb` + `.rpm` | `build/scripts/build-linux.sh` |
+| macOS arm64 / amd64 | portable `.tar.gz` (`.app` + binary) + `.dmg` | `build/scripts/build-macos.sh` |
 
-### Attaching installers to a GitHub Release
+The workflow wraps executable files and macOS app bundles in tar archives before
+calling `upload-artifact`, because the artifact service does not preserve Unix
+mode bits or symlinks. The archive is part of the workflow artifact only; the
+tag-triggered Release keeps its separate signed asset layout below.
 
-When a release is **published** (the tag-triggered `Release` workflow has
-created it), the `Release Installers`
-(`.github/workflows/release-installers.yml`) workflow rebuilds the installers
-and uploads them to that release with per-asset SHA256 checksums:
+### Building installers for a GitHub Release
+
+The tag-triggered `Release` workflow calls the reusable
+(`.github/workflows/release-installers.yml`) workflow **before** creating the
+GitHub Release. Installer jobs upload Actions artifacts only; the final Release
+job verifies all portable and installer artifacts, checksums, SBOMs, and
+provenance, then publishes them once. Immediately before publishing it requires
+the tag lookup to return HTTP 404; `gh release create` then uses the create-only
+API and fails if another run wins the race. There is no `release: published`
+listener, update action, or `--clobber` path, so a failed or rerun build cannot
+merge new files with an existing Release's stale assets:
 
 | Platform | Release asset added |
 |---|---|
@@ -146,12 +210,29 @@ and uploads them to that release with per-asset SHA256 checksums:
 | Linux amd64 / arm64 | `.AppImage` / `.deb` / `.rpm` + `.sha256` |
 | macOS arm64 / amd64 | `.dmg` + `.sha256` |
 
-Signing follows the same policy as `Release` (MED-07 / G-SEC-08): the Windows
-installer is Authenticode-signed and the macOS DMG is Developer ID-signed,
-notarized, and stapled; missing secrets fail the installer jobs unless
-`REQUIRE_CODE_SIGN=false`. Linux installers stay unsigned, matching the tag
-workflow. These installer assets are supplementary to the portable zip /
-tar.gz artifacts and their SBOM/provenance set.
+Tag-triggered production releases always require Windows and macOS signing;
+the caller passes the literal boolean `true`, and no repository variable can
+lower it. A manual installer run may explicitly select `false`, while an
+environment `REQUIRE_CODE_SIGN=true` can still raise that manual policy. The
+only accepted environment values are the exact strings `true`, `false`, or
+unset; invalid values fail closed, and environment `false` never overrides a
+true input.
+
+Portable and installer builds run without the `release` Environment or signing
+secrets. They upload opaque unsigned intermediate payloads, and fresh protected
+signing jobs download only those payloads. Windows signs the EXE before a fresh
+unprivileged job embeds it into the MSI, then a second fresh protected job signs
+the MSI. macOS signs the downloaded app before creating, notarizing, and
+stapling the DMG. Signing secrets are stored in the `release` Environment and
+exposed only to the relevant signing steps; protected signer jobs do not check
+out or execute repository build scripts. The caller does not forward
+repository-level signing secrets. Linux installers stay unsigned. These
+installer assets are supplementary to the portable zip/tar.gz artifacts and
+their SBOM/provenance set.
+
+Unsigned/signed intermediate Actions artifacts use staging-only names. The
+final publisher downloads only `release-*` artifacts, so raw EXE, app bundle,
+and MSI payloads cannot be mistaken for finished release subjects.
 
 Local build commands mirror the CI jobs:
 
@@ -167,6 +248,13 @@ powershell -ExecutionPolicy Bypass -File build/scripts/build-msi.ps1 -Arch amd64
 # macOS (run on macOS; requires create-dmg)
 ./build/scripts/build-macos.sh arm64
 ```
+
+The Linux release script prefers GTK4/WebKitGTK 6.0 and falls back to the
+`gtk3` build tag with GTK3/WebKit2GTK 4.1. It generates
+`build/linux/nfpm/koyori-ide.yaml` after detecting the selected stack, so deb,
+rpm, and Arch dependency names describe the ABI used by the binary. The
+checked-in `build/linux/nfpm/nfpm.yaml` is the GTK4 default for direct Wails
+Taskfile packaging and must not be used for a binary built with the `gtk3` tag.
 
 The Windows build script produces the GUI executable (icon/version `syso`
 via `wails3 generate syso`, then `go build -tags production -H=windowsgui`).
@@ -187,7 +275,7 @@ workflow (`REQUIRE_CODE_SIGN` / `WINDOWS_CERT_*` / `MACOS_CERT_*`).
    # Edit VERSION first. The sync command fails closed on an unexpected file shape.
    node scripts/sync-release-metadata.mjs
    node scripts/sync-release-metadata.mjs --check
-   go test . -run 'Version|Release|PlatformReleaseMetadata' -count=1
+   go test ./internal/repo -run 'Version|Release|PlatformReleaseMetadata' -count=1
    ```
 
 3. Promote the `## [Unreleased]` changelog section to `## [X.Y.Z] - YYYY-MM-DD`
@@ -200,25 +288,23 @@ workflow (`REQUIRE_CODE_SIGN` / `WINDOWS_CERT_*` / `MACOS_CERT_*`).
 5. Run the full gate set:
 
    ```bash
-   go test ./services/ -count=1
-   go test . -count=1
-   go vet ./...
-   node scripts/generate-bindings.mjs
-   (cd frontend && npm ci && npm test && npx vue-tsc --noEmit && npm run lint && npm run build)
-   node scripts/check-bindings.mjs
-   node scripts/check-doc-links.mjs
-   node scripts/check-doc-numbers.mjs
-   node scripts/check-wails-pin.mjs
+   (cd frontend && npm ci --registry=https://registry.npmjs.org && npm test && npx vue-tsc --noEmit && npm run lint && npm run build)
+   node scripts/backend-gate.mjs
+   node scripts/npm-audit-gate.mjs
+   node scripts/check-release-assets.mjs --check --require-dist
    node scripts/generate-license-inventory.mjs --check
    node scripts/generate-license-inventory.mjs --full-check
    node --test scripts/generate-release-provenance.test.mjs
    ```
 
-6. Tag and push. The tag must equal `VERSION` exactly, including the absence of
-   a leading `v` inside the file (the tag carries the `v`, the file does not).
+6. Create a signed annotated tag and push it. The tag must equal `VERSION`
+   exactly, including the absence of a leading `v` inside the file (the tag
+   carries the `v`, the file does not). GitHub must report the tag signature as
+   verified; a lightweight, unsigned, or unverified tag fails before building.
 
    ```bash
-   git tag "v$(cat VERSION)"
+   git tag -s "v$(cat VERSION)" -m "Koyori IDE v$(cat VERSION)"
+   git verify-tag "v$(cat VERSION)"
    git push origin "v$(cat VERSION)"
    ```
 
@@ -234,23 +320,32 @@ workflow (`REQUIRE_CODE_SIGN` / `WINDOWS_CERT_*` / `MACOS_CERT_*`).
 ## SBOM and provenance boundary
 
 Tag releases generate one `*.sbom.spdx.json` through
-`scripts/generate-sbom.sh` for each final platform archive. The script scans
-the archive itself (`file:<artifact>`), not the checkout directory, so each
-SPDX document is bound to the artifact it describes. The release workflow then
-runs `scripts/check-sbom-artifact.mjs` to require a unique SPDX file root whose
-SHA-256 exactly matches that archive; a parseable but mismatched SBOM fails.
-Syft or Docker is mandatory; there is no skip or best-effort path. The script
-uses a temporary file and only publishes a non-empty completed output. The workflow parses all
-four JSON documents before continuing and includes their digests in the final
-`SHA256SUMS`.
+`scripts/generate-sbom.sh` for each of the 13 executable/installer artifacts:
+the portable ZIP/tar archives and native MSI/AppImage/deb/rpm/DMG installers.
+LICENSE, NOTICE, inventories, provenance, and checksum metadata are not
+executable subjects and therefore do not receive an SBOM. The script scans
+each artifact itself (`file:<artifact>`), not the checkout directory, so each
+SPDX document is bound to the artifact it describes. The release workflow then runs `scripts/check-sbom-artifact.mjs` to
+require a unique SPDX file root whose SHA-256 exactly matches that archive; a
+parseable but mismatched SBOM fails.
+Syft or Docker is mandatory; there is no skip or best-effort path. Local runs
+may use an explicit Syft binary, while the tag workflow forces `SYFT_MODE=docker`
+and the digest-pinned image above so hosted-runner tool drift cannot change the
+generator. The script uses a temporary file and only publishes a non-empty
+completed output. The workflow parses all 13 JSON documents before continuing
+and includes their digests in the final `SHA256SUMS`.
 
 The workflow also generates `provenance.intoto.jsonl` with subjects for the
 release artifacts, legal inventory, and SBOM. Its shape uses in-toto Statement
-v1 and the SLSA provenance v1 predicate, but it is deliberately marked
-`unsigned` and is **not a signed attestation**. Artifact code signing and
-provenance signing are separate controls. No `id-token: write` permission or
-keyless signing step is configured, so do not claim SLSA attestation or
-cryptographic provenance verification.
+v1 and the SLSA provenance v1 predicate; this checked-in statement is an
+unsigned, human-auditable record. Its resolved Git dependency is the
+independently peeled release commit, and generation fails if that commit does
+not equal the final publisher checkout's `HEAD`; the annotated tag object's
+event SHA is never recorded as a commit. Separately, the final release job requests
+`id-token: write` and `attestations: write` and runs
+`actions/attest-build-provenance` against the final `SHA256SUMS`. Consumers can
+verify that GitHub attestation independently; the unsigned JSON file must not
+be described as the attestation itself.
 
 `SHA256SUMS` is regenerated only after the SBOM and provenance exist. It covers
 all files in `release-assets`; the workflow fails rather than publishing a
@@ -264,12 +359,14 @@ workspace open, file open/edit/save, terminal, LSP hover/completion, and
 SIGKILL/restart recovery, but source coverage and `--dry-run` are not artifact
 execution evidence.
 
-On 2026-08-03, the local real harness stopped at toolchain setup because the
-pinned `wails3 v3.0.0-alpha2.111` CLI was unavailable. No artifact was built or
-launched, so packaged execution remains `U`. Promote the job to required only
-after three consecutive successful manual runs on three distinct commits, each
-with its manifest and launch evidence retained. Windows and macOS packaged
-execution remain `U` independently of a Linux result.
+An older 2026-08-03 harness record stopped at toolchain setup while the project
+still used the pre-release `wails3` pin; that record predates the current
+`v3.0.0-beta.8` toolchain and is not evidence for this release. No hosted tag
+release artifact run is retained here, so packaged execution remains `U` for
+release qualification. Promote the job to required only after three consecutive
+successful manual runs on three distinct commits, each with its manifest and
+launch evidence retained. Windows and macOS packaged execution remain `U`
+independently of a Linux result.
 
 The current tag workflow can publish without that qualification job because it
 is a separate manual workflow path. A release record must state this residual
@@ -283,12 +380,17 @@ URL, not by assertion:
 - [ ] Workflow run URL for the tag build
 - [ ] Attached artifacts for every advertised platform
 - [ ] `SHA256SUMS` attached and matching the artifacts
-- [ ] `NOTICE` and `THIRD_PARTY_LICENSES.md` attached; all unresolved license
+- [ ] `LICENSE`, `NOTICE`, and `THIRD_PARTY_LICENSES.md` attached; all unresolved license
       rows resolved or covered by an owned, dated exception
 - [ ] `RELEASE_ASSET_LICENSES.md` attached and matching the checked public and
       native asset inputs
-- [ ] Four non-empty, parseable per-artifact `*.sbom.spdx.json` files attached
+- [ ] Thirteen non-empty, parseable per-artifact `*.sbom.spdx.json` files attached
 - [ ] `provenance.intoto.jsonl` attached and described accurately as unsigned
+- [ ] GitHub build-provenance attestation verifies against the final
+      `SHA256SUMS`
+- [ ] Tag is annotated, signed, and shown by GitHub as verified
+- [ ] `release` Environment approval/deployment is recorded for signing and
+      publishing jobs
 - [ ] Signing status recorded explicitly, including "unsigned" when that is the
       truth
 - [ ] Packaged E2E status recorded; absent qualification evidence is explicitly

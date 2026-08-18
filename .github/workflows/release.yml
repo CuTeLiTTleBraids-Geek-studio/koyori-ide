@@ -1,14 +1,19 @@
 name: Release
 
-# N-147: Tag-triggered release pipeline. When a version tag (v*.*.*) is
-# pushed, this workflow builds production artifacts for Windows, Linux, and
-# macOS, generates SHA256 checksums, and creates a GitHub Release with the
-# artifacts attached. The docs/CHANGELOG.md section for the tag version is used
+# N-147: Tag-triggered stable release pipeline. When a stable version tag
+# (vX.Y.Z) is pushed, this workflow builds production artifacts for Windows,
+# Linux, and macOS, generates SHA256 checksums, and creates a GitHub Release
+# with the artifacts attached. The docs/CHANGELOG.md section for the tag version is used
 # as the release notes body (hand-maintained changelog is the source of truth).
 #
 # Triggering:
-#   git tag v0.2.0
+#   git tag -s v0.2.0 -m "Koyori IDE v0.2.0"
+#   git verify-tag v0.2.0
 #   git push origin v0.2.0
+#
+# Prerelease tags are intentionally excluded by the trigger and rejected by
+# the verification step. VERSION and all mirrored platform metadata use the
+# stable X.Y.Z shape; prerelease channels need a separate workflow and policy.
 #
 # Artifacts per platform:
 #   Windows: koyori-ide-<version>-windows-amd64.zip
@@ -16,9 +21,10 @@ name: Release
 #   macOS:   koyori-ide-<version>-darwin-amd64.zip
 #            koyori-ide-<version>-darwin-arm64.zip
 #
-# Every release asset is hashed with SHA256. A mandatory SPDX JSON SBOM, an
-# unsigned in-toto provenance statement, and a single SHA256SUMS file are
-# published alongside the platform artifacts.
+# Portable archives and native installers are built before the Release exists.
+# Every executable/installer artifact is hashed with SHA256 and receives an
+# SPDX JSON SBOM. All release assets are covered by GitHub's signed
+# build-provenance attestation and the final SHA256SUMS file.
 #
 # Code signing (MED-07 / G-SEC-08):
 #   - Windows: Authenticode via signtool (requires WINDOWS_CERT_PFX +
@@ -27,18 +33,238 @@ name: Release
 #     MACOS_CERT_P12 + MACOS_CERT_PASSWORD + APPLE_ID +
 #     APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID secrets). Missing
 #     secrets FAIL the release.
-# Tag releases require signing by default. REQUIRE_CODE_SIGN=false is the
-# only supported opt-out for an intentional unsigned release.
+# Tag-triggered production releases always require signing. An unsigned build
+# can be produced only by a deliberate manual installer workflow dispatch; a
+# repository variable cannot weaken the protected release policy.
 
 on:
   push:
     tags:
       - "v*.*.*"
+      - "!v*.*.*-*"
+      - '!v*.*.*\+*'
 
 permissions:
   contents: read
 
 jobs:
+  quality-gate:
+    name: Verify same-commit required CI checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      commit_sha: ${{ steps.verify.outputs.commit_sha }}
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+    steps:
+      - name: Require successful checks for this commit
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::quality gate received a non-stable tag: ${tag}"
+            exit 1
+          fi
+          tag_object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+          tag_object_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+          if [ "$tag_object_type" != "tag" ] || [[ ! "$tag_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${tag} is not an annotated tag"
+            exit 1
+          fi
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.object.sha')"
+          target_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.object.type')"
+          if [ "$target_type" != "commit" ] || [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${tag} does not point directly to a commit"
+            exit 1
+          fi
+          # GitHub has exposed annotated-tag push SHAs as either the tag object
+          # or its peeled commit in different event/API contexts. Bind the run
+          # to the current ref either way, then publish only the independently
+          # peeled commit to downstream jobs.
+          if [ "$GITHUB_SHA" != "$tag_object_sha" ] && [ "$GITHUB_SHA" != "$sha" ]; then
+            echo "::error::${tag} object ${tag_object_sha} and target ${sha} do not match triggering SHA ${GITHUB_SHA}"
+            exit 1
+          fi
+          echo "quality gate target commit=${sha} tag-object=${tag_object_sha}"
+          required_checks=(
+            "Contract smoke, not packaged E2E (ubuntu-latest)"
+            "Wails bindings (required)"
+            "Go Build & Test (ubuntu-latest)"
+            "Go Build & Test (windows-latest)"
+            "Go Build & Test (macos-latest)"
+            "Go Lint"
+            "Frontend Check & Test (ubuntu-latest)"
+            "Frontend Check & Test (windows-latest)"
+            "Frontend Check & Test (macos-latest)"
+            "Frontend Coverage"
+            "Wails Production Build"
+            "Govulncheck"
+            "Performance Benchmark"
+            "NPM Audit"
+          )
+          missing=("authoritative ci.yml run")
+          # Resolve exactly one authoritative GitHub Actions CI run first. The
+          # workflow endpoint, push event, repository, head branch and exact
+          # head SHA are all part of the identity; a same-named check emitted
+          # by another app or a different workflow run is never sufficient.
+          for attempt in {1..30}; do
+            run_record="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f head_sha="$sha" -f event=push -f per_page=100 \
+              --jq '[.workflow_runs[] |
+                select(.path == ".github/workflows/ci.yml" and
+                  .event == "push" and .head_branch == "main" and
+                  .head_sha != null)] |
+                sort_by(.id) |
+                if length == 0 then empty else .[-1] end')"
+            if [ -z "$run_record" ]; then
+              echo "Waiting for an authoritative ci.yml push run on ${sha} (attempt ${attempt}/30)"
+              sleep 20
+              continue
+            fi
+            run_id="$(jq -r '.id // empty' <<<"$run_record")"
+            run_attempt="$(jq -r '.run_attempt // empty' <<<"$run_record")"
+            run_sha="$(jq -r '.head_sha // empty' <<<"$run_record")"
+            run_status="$(jq -r '.status // empty' <<<"$run_record")"
+            run_conclusion="$(jq -r '.conclusion // ""' <<<"$run_record")"
+            suite_id="$(jq -r '.check_suite_id // 0' <<<"$run_record")"
+            run_path="$(jq -r '.path // empty' <<<"$run_record")"
+            run_repository="$(jq -r '.repository.full_name // empty' <<<"$run_record")"
+            head_repository="$(jq -r '.head_repository.full_name // empty' <<<"$run_record")"
+            if [[ ! "$run_id" =~ ^[0-9]+$ ]] || [[ ! "$run_attempt" =~ ^[0-9]+$ ]] ||
+               [[ ! "$suite_id" =~ ^[0-9]+$ ]] || [ "$run_sha" != "$sha" ] ||
+               [ "$run_path" != ".github/workflows/ci.yml" ] ||
+               [ "$run_repository" != "$GITHUB_REPOSITORY" ] ||
+               [ "$head_repository" != "$GITHUB_REPOSITORY" ]; then
+              echo "::error::ci.yml run metadata is not authoritative for ${sha}"
+              exit 1
+            fi
+            if [ "$run_status" != "completed" ]; then
+              echo "Waiting for ci.yml run ${run_id} attempt ${run_attempt} to complete (attempt ${attempt}/30)"
+              sleep 20
+              continue
+            fi
+            if [ "$run_conclusion" != "success" ]; then
+              echo "::error::authoritative ci.yml run ${run_id} concluded ${run_conclusion}"
+              exit 1
+            fi
+
+            jobs_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/attempts/${run_attempt}/jobs?per_page=100")"
+            missing=()
+            for required in "${required_checks[@]}"; do
+              matches="$(jq -c --arg required "$required" \
+                '[.jobs[] | select(.name == $required)]' <<<"$jobs_json")"
+              match_count="$(jq 'length' <<<"$matches")"
+              if [ "$match_count" -ne 1 ]; then
+                missing+=("$required")
+                continue
+              fi
+              job_id="$(jq -r '.[0].id' <<<"$matches")"
+              job_run_id="$(jq -r '.[0].run_id' <<<"$matches")"
+              job_attempt="$(jq -r '.[0].run_attempt' <<<"$matches")"
+              job_sha="$(jq -r '.[0].head_sha' <<<"$matches")"
+              job_status="$(jq -r '.[0].status' <<<"$matches")"
+              job_conclusion="$(jq -r '.[0].conclusion // ""' <<<"$matches")"
+              check_url="$(jq -r '.[0].check_run_url // ""' <<<"$matches")"
+              if [ "$job_run_id" != "$run_id" ] || [ "$job_attempt" != "$run_attempt" ] ||
+                 [ "$job_sha" != "$sha" ] || [ "$job_status" != "completed" ] ||
+                 [ "$job_conclusion" != "success" ] ||
+                 [[ ! "$job_id" =~ ^[0-9]+$ ]] ||
+                 [[ ! "$check_url" =~ /check-runs/[0-9]+$ ]]; then
+                missing+=("$required")
+                continue
+              fi
+              check_id="${check_url##*/}"
+              if [ "$check_id" != "$job_id" ]; then
+                missing+=("$required")
+                continue
+              fi
+              check_run="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs/${check_id}")"
+              if ! jq -e --arg required "$required" --arg sha "$sha" \
+                --arg suite "$suite_id" --arg run_id "$run_id" \
+                '(.name == $required and .head_sha == $sha and
+                  .status == "completed" and .conclusion == "success" and
+                  .app.slug == "github-actions" and
+                  (.check_suite.id | tostring) == $suite and
+                  ((.details_url // "") | contains($run_id)))' \
+                <<<"$check_run" >/dev/null; then
+                missing+=("$required")
+              fi
+            done
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "All required checks from authoritative ci.yml run ${run_id} attempt ${run_attempt} passed for ${sha}."
+              echo "commit_sha=${sha}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Waiting for ${#missing[@]} required check(s) from ci.yml run ${run_id} attempt ${run_attempt} (attempt ${attempt}/30): ${missing[*]}"
+            sleep 20
+          done
+          echo "::error::required authoritative ci.yml checks did not all pass for ${sha}: ${missing[*]}"
+          exit 1
+
+  release-packaged-e2e:
+    name: Packaged desktop E2E (release gate)
+    needs: quality-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      KOYORI_IDE_E2E_DISPLAY: ':99'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.quality-gate.outputs.commit_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20.19"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux GUI and headless-display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev \
+            pkg-config xvfb imagemagick
+
+      - name: Install frontend dependencies
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: frontend
+
+      - name: Verify Wails pin and generated bindings
+        run: |
+          node scripts/check-bindings-ownership.mjs
+          node scripts/check-wails-pin.mjs
+          node scripts/generate-bindings.mjs
+          node scripts/check-bindings.mjs
+
+      - name: Install pinned Wails CLI and real LSP fixture
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+          go install golang.org/x/tools/gopls@v0.21.1
+
+      - name: Run packaged E2E release gate
+        run: node scripts/packaged-e2e.mjs
+
+      - name: Upload packaged E2E evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualification-packaged-e2e-evidence
+          path: build/e2e-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
   build:
     name: Build (${{ matrix.os }} / ${{ matrix.arch }})
     strategy:
@@ -47,70 +273,31 @@ jobs:
         include:
           - os: windows-latest
             arch: amd64
-            artifact_name: koyori-ide-${{ github.ref_name }}-windows-amd64.zip
+            artifact_suffix: windows-amd64.zip
             build_cmd: wails3 build -tags desktop,production
           - os: ubuntu-latest
             arch: amd64
-            artifact_name: koyori-ide-${{ github.ref_name }}-linux-amd64.tar.gz
+            artifact_suffix: linux-amd64.tar.gz
             build_cmd: wails3 build -tags desktop,production
-          - os: macos-latest
+          - os: macos-15-intel
             arch: amd64
-            artifact_name: koyori-ide-${{ github.ref_name }}-darwin-amd64.zip
+            artifact_suffix: darwin-amd64.zip
             build_cmd: wails3 build -tags desktop,production
-          - os: macos-latest
+          - os: macos-15
             arch: arm64
-            artifact_name: koyori-ide-${{ github.ref_name }}-darwin-arm64.zip
+            artifact_suffix: darwin-arm64.zip
             build_cmd: wails3 build -tags desktop,production
     runs-on: ${{ matrix.os }}
+    needs: [quality-gate, release-packaged-e2e]
     env:
-      # Every matrix entry passes its declared architecture to Wails/Go. This
-      # also makes the Windows and Linux architecture explicit instead of
-      # relying on the hosted runner default.
       GOARCH: ${{ matrix.arch }}
-      # MED-07 / G-SEC-08: code-signing secrets. Required for tag releases —
-      # missing secrets fail the build (see the verify step below).
-      REQUIRE_CODE_SIGN: ${{ vars.REQUIRE_CODE_SIGN || 'true' }}
-      WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
-      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      # Signing is mandatory by default. Set the repository variable
-      # REQUIRE_CODE_SIGN=false only when an unsigned release is intentional.
-      - name: Verify code-signing secrets (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          if [ -z "$WINDOWS_CERT_PFX" ] || [ -z "$WINDOWS_CERT_PASSWORD" ]; then
-            if [ "${REQUIRE_CODE_SIGN:-true}" != "false" ]; then
-              echo "::error::Windows code-signing secrets missing; set REQUIRE_CODE_SIGN=false to allow an unsigned release."
-              exit 1
-            fi
-            echo "::warning::REQUIRE_CODE_SIGN=false; publishing an unsigned Windows artifact."
-          else
-            echo "Windows signing secrets present."
-          fi
-
-      - name: Verify code-signing secrets (macOS)
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_CERT_PASSWORD" ] || \
-             [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || \
-             [ -z "$APPLE_TEAM_ID" ]; then
-            if [ "${REQUIRE_CODE_SIGN:-true}" != "false" ]; then
-              echo "::error::macOS code-signing secrets missing; set REQUIRE_CODE_SIGN=false to allow an unsigned release."
-              exit 1
-            fi
-            echo "::warning::REQUIRE_CODE_SIGN=false; publishing an unsigned macOS artifact."
-          else
-            echo "macOS signing secrets present."
-          fi
+        with:
+          ref: ${{ needs.quality-gate.outputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       # GOAL-P0-05 AC 2: the tag must equal the declared version before anything
       # is built. Running this first means a drifted tag cannot produce artifacts
@@ -118,11 +305,14 @@ jobs:
       # while the embedded application metadata says another.
       - name: Verify tag matches all release metadata
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ needs.quality-gate.outputs.commit_sha }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           tag_version="${tag#v}"
-          source_version="$(tr -d ' \t\n\r' < VERSION)"
+          source_version="$(bash scripts/read-release-version.sh VERSION)"
 
           config_versions=()
           while IFS= read -r line; do config_versions+=("$line"); done < <(awk -F'"' '/^  version:/{print $2}' build/config.yml)
@@ -160,8 +350,50 @@ jobs:
 
           echo "tag=${tag} tag_version=${tag_version} VERSION=${source_version}"
 
+          if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::tag ${tag} is not a supported release tag."
+            exit 1
+          fi
+          if [[ ! "${source_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::VERSION is not a strict semantic version: ${source_version}"
+            exit 1
+          fi
           if [ "${tag_version}" != "${source_version}" ]; then
             echo "::error::tag ${tag} does not match VERSION (${source_version})."
+            exit 1
+          fi
+          tag_ref="refs/release-tags/${tag}"
+          git fetch --force --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/tags/${tag}:${tag_ref}"
+          if [ "$(git cat-file -t "$tag_ref")" != "tag" ]; then
+            echo "::error::local release ref is not an annotated tag"
+            exit 1
+          fi
+          tag_object_sha="$(git rev-parse "$tag_ref")"
+          tag_commit="$(git rev-parse "${tag_ref}^{commit}")"
+          if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
+             [ "$tag_commit" != "$EXPECTED_COMMIT" ] ||
+             [ "$tag_commit" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::checked-out source or triggering commit does not match the peeled release tag commit"
+            exit 1
+          fi
+          git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main || {
+            echo "::error::tag ${tag} is not reachable from origin/main."
+            exit 1
+          }
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+          tag_target_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.type')"
+          tag_target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')"
+          if [ "$tag_sha" != "$tag_object_sha" ] ||
+             [ "$tag_target_type" != "commit" ] || [ "$tag_target_sha" != "$tag_commit" ]; then
+            echo "::error::remote tag target does not match the checked-out release commit"
+            exit 1
+          fi
+          verified="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.verification.verified')"
+          reason="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.verification.reason')"
+          if [ "$verified" != "true" ] || [ "$reason" != "valid" ]; then
+            echo "::error::GitHub did not verify ${tag}'s signature (verified=${verified}, reason=${reason})."
             exit 1
           fi
           require_versions "build/config.yml" 1 "${config_versions[@]}"
@@ -206,123 +438,46 @@ jobs:
           node scripts/check-bindings.mjs
 
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
       - name: Build
         run: ${{ matrix.build_cmd }}
 
-      - name: Verify packaged frontend asset boundary
-        run: node scripts/check-release-assets.mjs --check --require-dist
-
-      # MED-07 / G-SEC-08: Windows Authenticode signing. Missing credentials
-      # fail verification unless the unsigned-release opt-out is explicit.
-      # When present, the certificate is decoded to a temporary file here.
-      - name: Code sign (Windows Authenticode)
-        if: matrix.os == 'windows-latest' && env.WINDOWS_CERT_PFX != ''
-        shell: pwsh
-        run: |
-          $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
-          $securePassword = $null
-          $importedCertificates = @()
-          $signingCertificate = $null
-          $thumbprint = $null
-          try {
-            [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
-            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
-            $securePassword = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
-            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
-            $importedCertificates = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation "Cert:\CurrentUser\My" -Password $securePassword)
-            $signingCertificate = $importedCertificates | Where-Object { $_.HasPrivateKey } | Select-Object -First 1
-            if (-not $signingCertificate) { throw "No private-key certificate found in the imported PFX" }
-            $thumbprint = $signingCertificate.Thumbprint
-            # Locate signtool.exe from the installed Windows SDK.
-            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object -Descending | Select-Object -First 1
-            if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
-            $windowsArtifacts = @(Get-ChildItem -Path bin -Filter "*koyori-ide*.exe" -File -Recurse -ErrorAction SilentlyContinue)
-            if ($windowsArtifacts.Count -ne 1) {
-              throw "Expected exactly one Koyori IDE Windows executable under bin; found $($windowsArtifacts.Count): $($windowsArtifacts.FullName -join ', ')"
-            }
-            foreach ($artifact in $windowsArtifacts) {
-              & $signtool.FullName sign /sha1 $thumbprint /s My /fd sha256 /td sha256 /tr http://timestamp.digicert.com $artifact.FullName
-              if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $($artifact.FullName)" }
-              & $signtool.FullName verify /pa $artifact.FullName
-              if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $($artifact.FullName)" }
-            }
-          } finally {
-            foreach ($certificate in @($importedCertificates)) {
-              if ($certificate -and $certificate.Thumbprint) {
-                Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
-              }
-            }
-            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
-            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
-            $thumbprint = $null
-            $signingCertificate = $null
-            $importedCertificates = @()
-            $securePassword = $null
-          }
-
-      # MED-07 / G-SEC-08: macOS Developer ID signing + notarization. Missing
-      # credentials fail verification unless the unsigned-release opt-out is
-      # explicit. When present, the certificate is imported into a temporary
-      # keychain before signing and notarizing the .app bundle.
-      - name: Code sign & notarize (macOS)
-        if: matrix.os == 'macos-latest' && env.MACOS_CERT_P12 != ''
+      - name: Verify macOS bundle architecture
+        if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="bin/koyori-ide.app"
-          if [ ! -d "$APP_PATH" ]; then
-            if [ "${REQUIRE_CODE_SIGN:-true}" = "false" ]; then
-              echo "::warning::REQUIRE_CODE_SIGN=false; skipping macOS signing because koyori-ide.app was not built."
-              exit 0
-            fi
-            echo "::error::koyori-ide.app not found; refusing to publish an unsigned macOS artifact."
+          app_binary="bin/koyori-ide.app/Contents/MacOS/koyori-ide"
+          test -x "$app_binary"
+          file_output="$(file -b "$app_binary")"
+          echo "$file_output"
+          expected_arch="${GOARCH}"
+          if [ "$expected_arch" = "amd64" ]; then
+            expected_arch="x86_64"
+          fi
+          if [[ "$file_output" != *"$expected_arch"* ]]; then
+            echo "::error::file identified $app_binary as the wrong architecture (expected $expected_arch)"
             exit 1
           fi
-          p12_path="$RUNNER_TEMP/developer_id.p12"
-          echo "$MACOS_CERT_P12" | base64 --decode > "$p12_path"
-          keychain="build-$RANDOM.keychain"
-          keychain_pw="$(openssl rand -hex 32)"
-          security create-keychain -p "$keychain_pw" "$keychain"
-          security default-keychain -s "$keychain"
-          security unlock-keychain -p "$keychain_pw" "$keychain"
-          security import "$p12_path" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain"
-          rm -f "$p12_path"
-          # Sign with hardened runtime (required for notarization).
-          codesign --force --deep --options runtime --sign "Developer ID Application" "$APP_PATH"
-          # Verify the signature.
-          codesign --verify --strict --verbose=2 "$APP_PATH"
-          # Submit for notarization and wait for Apple's verdict.
-          zip_path="$RUNNER_TEMP/koyori-ide-notarize.zip"
-          ditto -c -k --keepParent "$APP_PATH" "$zip_path"
-          xcrun notarytool submit "$zip_path" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          # Staple the notarization ticket to the app bundle.
-          xcrun stapler staple "$APP_PATH"
-          # Clean up the temporary keychain.
-          security delete-keychain "$keychain"
+          lipo -verify_arch "$expected_arch" "$app_binary"
+          actual_arches="$(lipo -archs "$app_binary" | tr -s ' ' ' ' | sed 's/^ *//; s/ *$//')"
+          if [ "$actual_arches" != "$expected_arch" ]; then
+            echo "::error::expected a single ${expected_arch} slice, got ${actual_arches}"
+            exit 1
+          fi
 
-      - name: Package (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $windowsArtifacts = @(Get-ChildItem -Path bin -Filter "*koyori-ide*.exe" -File -Recurse -ErrorAction SilentlyContinue)
-          if ($windowsArtifacts.Count -ne 1) {
-            throw "Expected exactly one Koyori IDE Windows executable under bin; found $($windowsArtifacts.Count): $($windowsArtifacts.FullName -join ', ')"
-          }
-          Compress-Archive -LiteralPath $windowsArtifacts[0].FullName -DestinationPath "${{ matrix.artifact_name }}"
+      - name: Verify packaged frontend asset boundary
+        run: node scripts/check-release-assets.mjs --check --require-dist
 
       - name: Package (Linux)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
+          release_tag="${GITHUB_REF_NAME}"
+          [[ "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Unsupported release tag"; exit 1; }
+          artifact_name="koyori-ide-${release_tag}-${ARTIFACT_SUFFIX}"
           artifacts=()
           for candidate in bin/koyori-ide*; do
             if [ -f "$candidate" ] && [ -x "$candidate" ]; then
@@ -333,10 +488,21 @@ jobs:
             echo "::error::Expected exactly one Linux Koyori IDE executable; found ${#artifacts[@]}: ${artifacts[*]-}"
             exit 1
           fi
-          tar -czf "${{ matrix.artifact_name }}" -C bin "$(basename "${artifacts[0]}")"
+          tar -czf "${artifact_name}" -C bin "$(basename "${artifacts[0]}")"
 
-      - name: Package (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Stage unsigned Windows executable
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $windowsArtifacts = @(Get-ChildItem -Path bin -Filter "*koyori-ide*.exe" -File -Recurse -ErrorAction SilentlyContinue)
+          if ($windowsArtifacts.Count -ne 1) {
+            throw "Expected exactly one Koyori IDE Windows executable under bin; found $($windowsArtifacts.Count): $($windowsArtifacts.FullName -join ', ')"
+          }
+          New-Item -ItemType Directory -Force -Path unsigned-portable | Out-Null
+          Copy-Item -LiteralPath $windowsArtifacts[0].FullName -Destination unsigned-portable/koyori-ide.exe
+
+      - name: Stage unsigned macOS app bundle
+        if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
           set -euo pipefail
@@ -350,34 +516,253 @@ jobs:
             echo "::error::Expected exactly one macOS Koyori IDE app bundle; found ${#app_bundles[@]}: ${app_bundles[*]-}"
             exit 1
           fi
-          ditto -c -k --keepParent "${app_bundles[0]}" "${{ matrix.artifact_name }}"
+          mkdir -p unsigned-portable
+          tar -cf "unsigned-portable/koyori-ide-${GOARCH}.payload" -C bin "$(basename "${app_bundles[0]}")"
 
-      - name: Generate SHA256 checksum
+      - name: Generate Linux SHA256 checksum
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
+          release_tag="${GITHUB_REF_NAME}"
+          [[ "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Unsupported release tag"; exit 1; }
+          artifact_name="koyori-ide-${release_tag}-${ARTIFACT_SUFFIX}"
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${{ matrix.artifact_name }}" > "${{ matrix.artifact_name }}.sha256"
+            digest="$(sha256sum "${artifact_name}")"
           else
-            shasum -a 256 "${{ matrix.artifact_name }}" > "${{ matrix.artifact_name }}.sha256"
+            digest="$(shasum -a 256 "${artifact_name}")"
           fi
+          digest="${digest%% *}"
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Invalid SHA-256 digest"; exit 1; }
+          printf '%s  %s\n' "$digest" "$artifact_name" > "$artifact_name.sha256"
 
-      - name: Upload artifact
+      - name: Upload unsigned portable payload
+        if: matrix.os != 'ubuntu-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.artifact_name }}
+          name: unsigned-portable-${{ matrix.os }}-${{ matrix.arch }}
+          path: unsigned-portable/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Linux portable artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-portable-${{ matrix.os }}-${{ matrix.arch }}
           path: |
-            ${{ matrix.artifact_name }}
-            ${{ matrix.artifact_name }}.sha256
+            koyori-ide-*-${{ matrix.artifact_suffix }}
+            koyori-ide-*-${{ matrix.artifact_suffix }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-portable:
+    name: Sign portable (${{ matrix.os }} / ${{ matrix.arch }})
+    needs: [quality-gate, build]
+    runs-on: ${{ matrix.os }}
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: amd64
+            artifact_suffix: windows-amd64.zip
+          - os: macos-15-intel
+            arch: amd64
+            artifact_suffix: darwin-amd64.zip
+          - os: macos-15
+            arch: arm64
+            artifact_suffix: darwin-arm64.zip
+    env:
+      GOARCH: ${{ matrix.arch }}
+      ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
+    steps:
+      - name: Download unsigned portable payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-portable-${{ matrix.os }}-${{ matrix.arch }}
+          path: unsigned-portable
+
+      - name: Extract unsigned macOS app bundle
+        if: startsWith(matrix.os, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          payloads=(unsigned-portable/*.payload)
+          if [ "${#payloads[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one unsigned macOS payload; found ${#payloads[@]}"
+            exit 1
+          fi
+          mkdir -p bin
+          tar -xf "${payloads[0]}" -C bin
+          test -x bin/koyori-ide.app/Contents/MacOS/koyori-ide
+
+      - name: Code sign portable Windows executable
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          REQUIRE_CODE_SIGN: "true"
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ($env:REQUIRE_CODE_SIGN -ne "true") { throw "Production release signing policy must be exactly true" }
+          if (-not $env:WINDOWS_CERT_PFX -or -not $env:WINDOWS_CERT_PASSWORD) { throw "Windows signing credentials are required" }
+          $artifacts = @(Get-ChildItem -Path unsigned-portable -Filter "*.exe" -File -Recurse)
+          if ($artifacts.Count -ne 1) { throw "Expected exactly one unsigned Windows executable; found $($artifacts.Count)" }
+          $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
+          $importedCertificates = @()
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            $securePassword = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+            Remove-Item Env:WINDOWS_CERT_PFX, Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+            $importedCertificates = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation "Cert:\CurrentUser\My" -Password $securePassword)
+            $certificate = $importedCertificates | Where-Object HasPrivateKey | Select-Object -First 1
+            if (-not $certificate) { throw "No private-key certificate found in the imported PFX" }
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+            & $signtool.FullName sign /sha1 $certificate.Thumbprint /s My /fd sha256 /td sha256 /tr https://timestamp.digicert.com $artifacts[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
+            & $signtool.FullName verify /pa $artifacts[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+          } finally {
+            foreach ($certificate in $importedCertificates) {
+              if ($certificate -and $certificate.Thumbprint) {
+                Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              }
+            }
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:WINDOWS_CERT_PFX, Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+          }
+
+      - name: Code sign and notarize portable macOS app
+        if: startsWith(matrix.os, 'macos-')
+        shell: bash
+        env:
+          REQUIRE_CODE_SIGN: "true"
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ "$REQUIRE_CODE_SIGN" != "true" ]; then
+            echo "::error::Production release signing policy must be exactly true"
+            exit 1
+          fi
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then echo "::error::${name} is required"; exit 1; fi
+          done
+          app_path="bin/koyori-ide.app"
+          test -d "$app_path"
+          p12_path="$RUNNER_TEMP/developer_id.p12"
+          printf '%s' "$MACOS_CERT_P12" | base64 -D > "$p12_path"
+          unset MACOS_CERT_P12
+          keychain="$RUNNER_TEMP/koyori-build.keychain-db"
+          keychain_pw="$(openssl rand -hex 32)"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -f "$p12_path"
+          }
+          trap cleanup EXIT
+          security create-keychain -p "$keychain_pw" "$keychain"
+          security unlock-keychain -p "$keychain_pw" "$keychain"
+          security import "$p12_path" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          unset MACOS_CERT_PASSWORD
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain"
+          signing_identities=()
+          while IFS= read -r identity; do signing_identities+=("$identity"); done < <(
+            security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ {print $2}'
+          )
+          if [ "${#signing_identities[@]}" -ne 1 ] || [[ ! "${signing_identities[0]-}" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+            echo "::error::Expected exactly one Developer ID Application identity in the temporary keychain"
+            exit 1
+          fi
+          codesign --force --deep --options runtime --keychain "$keychain" \
+            --sign "${signing_identities[0]}" "$app_path"
+          codesign --verify --strict --verbose=2 "$app_path"
+          zip_path="$RUNNER_TEMP/koyori-ide-notarize.zip"
+          ditto -c -k --keepParent "$app_path" "$zip_path"
+          xcrun notarytool submit "$zip_path" --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$app_path"
+          xcrun stapler validate "$app_path"
+
+      - name: Package signed Windows portable artifact
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $releaseTag = $env:GITHUB_REF_NAME
+          if ($releaseTag -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw "Unsupported release tag" }
+          $artifactName = "koyori-ide-$releaseTag-$env:ARTIFACT_SUFFIX"
+          $executables = @(Get-ChildItem -Path unsigned-portable -Filter "*.exe" -File -Recurse)
+          if ($executables.Count -ne 1) { throw "Expected exactly one signed Windows executable; found $($executables.Count)" }
+          Compress-Archive -LiteralPath $executables[0].FullName -DestinationPath $artifactName
+
+      - name: Package signed macOS portable artifact
+        if: startsWith(matrix.os, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${GITHUB_REF_NAME}"
+          [[ "$release_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Unsupported release tag"; exit 1; }
+          artifact_name="koyori-ide-${release_tag}-${ARTIFACT_SUFFIX}"
+          test -d bin/koyori-ide.app
+          ditto -c -k --keepParent bin/koyori-ide.app "$artifact_name"
+
+      - name: Generate signed portable checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${GITHUB_REF_NAME}"
+          [[ "$release_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Unsupported release tag"; exit 1; }
+          artifact_name="koyori-ide-${release_tag}-${ARTIFACT_SUFFIX}"
+          test -s "$artifact_name"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum "$artifact_name")"
+          else
+            digest="$(shasum -a 256 "$artifact_name")"
+          fi
+          digest="${digest%% *}"
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Invalid SHA-256 digest"; exit 1; }
+          printf '%s  %s\n' "$digest" "$artifact_name" > "$artifact_name.sha256"
+
+      - name: Upload signed portable artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-portable-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            koyori-ide-*-${{ matrix.artifact_suffix }}
+            koyori-ide-*-${{ matrix.artifact_suffix }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  installers:
+    name: Build native installers
+    needs: [quality-gate, build, sign-portable]
+    uses: ./.github/workflows/release-installers.yml
+    with:
+      tag_name: ${{ github.ref_name }}
+      expected_commit: ${{ needs.quality-gate.outputs.commit_sha }}
+      require_code_sign: true
 
   release:
     name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [quality-gate, release-packaged-e2e, build, sign-portable, installers]
+    runs-on: ubuntu-24.04
+    environment: release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.quality-gate.outputs.commit_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -392,6 +777,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -s LICENSE
           test -s NOTICE
           test -s docs/THIRD_PARTY_LICENSES.md
           test -s docs/RELEASE_ASSET_LICENSES.md
@@ -401,39 +787,126 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: release-*
           path: artifacts
 
       - name: Consolidate and verify platform artifacts
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-assets
+          # The runner workspace is fresh by contract. Refuse any pre-existing
+          # staging directory so a tracked file or stale rerun artifact can
+          # never enter the checksum, SBOM, attestation, or Release globs.
+          if [ -e release-assets ] || [ -L release-assets ]; then
+            echo "::error::release-assets already exists; refusing to publish pre-existing files"
+            exit 1
+          fi
+          mkdir -- release-assets
+          version="$(bash scripts/read-release-version.sh VERSION)"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Invalid VERSION"; exit 1; }
+          expected_artifact_names=(
+            "koyori-ide-v${version}-windows-amd64.zip"
+            "koyori-ide-v${version}-linux-amd64.tar.gz"
+            "koyori-ide-v${version}-darwin-amd64.zip"
+            "koyori-ide-v${version}-darwin-arm64.zip"
+            "koyori-ide-v${version}-windows-amd64.msi"
+            "koyori-ide-${version}-linux-amd64.AppImage"
+            "koyori-ide-${version}-linux-amd64.deb"
+            "koyori-ide-${version}-linux-amd64.rpm"
+            "koyori-ide-${version}-linux-arm64.AppImage"
+            "koyori-ide-${version}-linux-arm64.deb"
+            "koyori-ide-${version}-linux-arm64.rpm"
+            "koyori-ide-${version}-macos-amd64.dmg"
+            "koyori-ide-${version}-macos-arm64.dmg"
+          )
           checksum_files=()
           while IFS= read -r file; do
             case "$file" in *$'\n'*) echo "::error::checksum filename contains newline: $file"; exit 1;; esac
             checksum_files+=("$file")
           done < <(find artifacts -type f -name '*.sha256' | sort)
-          if [ "${#checksum_files[@]}" -ne 4 ]; then
-            echo "::error::Expected four artifact checksum files, found ${#checksum_files[@]}"
-            exit 1
-          fi
-          for checksum in "${checksum_files[@]}"; do
-            (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
-          done
           artifacts_to_release=()
           while IFS= read -r file; do
             case "$file" in *$'\n'*) echo "::error::artifact filename contains newline: $file"; exit 1;; esac
             artifacts_to_release+=("$file")
-          done < <(find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) | sort)
-          if [ "${#artifacts_to_release[@]}" -ne 4 ]; then
-            echo "::error::Expected four platform artifacts, found ${#artifacts_to_release[@]}"
+          done < <(find artifacts -type f \( \
+            -name '*.zip' -o -name '*.tar.gz' -o -name '*.msi' -o \
+            -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o \
+            -name '*.dmg' \
+          \) | sort)
+          expected_artifacts_text="$(printf '%s\n' "${expected_artifact_names[@]}" | sort)"
+          actual_artifacts_text="$(printf '%s\n' "${artifacts_to_release[@]##*/}" | sort)"
+          if [ "$actual_artifacts_text" != "$expected_artifacts_text" ]; then
+            echo "::error::Release artifact names do not match the exact version/platform allowlist"
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected_artifacts_text" "$actual_artifacts_text"
             exit 1
           fi
-          cp "${artifacts_to_release[@]}" release-assets/
-          cp NOTICE docs/THIRD_PARTY_LICENSES.md docs/RELEASE_ASSET_LICENSES.md release-assets/
+          expected_checksum_names=()
+          for name in "${expected_artifact_names[@]}"; do expected_checksum_names+=("${name}.sha256"); done
+          expected_checksums_text="$(printf '%s\n' "${expected_checksum_names[@]}" | sort)"
+          actual_checksums_text="$(printf '%s\n' "${checksum_files[@]##*/}" | sort)"
+          if [ "$actual_checksums_text" != "$expected_checksums_text" ]; then
+            echo "::error::Release checksum names do not match the artifact allowlist"
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected_checksums_text" "$actual_checksums_text"
+            exit 1
+          fi
+          for checksum in "${checksum_files[@]}"; do
+            checksum_line_count="$(awk 'END { print NR }' "$checksum")"
+            if [ "$checksum_line_count" -ne 1 ]; then
+              echo "::error::Checksum must contain exactly one line: $(basename "$checksum")"
+              exit 1
+            fi
+            checksum_line="$(sed -n '1p' "$checksum")"
+            checksum_name="$(basename "$checksum")"
+            artifact_name="${checksum_name%.sha256}"
+            digest="${checksum_line%% *}"
+            if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]] || [ "$checksum_line" != "$digest  $artifact_name" ]; then
+              echo "::error::Checksum must contain exactly one SHA-256 line bound to $artifact_name"
+              exit 1
+            fi
+            (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
+          done
+          for source in "${artifacts_to_release[@]}" "${checksum_files[@]}"; do
+            target="release-assets/$(basename "$source")"
+            if [ -e "$target" ]; then
+              echo "::error::Duplicate release asset basename: $(basename "$source")"
+              exit 1
+            fi
+            cp "$source" "$target"
+          done
+          cp LICENSE NOTICE docs/THIRD_PARTY_LICENSES.md docs/RELEASE_ASSET_LICENSES.md release-assets/
           # N-153: 将项目图标 icon.png 一并放入 release-assets，用户在
           # GitHub Release 下载页可直接看到并下载图标文件。
           if [ -f icon.png ]; then cp icon.png release-assets/icon.png; fi
+          expected_initial_names=(
+            "${expected_artifact_names[@]}"
+            "${expected_checksum_names[@]}"
+            "LICENSE"
+            "NOTICE"
+            "THIRD_PARTY_LICENSES.md"
+            "RELEASE_ASSET_LICENSES.md"
+          )
+          if [ -f icon.png ]; then expected_initial_names+=("icon.png"); fi
+          actual_initial_names=()
+          for candidate in release-assets/*; do
+            [ -e "$candidate" ] || continue
+            if [ ! -f "$candidate" ] || [ -L "$candidate" ]; then
+              echo "::error::Release staging contains a non-regular file: $candidate"
+              exit 1
+            fi
+            actual_initial_names+=("$(basename "$candidate")")
+          done
+          expected_initial_text="$(printf '%s\n' "${expected_initial_names[@]}" | sort)"
+          actual_initial_text="$(printf '%s\n' "${actual_initial_names[@]}" | sort)"
+          if [ "$actual_initial_text" != "$expected_initial_text" ]; then
+            echo "::error::Initial release staging does not match the exact allowlist"
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected_initial_text" "$actual_initial_text"
+            exit 1
+          fi
+          final_asset_names=("${expected_initial_names[@]}" "provenance.intoto.jsonl" "SHA256SUMS")
+          for name in "${expected_artifact_names[@]}"; do
+            final_asset_names+=("${name}.sbom.spdx.json")
+          done
+          printf '%s\n' "${final_asset_names[@]}" | sort > "$RUNNER_TEMP/release-asset-allowlist.txt"
 
       - name: Extract changelog for this version
         id: changelog
@@ -470,18 +943,20 @@ jobs:
 
       - name: Generate mandatory SBOM
         shell: bash
+        env:
+          SYFT_MODE: docker
         run: |
           set -euo pipefail
           artifacts=()
           for candidate in release-assets/*; do
             [ -f "$candidate" ] || continue
             case "$candidate" in
-              *.zip|*.tar.gz) artifacts+=("$candidate") ;;
+              *.zip|*.tar.gz|*.msi|*.AppImage|*.deb|*.rpm|*.dmg) artifacts+=("$candidate") ;;
             esac
           done
           IFS=$'\n' artifacts=($(printf '%s\n' "${artifacts[@]}" | sort))
-          if [ "${#artifacts[@]}" -ne 4 ]; then
-            echo "::error::Expected four final platform artifacts for per-artifact SBOMs, found ${#artifacts[@]}"
+          if [ "${#artifacts[@]}" -ne 13 ]; then
+            echo "::error::Expected 13 final artifacts for per-artifact SBOMs, found ${#artifacts[@]}"
             exit 1
           fi
           for artifact in "${artifacts[@]}"; do
@@ -495,6 +970,8 @@ jobs:
 
       - name: Generate unsigned provenance statement
         shell: bash
+        env:
+          RELEASE_COMMIT_SHA: ${{ needs.quality-gate.outputs.commit_sha }}
         run: |
           set -euo pipefail
           subjects=()
@@ -527,14 +1004,88 @@ jobs:
           fi
           sha256sum "${assets[@]}" > SHA256SUMS
           test -s SHA256SUMS
+          test -s "$RUNNER_TEMP/release-asset-allowlist.txt"
+          actual_names=()
+          for candidate in ./*; do
+            [ -e "$candidate" ] || continue
+            if [ ! -f "$candidate" ] || [ -L "$candidate" ]; then
+              echo "::error::Final release staging contains a non-regular file: $candidate"
+              exit 1
+            fi
+            actual_names+=("$(basename "$candidate")")
+          done
+          expected_names_text="$(cat "$RUNNER_TEMP/release-asset-allowlist.txt")"
+          actual_names_text="$(printf '%s\n' "${actual_names[@]}" | sort)"
+          if [ "$actual_names_text" != "$expected_names_text" ]; then
+            echo "::error::Final release staging does not match the exact allowlist"
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected_names_text" "$actual_names_text"
+            exit 1
+          fi
+
+      - name: Attest final release assets
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-checksums: release-assets/SHA256SUMS
+
+      - name: Revalidate tag and release absence before publishing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          EXPECTED_COMMIT: ${{ needs.quality-gate.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          tag_object_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          tag_object_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          tag_target_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.object.type')"
+          tag_target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.object.sha')"
+          verified="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.verification.verified')"
+          reason="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" --jq '.verification.reason')"
+          if [ "$tag_object_type" != "tag" ] || [ "$tag_target_type" != "commit" ] ||
+             [ "$tag_target_sha" != "$EXPECTED_COMMIT" ] || [ "$tag_target_sha" != "$(git rev-parse HEAD)" ] ||
+             [ "$verified" != "true" ] || [ "$reason" != "valid" ]; then
+            echo "::error::release tag changed, is unsigned, or no longer targets the verified commit"
+            exit 1
+          fi
+          response="$RUNNER_TEMP/existing-release.json"
+          http_status="$(curl --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$response" --write-out '%{http_code}' \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          case "$http_status" in
+            404)
+              echo "No existing GitHub Release uses ${RELEASE_TAG}."
+              ;;
+            200)
+              release_id="$(jq -r '.id // "unknown"' "$response")"
+              echo "::error::GitHub Release ${release_id} already exists for ${RELEASE_TAG}; refusing to merge artifacts from a rerun"
+              exit 1
+              ;;
+            *)
+              echo "::error::could not prove release absence for ${RELEASE_TAG} (HTTP ${http_status})"
+              exit 1
+              ;;
+          esac
 
       - name: Create Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.body }}
-          files: |
-            release-assets/*
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.body }}
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
+          test -s "$notes_file"
+          # `gh release create` calls the create endpoint and fails if a
+          # Release already exists. Unlike an update-capable release action,
+          # it cannot merge this run's files with stale assets after a race.
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_TAG" \
+            --notes-file "$notes_file" \
+            --verify-tag \
+            --latest

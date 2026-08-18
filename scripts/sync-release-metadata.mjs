@@ -21,22 +21,23 @@ function replacePlistString(source, key, value) {
   return replaceOne(source, pattern, `$1${value}$2`, `build/darwin/Info.plist ${key}`)
 }
 
-// SemVer 2.0.0 core plus optional prerelease and build metadata. MSIX cannot
-// represent prerelease/build-metadata characters, so those are mapped away
-// explicitly (see below); every other consumer keeps the full VERSION string.
-const semverRe = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+// Production metadata is stable-only. Prerelease publishing needs a separate
+// workflow with explicit Win32, MSIX, MSI, and Apple bundle version mappings.
+const stableVersionRe = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/
 
-const version = (await readFile(path.join(root, 'VERSION'), 'utf8')).trim()
-if (!semverRe.test(version)) {
-  throw new Error(`VERSION contains an invalid SemVer value: ${version || '<empty>'}`)
+const version = (await readFile(path.join(root, 'VERSION'), 'utf8')).replace(/\r?\n$/, '')
+if (!stableVersionRe.test(version)) {
+  throw new Error(`VERSION must be a stable X.Y.Z value: ${version || '<empty>'}`)
 }
 
-const semverParts = /^([0-9]+)\.([0-9]+)\.([0-9]+)/.exec(version)
-if (!semverParts) throw new Error(`cannot extract numeric SemVer triple from ${version}`)
-// MSIX package Identity requires a four-part version. Prerelease/build-metadata
-// suffixes cannot appear in MSIX, so the explicit, tested mapping is
-// <major>.<minor>.<patch>.0. An unmappable version fails closed above.
-const msixVersion = `${semverParts[1]}.${semverParts[2]}.${semverParts[3]}.0`
+const versionParts = stableVersionRe.exec(version)
+if (!versionParts) throw new Error(`cannot extract stable version triple from ${version}`)
+const [major, minor, patch] = versionParts.slice(1).map((part) => BigInt(part))
+if (major > 255n || minor > 255n || patch > 65535n) {
+  throw new Error(`VERSION exceeds Windows installer limits (major/minor <= 255, patch <= 65535): ${version}`)
+}
+// MSIX package Identity requires a four-part numeric version.
+const msixVersion = `${versionParts[1]}.${versionParts[2]}.${versionParts[3]}.0`
 
 const updates = []
 
@@ -83,8 +84,8 @@ await updateText('build/windows/wails.exe.manifest', (source) =>
   replaceOne(source, /^([\s\S]*?<assemblyIdentity[^>]*version=")[^"]*(")/, `$1${version}$2`, 'wails.exe.manifest assemblyIdentity version'),
 )
 
-// MSIX app manifest: Identity Version is four-part and cannot carry
-// prerelease/build-metadata; map to <major>.<minor>.<patch>.0 (tested).
+// MSIX app manifest: Identity Version is the stable version plus a zero fourth
+// component, which is the repository's tested Windows package mapping.
 await updateText('build/windows/msix/app_manifest.xml', (source) =>
   replaceOne(
     replaceOne(

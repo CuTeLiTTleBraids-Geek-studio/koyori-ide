@@ -7,12 +7,14 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "generate-release-provenance.mjs");
+const checkoutCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD"], { encoding: "utf8" }).trim();
 const env = {
   ...process.env,
   GITHUB_SERVER_URL: "https://github.example",
   GITHUB_REPOSITORY: "example/koyori-ide",
   GITHUB_REF: "refs/tags/v0.2.0",
-  GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
+  GITHUB_SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  RELEASE_COMMIT_SHA: checkoutCommit,
   GITHUB_RUN_ID: "1234",
   GITHUB_RUN_ATTEMPT: "2",
   GITHUB_WORKFLOW_REF: "example/koyori-ide/.github/workflows/release.yml@refs/tags/v0.2.0",
@@ -36,6 +38,8 @@ test("writes an unsigned in-toto statement with sorted SHA-256 subjects", () => 
   assert.match(statement.subject[0].digest.sha256, /^[a-f0-9]{64}$/);
   assert.equal(statement.predicate.buildDefinition.internalParameters.signatureStatus, "unsigned");
   assert.match(statement.predicate.buildDefinition.internalParameters.statementKind, /not a signed attestation/);
+  assert.notEqual(env.GITHUB_SHA, env.RELEASE_COMMIT_SHA);
+  assert.equal(statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit, checkoutCommit);
 });
 
 test("fails closed when GitHub identity is incomplete", () => {
@@ -44,6 +48,16 @@ test("fails closed when GitHub identity is incomplete", () => {
   writeFileSync(subject, "artifact");
   assert.throws(() => execFileSync(process.execPath, [script, path.join(dir, "out.jsonl"), subject], {
     env: { ...env, GITHUB_SHA: "" },
+    stdio: "pipe",
+  }));
+});
+
+test("fails closed when the declared release commit is not the checkout", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "koyori-ide-provenance-"));
+  const subject = path.join(dir, "artifact.zip");
+  writeFileSync(subject, "artifact");
+  assert.throws(() => execFileSync(process.execPath, [script, path.join(dir, "out.jsonl"), subject], {
+    env: { ...env, RELEASE_COMMIT_SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
     stdio: "pipe",
   }));
 });

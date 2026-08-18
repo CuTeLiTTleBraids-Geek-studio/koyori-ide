@@ -15,8 +15,8 @@
 # 产物 (位于 bin/):
 #   koyori-ide                              # 裸可执行文件
 #   koyori-ide-<version>-linux-<arch>.AppImage  # AppImage (免安装)
-#   koyori-ide_<version>_<arch>.deb         # Debian/Ubuntu 安装包
-#   koyori-ide-<version>-1.<arch>.rpm       # Fedora/RHEL 安装包
+#   koyori-ide-<version>-linux-<arch>.deb  # Debian/Ubuntu 安装包
+#   koyori-ide-<version>-linux-<arch>.rpm  # Fedora/RHEL 安装包
 
 set -euo pipefail
 
@@ -44,6 +44,7 @@ ARCH="$(uname -m)"
 readonly LINUXDEPLOY_VERSION="1-alpha-20251107-1"
 readonly LINUXDEPLOY_X86_64_SHA256="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
 readonly LINUXDEPLOY_AARCH64_SHA256="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
+readonly NFPM_VERSION="v2.44.1"
 PRINT_VERSION=false
 
 # 解析参数
@@ -68,9 +69,7 @@ esac
 # stop the build instead of silently stamping an unrelated fallback version.
 VERSION_FILE="$ROOT_DIR/VERSION"
 [ -f "$VERSION_FILE" ] || fail "VERSION file not found: $VERSION_FILE"
-VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || \
-    fail "VERSION contains an invalid SemVer value: ${VERSION:-<empty>}"
+VERSION="$(bash "$ROOT_DIR/scripts/read-release-version.sh" "$VERSION_FILE")"
 
 if [ "$PRINT_VERSION" = true ]; then
     printf '%s\n' "$VERSION"
@@ -119,13 +118,17 @@ check_and_install_deps() {
     fi
     ok "Go: $GO_VERSION"
 
-    # Node.js 18+
+    # Vite 8 requires Node ^20.19.0 or >=22.12.0.
     if ! command -v node &>/dev/null; then
-        fail "未安装 Node.js。请从 https://nodejs.org/ 安装 Node.js 18+"
+        fail "未安装 Node.js。请从 https://nodejs.org/ 安装 Node.js 20.19+ 或 22.12+"
     fi
-    NODE_MAJOR=$(node --version | sed 's/v//' | cut -d. -f1)
-    if [ "$NODE_MAJOR" -lt 18 ]; then
-        fail "Node.js 版本过低 ($(node --version))，需要 18+"
+    NODE_VERSION=$(node --version | sed 's/^v//')
+    NODE_MAJOR=$(printf '%s' "$NODE_VERSION" | cut -d. -f1)
+    NODE_MINOR=$(printf '%s' "$NODE_VERSION" | cut -d. -f2)
+    if ! { [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]; } &&
+       ! { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]; } &&
+       ! [ "$NODE_MAJOR" -gt 22 ]; then
+        fail "Node.js 版本不受支持 ($(node --version))，需要 ^20.19.0 或 >=22.12.0"
     fi
     ok "Node.js: $(node --version)"
 
@@ -195,15 +198,36 @@ check_and_install_deps() {
 
     # 检测 WebKit 版本并设置构建标签
     WEBKIT_TAG=""
+    # Keep package metadata aligned with the library stack selected below.
+    # The GTK3 fallback must not emit GTK4 runtime dependencies.
+    GTK_DEB_DEP=""
+    WEBKIT_DEB_DEP=""
+    GTK_RPM_DEP=""
+    WEBKIT_RPM_DEP=""
+    GTK_ARCH_DEP=""
+    WEBKIT_ARCH_DEP=""
     if pkg-config --exists webkitgtk-6.0 2>/dev/null; then
         ok "WebKit: webkitgtk-6.0 (GTK4)"
         WEBKIT_TAG=""
+        GTK_DEB_DEP="libgtk-4-1"
+        WEBKIT_DEB_DEP="libwebkitgtk-6.0-4"
+        GTK_RPM_DEP="gtk4"
+        WEBKIT_RPM_DEP="webkitgtk6.0"
+        GTK_ARCH_DEP="gtk4"
+        WEBKIT_ARCH_DEP="webkitgtk-6.0"
     elif pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
         ok "WebKit: webkit2gtk-4.1 (GTK3)"
         WEBKIT_TAG="gtk3"
+        GTK_DEB_DEP="libgtk-3-0"
+        WEBKIT_DEB_DEP="libwebkit2gtk-4.1-0"
+        GTK_RPM_DEP="gtk3"
+        WEBKIT_RPM_DEP="webkit2gtk4.1"
+        GTK_ARCH_DEP="gtk3"
+        WEBKIT_ARCH_DEP="webkit2gtk-4.1"
     else
         fail "WebKit 未安装。请手动安装 libwebkitgtk-6.0-dev 或 libwebkit2gtk-4.1-dev"
     fi
+    export GTK_DEB_DEP WEBKIT_DEB_DEP GTK_RPM_DEP WEBKIT_RPM_DEP GTK_ARCH_DEP WEBKIT_ARCH_DEP
     export WEBKIT_TAG
 }
 
@@ -365,20 +389,22 @@ contents:
   - src: "./build/linux/${APP_NAME}.desktop"
     dst: "/usr/share/applications/${APP_NAME}.desktop"
 
-# GTK4 + WebKitGTK 6.0 依赖 (Ubuntu 24.04+ / Debian 13+)
+# Runtime dependencies match the WebKit/GTK stack detected in
+# check_and_install_deps. This is GTK4/WebKitGTK 6.0 on the preferred path and
+# GTK3/WebKit2GTK 4.1 on the fallback path.
 depends:
-  - libgtk-4-1
-  - libwebkitgtk-6.0-4
+  - ${GTK_DEB_DEP}
+  - ${WEBKIT_DEB_DEP}
 
 overrides:
   rpm:
     depends:
-      - gtk4
-      - webkitgtk6.0
+      - ${GTK_RPM_DEP}
+      - ${WEBKIT_RPM_DEP}
   archlinux:
     depends:
-      - gtk4
-      - webkitgtk-6.0
+      - ${GTK_ARCH_DEP}
+      - ${WEBKIT_ARCH_DEP}
 
 scripts:
   postinstall: "./build/linux/nfpm/scripts/postinstall.sh"
@@ -419,6 +445,18 @@ SCRIPT
 # ============================================================================
 # 7. 创建 deb 包
 # ============================================================================
+ensure_nfpm() {
+    if command -v nfpm &>/dev/null; then
+        return 0
+    fi
+
+    info "安装 nfpm..."
+    go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}" || \
+        fail "nfpm installation failed"
+    command -v nfpm &>/dev/null || \
+        fail "nfpm was installed but is not available on PATH"
+}
+
 create_deb() {
     if [ "$PKG_TYPE" != "all" ] && [ "$PKG_TYPE" != "deb" ]; then
         return 0
@@ -426,25 +464,17 @@ create_deb() {
 
     info "创建 deb 包..."
 
-    # 检查 nfpm
-    if ! command -v nfpm &>/dev/null; then
-        info "安装 nfpm..."
-        go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest 2>/dev/null || {
-            warn "nfpm 安装失败，跳过 deb 创建"
-            info "手动安装: https://github.com/goreleaser/nfpm#installation"
-            return 0
-        }
-    fi
+    ensure_nfpm
 
     generate_nfpm_config
 
     cd "$ROOT_DIR"
-    nfpm pkg --config "build/linux/nfpm/${APP_NAME}.yaml" --packager deb --target "$BIN_DIR/" || {
-        warn "deb 包创建失败"
-        return 0
-    }
-
-    local DEB_FILE="${APP_NAME}_${VERSION}_${ARCH}.deb"
+    local DEB_FILE="${APP_NAME}-${VERSION}-linux-${ARCH}.deb"
+    rm -f "$BIN_DIR/$DEB_FILE"
+    nfpm pkg --config "build/linux/nfpm/${APP_NAME}.yaml" --packager deb --target "$BIN_DIR/$DEB_FILE" || \
+        fail "deb package creation failed: $BIN_DIR/$DEB_FILE"
+    [ -s "$BIN_DIR/$DEB_FILE" ] || \
+        fail "nfpm did not create the expected deb: $BIN_DIR/$DEB_FILE"
     ok "deb 包创建完成: $BIN_DIR/$DEB_FILE"
     ls -lh "$BIN_DIR/$DEB_FILE" 2>/dev/null || true
 }
@@ -459,13 +489,7 @@ create_rpm() {
 
     info "创建 rpm 包..."
 
-    if ! command -v nfpm &>/dev/null; then
-        info "安装 nfpm..."
-        go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest 2>/dev/null || {
-            warn "nfpm 安装失败，跳过 rpm 创建"
-            return 0
-        }
-    fi
+    ensure_nfpm
 
     # 确保 nfpm 配置已生成
     if [ ! -f "$ROOT_DIR/build/linux/nfpm/${APP_NAME}.yaml" ]; then
@@ -473,12 +497,12 @@ create_rpm() {
     fi
 
     cd "$ROOT_DIR"
-    nfpm pkg --config "build/linux/nfpm/${APP_NAME}.yaml" --packager rpm --target "$BIN_DIR/" || {
-        warn "rpm 包创建失败"
-        return 0
-    }
-
-    local RPM_FILE="${APP_NAME}-${VERSION}-1.${ARCH}.rpm"
+    local RPM_FILE="${APP_NAME}-${VERSION}-linux-${ARCH}.rpm"
+    rm -f "$BIN_DIR/$RPM_FILE"
+    nfpm pkg --config "build/linux/nfpm/${APP_NAME}.yaml" --packager rpm --target "$BIN_DIR/$RPM_FILE" || \
+        fail "rpm package creation failed: $BIN_DIR/$RPM_FILE"
+    [ -s "$BIN_DIR/$RPM_FILE" ] || \
+        fail "nfpm did not create the expected rpm: $BIN_DIR/$RPM_FILE"
     ok "rpm 包创建完成: $BIN_DIR/$RPM_FILE"
     ls -lh "$BIN_DIR/$RPM_FILE" 2>/dev/null || true
 }
@@ -495,6 +519,8 @@ main() {
     echo ""
 
     check_and_install_deps
+    node scripts/sync-release-metadata.mjs --check || \
+        fail "release metadata is not synchronized with VERSION"
     build_frontend
     build_app
 
@@ -512,8 +538,8 @@ main() {
     if [ -f "$BIN_DIR/${APP_NAME}-${VERSION}-linux-${ARCH}.AppImage" ]; then
         info "  AppImage:    ${APP_NAME}-${VERSION}-linux-${ARCH}.AppImage (免安装，直接运行)"
     fi
-    if ls "$BIN_DIR"/${APP_NAME}_*.deb 1>/dev/null 2>&1; then
-        info "  deb 包:      $(basename $(ls $BIN_DIR/${APP_NAME}_*.deb 2>/dev/null | head -1))"
+    if ls "$BIN_DIR"/${APP_NAME}-*-linux-*.deb 1>/dev/null 2>&1; then
+        info "  deb 包:      $(basename $(ls $BIN_DIR/${APP_NAME}-*-linux-*.deb 2>/dev/null | head -1))"
     fi
     if ls "$BIN_DIR"/${APP_NAME}-*.rpm 1>/dev/null 2>&1; then
         info "  rpm 包:      $(basename $(ls $BIN_DIR/${APP_NAME}-*.rpm 2>/dev/null | head -1))"
@@ -522,7 +548,7 @@ main() {
     info "运行应用:"
     info "  直接运行:    $BIN_DIR/${APP_NAME}"
     info "  AppImage:    chmod +x $BIN_DIR/${APP_NAME}-${VERSION}-linux-${ARCH}.AppImage && $BIN_DIR/${APP_NAME}-${VERSION}-linux-${ARCH}.AppImage"
-    info "  安装 deb:    sudo dpkg -i $BIN_DIR/${APP_NAME}_*.deb"
+    info "  安装 deb:    sudo dpkg -i $BIN_DIR/${APP_NAME}-*-linux-*.deb"
     info "  安装 rpm:    sudo rpm -i $BIN_DIR/${APP_NAME}-*.rpm"
 }
 

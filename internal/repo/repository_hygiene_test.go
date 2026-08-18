@@ -120,4 +120,27 @@ func TestG17SBOMScriptsFailClosed(t *testing.T) {
 			}
 		}
 	}
+	sbom, err := os.ReadFile("../../scripts/generate-sbom.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sbom), "anchore/syft:v1.29.0@sha256:e86b0ba0b1d2fe8a2e9f96ed9b22033df9781f43b9a7eb27c57e6c89234946bc") {
+		t.Error("Docker SBOM fallback must use the verified Syft manifest digest")
+	}
+	dockerignore, err := os.ReadFile("../../.dockerignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerignore), ".npmrc") {
+		t.Error("Docker context must exclude local npm credential files")
+	}
+	gitignore, err := os.ReadFile("../../.gitignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range []string{"/.npmrc", "**/.npmrc"} {
+		if !strings.Contains(string(gitignore), pattern) {
+			t.Errorf("Git ignore rules must exclude local npm credential files via %q", pattern)
+		}
+	}
 }

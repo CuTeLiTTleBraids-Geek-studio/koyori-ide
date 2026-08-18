@@ -1,63 +1,173 @@
-name: Release Installers
+name: Build Release Installers
 
-# Attaches native installers (Windows MSI via WiX v3, Linux AppImage/deb/rpm, macOS DMG)
-# to an already-published GitHub Release. Runs after the tag-triggered
-# `Release` workflow has published the release, so there is no race on the
-# release object and the portable artifacts (zip / tar.gz) keep their own
-# SBOM/provenance pipeline intact.
-#
-# Signing policy mirrors release.yml (MED-07 / G-SEC-08):
-#   - Windows: Authenticode via signtool on the .msi (WINDOWS_CERT_PFX + WINDOWS_CERT_PASSWORD).
-#   - macOS:   Developer ID codesign + notarytool notarization + stapling
-#              (MACOS_CERT_P12 + MACOS_CERT_PASSWORD + APPLE_ID +
-#              APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID).
-#   - Linux:   unsigned, matching release.yml (which does not sign Linux artifacts).
-#   - Missing secrets FAIL the job unless REQUIRE_CODE_SIGN=false.
-#
-# Every installer is uploaded with a per-asset SHA256 checksum.
+# Reusable installer build. The tag-triggered Release workflow calls this
+# workflow before creating the GitHub Release, so every installer and checksum
+# is available to the final job, which adds the per-artifact SBOMs and
+# provenance atomically with the portable artifacts.
+# A manual run builds Actions artifacts only; it never mutates a Release.
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Signed release tag to build"
+        required: true
+        type: string
+      expected_commit:
+        description: "Commit verified by the caller quality gate"
+        required: true
+        type: string
+      require_code_sign:
+        description: "Fail if platform signing credentials are unavailable"
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing signed tag to build, for example v0.2.1"
+        required: true
+        type: string
+      expected_commit:
+        description: "Optional commit to pin a manually dispatched build"
+        required: false
+        default: ""
+        type: string
+      require_code_sign:
+        description: "Require Windows and macOS signing credentials"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  windows:
-    name: Installer - Windows (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: windows-latest
-    runs-on: ${{ matrix.runner }}
-    env:
-      REQUIRE_CODE_SIGN: ${{ vars.REQUIRE_CODE_SIGN || 'true' }}
-      WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
-      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+  validate:
+    name: Validate installer source tag
+    runs-on: ubuntu-24.04
+    outputs:
+      commit_sha: ${{ steps.source.outputs.commit_sha }}
+    steps:
+      - name: Select immutable bootstrap commit
+        id: bootstrap
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          candidate="${EXPECTED_COMMIT:-$GITHUB_SHA}"
+          if [[ ! "$candidate" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::installer bootstrap ref must be a full commit SHA"
+            exit 1
+          fi
+          candidate="$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]')"
+          echo "sha=${candidate}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Bootstrap from an already validated full SHA. The signed tag is
+          # independently fetched, peeled, and checked out below only after
+          # its type, ancestry, and signature have been verified.
+          ref: ${{ steps.bootstrap.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify signed tag, version, and main ancestry
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::only stable vX.Y.Z tags are accepted; got $RELEASE_TAG"
+            exit 1
+          fi
+          tag_ref="refs/release-tags/${RELEASE_TAG}"
+          git fetch --force --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/tags/${RELEASE_TAG}:${tag_ref}"
+          if [ "$(git cat-file -t "$tag_ref")" != "tag" ]; then
+            echo "::error::$RELEASE_TAG must be an annotated tag"
+            exit 1
+          fi
+          tag_object_sha="$(git rev-parse "$tag_ref")"
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          if [ "$tag_object_sha" != "$tag_sha" ]; then
+            echo "::error::local and remote annotated tag objects differ"
+            exit 1
+          fi
+          tag_target_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.type')"
+          tag_target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')"
+          if [ "$tag_target_type" != "commit" ] || [[ ! "$tag_target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::$RELEASE_TAG does not resolve directly to a commit"
+            exit 1
+          fi
+          if [ -n "$EXPECTED_COMMIT" ]; then
+            normalized_expected="$(printf '%s' "$EXPECTED_COMMIT" | tr '[:upper:]' '[:lower:]')"
+            if [[ ! "$normalized_expected" =~ ^[0-9a-f]{40}$ ]] || [ "$tag_target_sha" != "$normalized_expected" ]; then
+              echo "::error::$RELEASE_TAG does not resolve to the caller-verified commit"
+              exit 1
+            fi
+          fi
+          git merge-base --is-ancestor "$tag_ref^{commit}" refs/remotes/origin/main || {
+            echo "::error::$RELEASE_TAG is not reachable from origin/main"
+            exit 1
+          }
+          verified="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.verification.verified')"
+          reason="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.verification.reason')"
+          if [ "$verified" != "true" ] || [ "$reason" != "valid" ]; then
+            echo "::error::GitHub did not verify $RELEASE_TAG's signature (verified=${verified}, reason=${reason})"
+            exit 1
+          fi
+          git checkout --detach "$tag_target_sha"
+          if [ "$(git rev-parse HEAD)" != "$tag_target_sha" ]; then
+            echo "::error::failed to check out the verified tag target"
+            exit 1
+          fi
+          version="$(bash scripts/read-release-version.sh VERSION)"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::VERSION is not a stable X.Y.Z value: $version"
+            exit 1
+          fi
+          if [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "::error::tag $RELEASE_TAG does not match VERSION ($version)"
+            exit 1
+          fi
+          echo "commit_sha=${tag_target_sha}" >> "$GITHUB_OUTPUT"
+
+  windows-build:
+    name: Build unsigned Windows app (amd64)
+    needs: validate
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          ref: ${{ needs.validate.outputs.commit_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25.0"
           cache: true
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20.19"
+          node-version: "20.19.0"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend deps
-        run: npm ci --registry=https://registry.npmjs.org
+      - name: Install and audit frontend dependencies
         working-directory: frontend
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
 
-      - name: Generate and verify untracked Wails bindings
+      - name: Dependency governance gate
+        run: node scripts/npm-audit-gate.mjs
+
+      - name: Generate and verify Wails bindings
         shell: bash
         run: |
           node scripts/check-bindings-ownership.mjs
@@ -65,265 +175,522 @@ jobs:
           node scripts/check-bindings.mjs
 
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
-      - name: Install WiX Toolset v3
-        run: choco install wixtoolset -y --no-progress
+      - name: Build Windows app
+        shell: pwsh
+        run: ./build/scripts/build-windows.ps1 -Arch amd64 -SkipNSIS
 
-      - name: Build app + MSI installer
+      - name: Stage unsigned Windows app
         shell: pwsh
         run: |
-          ./build/scripts/build-windows.ps1 -Arch ${{ matrix.arch }} -SkipNSIS
-          ./build/scripts/build-msi.ps1 -Arch ${{ matrix.arch }}
+          $artifacts = @(Get-ChildItem -Path bin -Filter "koyori-ide*.exe" -File -Recurse)
+          if ($artifacts.Count -ne 1) { throw "Expected exactly one Windows executable; found $($artifacts.Count)" }
+          New-Item -ItemType Directory -Force -Path unsigned-app | Out-Null
+          Copy-Item -LiteralPath $artifacts[0].FullName -Destination unsigned-app/koyori-ide.exe
 
-      - name: Sign MSI installer (Authenticode)
-        if: env.WINDOWS_CERT_PFX != '' && env.WINDOWS_CERT_PASSWORD != ''
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-installer-windows-app
+          path: unsigned-app/koyori-ide.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-sign-app:
+    name: Sign Windows installer app payload
+    needs: [validate, windows-build]
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - name: Download unsigned Windows app
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-installer-windows-app
+          path: app
+
+      - name: Sign Windows app payload
         shell: pwsh
+        env:
+          REQUIRE_CODE_SIGN_INPUT: ${{ inputs.require_code_sign }}
+          REQUIRE_CODE_SIGN_ENV: ${{ vars.REQUIRE_CODE_SIGN }}
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          $installer = Get-ChildItem -Path bin -Filter "koyori-ide-v*-windows-*.msi" -File | Select-Object -First 1
-          if (-not $installer) { throw "MSI installer not found under bin" }
-          $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
+          $inputPolicy = [string]$env:REQUIRE_CODE_SIGN_INPUT
+          $environmentPolicy = [string]$env:REQUIRE_CODE_SIGN_ENV
+          if ($inputPolicy -cnotin @("true", "false")) { throw "require_code_sign input must be exactly true or false" }
+          if ($environmentPolicy -and $environmentPolicy -cnotin @("true", "false")) { throw "REQUIRE_CODE_SIGN must be exactly true or false when set" }
+          $requireCodeSign = $inputPolicy -ceq "true" -or $environmentPolicy -ceq "true"
+          if (-not $env:WINDOWS_CERT_PFX -or -not $env:WINDOWS_CERT_PASSWORD) {
+            if ($requireCodeSign) { throw "Windows signing credentials are required" }
+            Write-Warning "Building an explicitly unsigned Windows installer"
+            exit 0
+          }
+          $artifacts = @(Get-ChildItem -Path app -Filter "koyori-ide*.exe" -File -Recurse)
+          if ($artifacts.Count -ne 1) { throw "Expected exactly one Windows executable; found $($artifacts.Count)" }
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          $imported = @()
           try {
-            [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
-            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
-            $securePassword = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
-            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
-            $imported = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation "Cert:\CurrentUser\My" -Password $securePassword)
-            $cert = $imported | Where-Object { $_.HasPrivateKey } | Select-Object -First 1
-            if (-not $cert) { throw "No private-key certificate found in the imported PFX" }
-            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
-              Sort-Object -Descending | Select-Object -First 1
-            if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
-            & $signtool.FullName sign /sha1 $cert.Thumbprint /s My /fd sha256 /td sha256 /tr http://timestamp.digicert.com $installer.FullName
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            $password = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+            Remove-Item Env:WINDOWS_CERT_PFX, Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+            $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation "Cert:\CurrentUser\My" -Password $password)
+            $cert = $imported | Where-Object HasPrivateKey | Select-Object -First 1
+            if (-not $cert) { throw "No private-key certificate found in the PFX" }
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe not found" }
+            & $signtool.FullName sign /sha1 $cert.Thumbprint /s My /fd sha256 /td sha256 /tr https://timestamp.digicert.com $artifacts[0].FullName
             if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
-            & $signtool.FullName verify /pa $installer.FullName
+            & $signtool.FullName verify /pa $artifacts[0].FullName
             if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
           } finally {
-            if ($imported) {
-              foreach ($c in @($imported)) {
-                Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($c.Thumbprint)" -Force -ErrorAction SilentlyContinue
-              }
-            }
-            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-            Remove-Item Env:WINDOWS_CERT_PFX -ErrorAction SilentlyContinue
-            Remove-Item Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+            foreach ($cert in $imported) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:WINDOWS_CERT_PFX, Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
           }
 
-      - name: Verify signing requirement met
-        shell: bash
-        run: |
-          if [ "${REQUIRE_CODE_SIGN:-true}" = "true" ] && \
-             { [ -z "$WINDOWS_CERT_PFX" ] || [ -z "$WINDOWS_CERT_PASSWORD" ]; }; then
-            echo "::error::Windows code-signing secrets missing and REQUIRE_CODE_SIGN is true; refusing to publish an unsigned installer."
-            exit 1
-          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-installer-windows-app
+          path: app/koyori-ide.exe
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Checksum installer
+  windows-msi:
+    name: Build unsigned Windows MSI
+    needs: [validate, windows-sign-app]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.validate.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Install pinned WiX Toolset
+        run: choco install wixtoolset --version=3.14.1 -y --no-progress
+
+      - name: Download signed Windows app
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed-installer-windows-app
+          path: bin
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: ./build/scripts/build-msi.ps1 -Arch amd64
+
+      - name: Stage unsigned MSI payload
         shell: pwsh
         run: |
-          Get-ChildItem bin/koyori-ide-v*-windows-*.msi | ForEach-Object {
-            (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() + "  " + $_.Name | Set-Content "$($_.FullName).sha256"
+          $artifacts = @(Get-ChildItem -Path bin -Filter "koyori-ide-v*-windows-amd64.msi" -File)
+          if ($artifacts.Count -ne 1) { throw "Expected exactly one MSI; found $($artifacts.Count)" }
+          New-Item -ItemType Directory -Force -Path unsigned-msi | Out-Null
+          Copy-Item -LiteralPath $artifacts[0].FullName -Destination "unsigned-msi/$($artifacts[0].Name).payload"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-installer-windows-msi
+          path: unsigned-msi/*.payload
+          if-no-files-found: error
+          retention-days: 1
+
+  windows-sign:
+    name: Sign Windows MSI
+    needs: [validate, windows-msi]
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - name: Download unsigned Windows MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-installer-windows-msi
+          path: unsigned-msi
+
+      - name: Restore unsigned MSI filename
+        shell: pwsh
+        run: |
+          $payloads = @(Get-ChildItem -Path unsigned-msi -Filter "*.msi.payload" -File)
+          if ($payloads.Count -ne 1) { throw "Expected exactly one unsigned MSI payload; found $($payloads.Count)" }
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          $msiName = $payloads[0].Name -replace '\.payload$', ''
+          Move-Item -LiteralPath $payloads[0].FullName -Destination (Join-Path bin $msiName)
+
+      - name: Sign MSI installer
+        shell: pwsh
+        env:
+          REQUIRE_CODE_SIGN_INPUT: ${{ inputs.require_code_sign }}
+          REQUIRE_CODE_SIGN_ENV: ${{ vars.REQUIRE_CODE_SIGN }}
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $inputPolicy = [string]$env:REQUIRE_CODE_SIGN_INPUT
+          $environmentPolicy = [string]$env:REQUIRE_CODE_SIGN_ENV
+          if ($inputPolicy -cnotin @("true", "false")) { throw "require_code_sign input must be exactly true or false" }
+          if ($environmentPolicy -and $environmentPolicy -cnotin @("true", "false")) { throw "REQUIRE_CODE_SIGN must be exactly true or false when set" }
+          $requireCodeSign = $inputPolicy -ceq "true" -or $environmentPolicy -ceq "true"
+          if (-not $env:WINDOWS_CERT_PFX -or -not $env:WINDOWS_CERT_PASSWORD) {
+            if ($requireCodeSign) { throw "Windows signing credentials are required" }
+            Write-Warning "Publishing an explicitly unsigned MSI"
+            exit 0
+          }
+          $artifacts = @(Get-ChildItem -Path bin -Filter "koyori-ide-v*-windows-amd64.msi" -File)
+          if ($artifacts.Count -ne 1) { throw "Expected exactly one MSI; found $($artifacts.Count)" }
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          $imported = @()
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            $password = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+            Remove-Item Env:WINDOWS_CERT_PFX, Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
+            $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation "Cert:\CurrentUser\My" -Password $password)
+            $cert = $imported | Where-Object HasPrivateKey | Select-Object -First 1
+            if (-not $cert) { throw "No private-key certificate found in the PFX" }
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe not found" }
+            & $signtool.FullName sign /sha1 $cert.Thumbprint /s My /fd sha256 /td sha256 /tr https://timestamp.digicert.com $artifacts[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
+            & $signtool.FullName verify /pa $artifacts[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+          } finally {
+            foreach ($cert in $imported) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:WINDOWS_CERT_PFX, Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
           }
 
-      - name: Attach to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+      - name: Checksum and upload MSI
+        shell: pwsh
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            bin/koyori-ide-v*-windows-*.msi bin/koyori-ide-v*-windows-*.msi.sha256 --clobber
+          $artifacts = @(Get-ChildItem -Path bin -Filter "koyori-ide-v*-windows-amd64.msi" -File)
+          if ($artifacts.Count -ne 1) { throw "Expected exactly one MSI; found $($artifacts.Count)" }
+          $hash = (Get-FileHash -Algorithm SHA256 $artifacts[0].FullName).Hash.ToLowerInvariant()
+          $checksumPath = "$($artifacts[0].FullName).sha256"
+          [IO.File]::WriteAllText($checksumPath, "$hash  $($artifacts[0].Name)`n", [Text.Encoding]::ASCII)
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-installer-windows-amd64
+          path: |
+            bin/koyori-ide-v*-windows-amd64.msi
+            bin/koyori-ide-v*-windows-amd64.msi.sha256
+          if-no-files-found: error
+          retention-days: 7
 
   linux:
     name: Installer - Linux (${{ matrix.arch }})
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          ref: ${{ needs.validate.outputs.commit_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25.0"
           cache: true
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20.19"
+          node-version: "20.19.0"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Linux GUI build deps
+      - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
 
-      - name: Install frontend deps
-        run: npm ci --registry=https://registry.npmjs.org
+      - name: Install and audit frontend dependencies
         working-directory: frontend
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
 
-      - name: Generate and verify untracked Wails bindings
+      - name: Dependency governance gate
+        run: node scripts/npm-audit-gate.mjs
+
+      - name: Generate and verify Wails bindings
         run: |
           node scripts/check-bindings-ownership.mjs
           node scripts/generate-bindings.mjs
           node scripts/check-bindings.mjs
 
-      - name: Build installers (AppImage + deb + rpm)
+      - name: Build Linux installers
         run: |
           chmod +x build/scripts/build-linux.sh
           ./build/scripts/build-linux.sh ${{ matrix.arch }}
 
-      - name: Verify产物
+      - name: Verify and checksum Linux installers
+        shell: bash
         run: |
-          echo "=== bin 目录内容 ==="
-          ls -lh bin/
-
-      - name: Checksum installers
-        run: |
-          cd bin
-          for f in *.AppImage *.deb *.rpm; do
-            [ -f "$f" ] || continue
-            sha256sum "$f" > "$f.sha256"
+          set -euo pipefail
+          version="$(bash scripts/read-release-version.sh VERSION)"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Invalid VERSION"; exit 1; }
+          base="bin/koyori-ide-${version}-linux-${{ matrix.arch }}"
+          artifacts=("${base}.AppImage" "${base}.deb" "${base}.rpm")
+          mkdir -p release-linux
+          for artifact in "${artifacts[@]}"; do
+            if [ ! -s "$artifact" ]; then
+              echo "::error::Missing expected Linux installer: $artifact"
+              exit 1
+            fi
+            artifact_dir="$(dirname "$artifact")"
+            artifact_name="$(basename "$artifact")"
+            (cd "$artifact_dir" && sha256sum "$artifact_name" > "$artifact_name.sha256")
+            cp "$artifact" "$artifact.sha256" release-linux/
           done
 
-      - name: Attach to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            bin/*.AppImage bin/*.AppImage.sha256 \
-            bin/*.deb bin/*.deb.sha256 \
-            bin/*.rpm bin/*.rpm.sha256 --clobber
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-installer-linux-${{ matrix.arch }}
+          path: release-linux/
+          if-no-files-found: error
+          retention-days: 7
 
-  macos:
-    name: Installer - macOS (${{ matrix.arch }})
+  macos-build:
+    name: Build unsigned macOS app (${{ matrix.arch }})
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
-            runner: macos-14
-          - arch: amd64
             runner: macos-15
+          - arch: amd64
+            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
-    env:
-      REQUIRE_CODE_SIGN: ${{ vars.REQUIRE_CODE_SIGN || 'true' }}
-      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          ref: ${{ needs.validate.outputs.commit_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25.0"
           cache: true
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20.19"
+          node-version: "20.19.0"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend deps
-        run: npm ci --registry=https://registry.npmjs.org
+      - name: Install and audit frontend dependencies
         working-directory: frontend
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
 
-      - name: Generate and verify untracked Wails bindings
+      - name: Dependency governance gate
+        run: node scripts/npm-audit-gate.mjs
+
+      - name: Generate and verify Wails bindings
         run: |
           node scripts/check-bindings-ownership.mjs
           node scripts/generate-bindings.mjs
           node scripts/check-bindings.mjs
 
-      - name: Install create-dmg
-        run: brew install create-dmg
-
-      - name: Build app bundle + DMG
+      - name: Build unsigned app bundle
         run: |
           chmod +x build/scripts/build-macos.sh
-          ./build/scripts/build-macos.sh ${{ matrix.arch }}
+          ./build/scripts/build-macos.sh ${{ matrix.arch }} --no-dmg
 
-      # The build script ad-hoc signs the .app. For distribution, re-sign with
-      # Developer ID, notarize, staple, then rebuild the DMG from the signed app
-      # and notarize the DMG itself (mirrors release.yml signing, but for DMG).
-      - name: Code sign & notarize (macOS)
+      - name: Stage unsigned macOS app
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="bin/koyori-ide.app"
-          DMG_PATH="bin/koyori-ide-$(tr -d '[:space:]' < VERSION)-macos-${{ matrix.arch }}.dmg"
-          if [ "${REQUIRE_CODE_SIGN:-true}" = "false" ]; then
-            echo "::warning::REQUIRE_CODE_SIGN=false; publishing an unsigned DMG."
+          test -x bin/koyori-ide.app/Contents/MacOS/koyori-ide
+          mkdir -p unsigned-app
+          tar -cf "unsigned-app/koyori-ide-${{ matrix.arch }}.payload" -C bin koyori-ide.app
+          cp VERSION unsigned-app/VERSION
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-installer-macos-${{ matrix.arch }}
+          path: unsigned-app/
+          if-no-files-found: error
+          retention-days: 1
+
+  macos-sign:
+    name: Sign macOS installer (${{ matrix.arch }})
+    needs: [validate, macos-build]
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: amd64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Download unsigned macOS app
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-installer-macos-${{ matrix.arch }}
+          path: unsigned-app
+
+      - name: Extract and verify unsigned macOS app
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          payloads=(unsigned-app/*.payload)
+          if [ "${#payloads[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one unsigned macOS app payload; found ${#payloads[@]}"
+            exit 1
+          fi
+          version=""
+          line_ending_bytes=0
+          if IFS= read -r version < unsigned-app/VERSION; then
+            line_ending_bytes=1
+            if [[ "$version" == *$'\r' ]]; then
+              version="${version%$'\r'}"
+              line_ending_bytes=2
+            fi
+          fi
+          actual_bytes="$(wc -c < unsigned-app/VERSION)"
+          actual_bytes="${actual_bytes//[[:space:]]/}"
+          expected_bytes="$(( ${#version} + line_ending_bytes ))"
+          if [[ ! "$actual_bytes" =~ ^[0-9]+$ ]] || [ "$actual_bytes" -ne "$expected_bytes" ]; then
+            echo "::error::Staged VERSION must contain exactly one value with at most one LF or CRLF terminator"
+            exit 1
+          fi
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Invalid staged VERSION"; exit 1; }
+          [ "$RELEASE_TAG" = "v$version" ] || { echo "::error::Staged VERSION does not match release tag"; exit 1; }
+          printf 'RELEASE_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+          mkdir -p bin
+          tar -xf "${payloads[0]}" -C bin
+          app_binary="bin/koyori-ide.app/Contents/MacOS/koyori-ide"
+          test -x "$app_binary"
+          expected_arch="$EXPECTED_ARCH"
+          if [ "$expected_arch" = "amd64" ]; then expected_arch="x86_64"; fi
+          lipo -verify_arch "$expected_arch" "$app_binary"
+          [ "$(lipo -archs "$app_binary")" = "$expected_arch" ] || {
+            echo "::error::macOS installer app does not contain exactly the expected architecture"
+            exit 1
+          }
+
+      - name: Sign macOS app payload
+        shell: bash
+        env:
+          REQUIRE_CODE_SIGN_INPUT: ${{ inputs.require_code_sign }}
+          REQUIRE_CODE_SIGN_ENV: ${{ vars.REQUIRE_CODE_SIGN }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          case "$REQUIRE_CODE_SIGN_INPUT" in true|false) ;; *) echo "::error::require_code_sign input must be exactly true or false"; exit 1;; esac
+          case "${REQUIRE_CODE_SIGN_ENV:-}" in ""|true|false) ;; *) echo "::error::REQUIRE_CODE_SIGN must be exactly true or false when set"; exit 1;; esac
+          if [ "$REQUIRE_CODE_SIGN_INPUT" != "true" ] && [ "${REQUIRE_CODE_SIGN_ENV:-}" != "true" ]; then
+            echo "::warning::Building an explicitly unsigned macOS installer"
             exit 0
           fi
-          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_CERT_PASSWORD" ] || \
-             [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || \
-             [ -z "$APPLE_TEAM_ID" ]; then
-            echo "::error::macOS code-signing secrets missing; set REQUIRE_CODE_SIGN=false to allow an unsigned DMG."
-            exit 1
-          fi
-          if [ ! -d "$APP_PATH" ]; then
-            echo "::error::koyori-ide.app not found; refusing to publish an unsigned DMG."
-            exit 1
-          fi
-          p12_path="$RUNNER_TEMP/developer_id.p12"
-          echo "$MACOS_CERT_P12" | base64 --decode > "$p12_path"
-          keychain="build-$RANDOM.keychain"
-          keychain_pw="$(openssl rand -hex 32)"
-          security create-keychain -p "$keychain_pw" "$keychain"
-          security default-keychain -s "$keychain"
-          security unlock-keychain -p "$keychain_pw" "$keychain"
-          security import "$p12_path" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain"
-          rm -f "$p12_path"
-          # Re-sign the app with hardened runtime (replaces the ad-hoc signature).
-          codesign --force --deep --options runtime --sign "Developer ID Application" "$APP_PATH"
-          codesign --verify --strict --verbose=2 "$APP_PATH"
-          # Rebuild the DMG from the signed app, then notarize the DMG itself.
-          # Notarizing the DMG also covers the app inside it.
-          rm -f "$DMG_PATH"
-          create-dmg \
-            --volname "koyori-ide" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "koyori-ide.app" 175 190 \
-            --hide-extension "koyori-ide.app" \
-            --app-drop-link 425 190 \
-            --volicon "$PWD/build/darwin/icons.icns" \
-            "$DMG_PATH" "$APP_PATH"
-          xcrun notarytool submit "$DMG_PATH" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          xcrun stapler staple "$DMG_PATH"
-          xcrun stapler validate "$DMG_PATH"
-          codesign --verify --strict "$APP_PATH"
-          security delete-keychain "$keychain"
-
-      - name: Checksum DMG
-        run: |
-          cd bin
-          for f in *.dmg; do
-            [ -f "$f" ] || continue
-            sha256sum "$f" > "$f.sha256"
+          for name in MACOS_CERT_P12 MACOS_CERT_PASSWORD; do
+            if [ -z "${!name:-}" ]; then echo "::error::${name} is required for signing"; exit 1; fi
           done
+          app_path="bin/koyori-ide.app"
+          test -d "$app_path"
+          p12_path="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/koyori-build.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -f "$p12_path"
+          }
+          trap cleanup EXIT
+          printf '%s' "$MACOS_CERT_P12" | base64 -D > "$p12_path"
+          unset MACOS_CERT_P12
+          security create-keychain -p "$keychain_password" "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12_path" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          unset MACOS_CERT_PASSWORD
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          signing_identities=()
+          while IFS= read -r identity; do signing_identities+=("$identity"); done < <(
+            security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ {print $2}'
+          )
+          if [ "${#signing_identities[@]}" -ne 1 ] || [[ ! "${signing_identities[0]-}" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+            echo "::error::Expected exactly one Developer ID Application identity in the temporary keychain"
+            exit 1
+          fi
+          codesign --force --deep --options runtime --keychain "$keychain" \
+            --sign "${signing_identities[0]}" "$app_path"
+          codesign --verify --strict --verbose=2 "$app_path"
 
-      - name: Attach to release
+      - name: Create macOS DMG
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            bin/*.dmg bin/*.dmg.sha256 --clobber
+          set -euo pipefail
+          version="$RELEASE_VERSION"
+          app_path="bin/koyori-ide.app"
+          dmg_path="bin/koyori-ide-${version}-macos-${ARCH}.dmg"
+          dmg_root="$RUNNER_TEMP/koyori-dmg-root"
+          rm -rf "$dmg_root"
+          mkdir -p "$dmg_root"
+          ditto "$app_path" "$dmg_root/koyori-ide.app"
+          ln -s /Applications "$dmg_root/Applications"
+          hdiutil create -quiet -volname "koyori-ide" -srcfolder "$dmg_root" \
+            -ov -format UDZO "$dmg_path"
+          test -s "$dmg_path"
+
+      - name: Sign policy and notarize macOS DMG
+        shell: bash
+        env:
+          REQUIRE_CODE_SIGN_INPUT: ${{ inputs.require_code_sign }}
+          REQUIRE_CODE_SIGN_ENV: ${{ vars.REQUIRE_CODE_SIGN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          case "$REQUIRE_CODE_SIGN_INPUT" in true|false) ;; *) echo "::error::require_code_sign input must be exactly true or false"; exit 1;; esac
+          case "${REQUIRE_CODE_SIGN_ENV:-}" in ""|true|false) ;; *) echo "::error::REQUIRE_CODE_SIGN must be exactly true or false when set"; exit 1;; esac
+          if [ "$REQUIRE_CODE_SIGN_INPUT" != "true" ] && [ "${REQUIRE_CODE_SIGN_ENV:-}" != "true" ]; then
+            exit 0
+          fi
+          for name in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then echo "::error::${name} is required for notarization"; exit 1; fi
+          done
+          shopt -s nullglob
+          artifacts=(bin/*.dmg)
+          if [ "${#artifacts[@]}" -ne 1 ]; then echo "::error::Expected exactly one DMG"; exit 1; fi
+          xcrun notarytool submit "${artifacts[0]}" --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "${artifacts[0]}"
+          xcrun stapler validate "${artifacts[0]}"
+
+      - name: Verify and checksum DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(bin/*.dmg)
+          if [ "${#artifacts[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one DMG; found ${#artifacts[@]}"
+            exit 1
+          fi
+          artifact_name="$(basename "${artifacts[0]}")"
+          (cd "$(dirname "${artifacts[0]}")" && shasum -a 256 "$artifact_name" > "$artifact_name.sha256")
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-installer-macos-${{ matrix.arch }}
+          path: |
+            bin/*.dmg
+            bin/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7

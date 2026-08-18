@@ -192,7 +192,7 @@ async function sourceFingerprint() {
 }
 function gitCommit() { const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", windowsHide: true }); return result.status === 0 ? result.stdout.trim() : null; }
 
-if (dryRun) { assert.equal(await pinnedVersion(), "v3.0.0-alpha2.111"); console.log("[g06-packaged-e2e] dry-run: no process launched; evidence remains U"); process.exit(0); }
+if (dryRun) { assert.equal(await pinnedVersion(), "v3.0.0-beta.8"); console.log("[g06-packaged-e2e] dry-run: no process launched; evidence remains U"); process.exit(0); }
 
 await mkdir(evidenceDir, { recursive: true });
 const evidencePath = path.join(evidenceDir, "g06-packaged-runtime.json");

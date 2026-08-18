@@ -45,7 +45,7 @@ func TestG18SecurityPolicyHasNoUnverifiedSLOOrAuditClaim(t *testing.T) {
 	}
 	doc := string(raw)
 	for _, required := range []string{
-		"Wails v3 alpha", "best-effort", "无响应或修复 SLO", "未接受独立外部安全审计",
+		"Wails v3 beta.8", "best-effort", "无响应或修复 SLO", "未接受独立外部安全审计",
 		"No response or remediation SLO", "has not undergone an independent external security audit",
 		"security/advisories/new", "dianasoylu423@gmail.com",
 	} {

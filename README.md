@@ -12,7 +12,7 @@
 ![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&style=flat-square)
 ![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js&style=flat-square)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&style=flat-square)
-![Wails](https://img.shields.io/badge/Wails-v3%20alpha-red?style=flat-square)
+![Wails](https://img.shields.io/badge/Wails-v3%20beta-red?style=flat-square)
 ![Monaco](https://img.shields.io/badge/Editor-Monaco-646CFF?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
 
@@ -32,7 +32,7 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 - 🐾 **自治 Agent**：读文件、写文件、运行命令、Git 操作——**所有命令强制人工审批**，没有 Safe 自动批准旁路，安全喵！
 - 🧩 **可扩展**：原生插件（Web Worker 沙箱）+ Open VSX 插件市场（SHA-256 校验、权限分级）。
 
-> ⚠️ **诚实声明**：Koyori IDE 当前为 **0.x 实验版本**，构建在 Wails v3 **alpha** 之上。它不是 VS Code、Cursor 或 IntelliJ 的替代品，**不宣称生产级或企业就绪**。部分能力（远程开发、VSIX 兼容层、调试适配器、发布供应链）只有源码/单元/契约证据，未经真实外部系统端到端验证。详见下方[验证边界](#当前能力与验证边界vsu)。
+> ⚠️ **诚实声明**：Koyori IDE 当前为 **0.x 实验版本**，构建在 Wails v3 **beta.8** 之上。它不是 VS Code、Cursor 或 IntelliJ 的替代品，**不宣称生产级或企业就绪**。部分能力（远程开发、VSIX 兼容层、调试适配器、发布供应链）只有源码/单元/契约证据，未经真实外部系统端到端验证。详见下方[验证边界](#当前能力与验证边界vsu)。
 
 ---
 
@@ -166,7 +166,7 @@ flowchart LR
 
 | 层级 | 技术 |
 |---|---|
-| 后端 | Go 1.25 · Wails v3 (`v3.0.0-alpha2.111`，go.mod 精确锁定) |
+| 后端 | Go 1.25 · Wails v3 (`v3.0.0-beta.8`，go.mod 精确锁定) |
 | 前端 | Vue 3 · TypeScript 5 · Vite 8 · Tailwind CSS v4 |
 | 编辑器 | Monaco Editor 0.52 |
 | UI | Element Plus 2.14 |
@@ -193,20 +193,21 @@ flowchart LR
 | 平台 | 产物 |
 |---|---|
 | Windows x64 | `koyori-ide-<version>-windows-amd64.zip`（需 WebView2，Win10/11 通常已内置） |
-| Linux x64 | `koyori-ide-<version>-linux-amd64.tar.gz`（需 WebKit2GTK） |
+| Linux x64 | `koyori-ide-<version>-linux-amd64.tar.gz`（需与构建产物匹配的 GTK/WebKitGTK 运行库） |
 | macOS x64 / ARM64 | `koyori-ide-<version>-darwin-amd64.zip` / `-darwin-arm64.zip` |
 
 <details>
 <summary><b>🖥️ Linux 依赖</b></summary>
 
-```bash
-# Debian/Ubuntu
-sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libgcc-12-dev libstdc++-12-dev pkg-config
-# Fedora
-sudo dnf install -y gtk3 webkit2gtk4.1 pkgconf-pkg-config
-# Arch
-sudo pacman -S gtk3 webkit2gtk pkgconf
-```
+发布流水线首选 GTK4 + WebKitGTK 6.0；`build/scripts/build-linux.sh` 在该组合不可用时回退到 GTK3 + WebKit2GTK 4.1，并让生成的 deb/rpm 依赖与实际构建标签保持一致。源码构建任选同一行中的一组依赖，不要混用两套 ABI：
+
+| 发行版 | 首选（GTK4 / WebKitGTK 6.0） | 回退（GTK3 / WebKit2GTK 4.1） |
+|---|---|---|
+| Debian / Ubuntu | `libgtk-4-dev libwebkitgtk-6.0-dev` | `libgtk-3-dev libwebkit2gtk-4.1-dev` |
+| Fedora / RHEL | `gtk4-devel webkitgtk6.0-devel` | `gtk3-devel webkit2gtk4.1-devel` |
+| Arch Linux | `gtk4 webkitgtk-6.0` | `gtk3 webkit2gtk-4.1` |
+
+还需要 C 编译器、`pkg-config`（Fedora 为 `pkgconf-pkg-config`）、`libgcc` 和 `libstdc++` 开发包。
 
 </details>
 
@@ -215,12 +216,12 @@ sudo pacman -S gtk3 webkit2gtk pkgconf
 | 工具 | 最低版本 |
 |---|---|
 | Go | 1.25 |
-| Node.js | 20 |
-| Wails3 CLI | `v3.0.0-alpha2.111`（精确版本，需与 go.mod / CI 一致） |
+| Node.js | 20.19+ (or 22.12+) |
+| Wails3 CLI | `v3.0.0-beta.8`（精确版本，需与 go.mod / CI 一致） |
 
 ```bash
 # 1. 安装 Wails3 CLI
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
 # 2. 克隆并安装前端依赖
 git clone https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide.git
@@ -241,7 +242,7 @@ node scripts/generate-bindings.mjs
 node scripts/check-bindings.mjs
 ```
 
-> **跨平台构建**：无法从 Windows 主机交叉编译 Linux/macOS 二进制（Wails v3 alpha 已知限制：构建约束 Bug + Taskfile Unix 命令 + CGO 依赖）。请使用 GitHub Actions（推送 `v*.*.*` 标签）、原生构建或 Docker `wails-cross` 镜像。详见 [docs/RELEASING.md](docs/RELEASING.md)。
+> **跨平台构建**：无法从 Windows 主机交叉编译 Linux/macOS 二进制（当前 Wails v3 beta.8 构建仍受构建约束、Taskfile Unix 命令与 CGO 依赖限制）。请使用 GitHub Actions（推送 `v*.*.*` 标签）、原生构建或 Docker `wails-cross` 镜像。详见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ---
 
@@ -341,7 +342,7 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）覆盖三平台测�
 欢迎 Issue 与 PR 喵！
 
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)
-- Go：`gofmt` + [golangci-lint](.golangci.yml)
+- Go：`gofmt` + [golangci-lint CI](.github/workflows/ci.yml)
 - TypeScript/Vue：ESLint（[frontend/eslint.config.js](frontend/eslint.config.js)）
 - 流程详见 [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md)
 - 行为准则：[.github/CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md)
@@ -369,7 +370,7 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）覆盖三平台测�
 
 # 🐾 English Overview
 
-**Koyori IDE** is an offline-first desktop AI IDE for **Go / TypeScript / JavaScript**, built with **Go (Wails v3 alpha) + Vue 3 + Monaco Editor** and designed for single-binary packaging. Nya~! 🐱
+**Koyori IDE** is an offline-first desktop AI IDE for **Go / TypeScript / JavaScript**, built with **Go (Wails v3 beta.8) + Vue 3 + Monaco Editor** and designed for single-binary packaging. Nya~! 🐱
 
 | Area | Summary |
 |---|---|
@@ -382,8 +383,8 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）覆盖三平台测�
 | Plugins | worker-sandboxed native plugins + Open VSX marketplace with SHA-256 checks |
 | Debug/Test | Built-in Delve DAP + Node CDP, test discovery, coverage |
 
-**Honest boundaries**: this is a 0.x experimental project on Wails v3 alpha — **not a replacement for VS Code, Cursor, or IntelliJ**, and **not production- or enterprise-ready**. Remote development is a minimal SSH/SFTP surface (no remote PTY/agent/port forwarding), VSIX support is a constrained permission-gated subset of the VS Code Extension API, and `gopls` / `typescript-language-server` / `vtsls` were absent from the verification machine, so no real LSP session is claimed. See the [verification boundary table](#当前能力与验证边界vsu) above and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Honest boundaries**: this is a 0.x experimental project on Wails v3 beta — **not a replacement for VS Code, Cursor, or IntelliJ**, and **not production- or enterprise-ready**. Remote development is a minimal SSH/SFTP surface (no remote PTY/agent/port forwarding), VSIX support is a constrained permission-gated subset of the VS Code Extension API, and `gopls` / `typescript-language-server` / `vtsls` were absent from the verification machine, so no real LSP session is claimed. See the [verification boundary table](#当前能力与验证边界vsu) above and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Quick start**: Go 1.25 + Node 20 + `wails3` CLI (exact `v3.0.0-alpha2.111`), then `cd frontend && npm ci && cd ..` and `wails3 dev -config ./build/config.yml -port 9245`. Production: `wails3 build -tags desktop,production` (native platform only).
+**Quick start**: Go 1.25 + Node 20.19+ (or 22.12+) + `wails3` CLI (exact `v3.0.0-beta.8`), then `cd frontend && npm ci && cd ..` and `wails3 dev -config ./build/config.yml -port 9245`. Production: `wails3 build -tags desktop,production` (native platform only).
 
 **License**: [MIT](LICENSE)
