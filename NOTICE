@@ -27,11 +27,13 @@ Release asset attribution is recorded separately in:
   docs/RELEASE_ASSET_LICENSES.md
 
 The native Koyori IDE icons are first-party MIT assets. The `wails.png` and
-`vue.svg` frontend template assets are copied from the pinned Wails Vue template
-and are covered by the Wails MIT license. Monaco's generated Codicon font is
-covered by Monaco's MIT license and third-party notices. The release asset
-checker fails when an unrecorded public asset enters the frontend or when a
-stale build directory retains a removed asset.
+`vue.svg` frontend assets are historical copies from the Wails
+v3.0.0-alpha2.111 Vue template and are covered by the Wails MIT license. Their
+fixed hashes remain checked even though the application runtime now uses a
+newer Wails release. Monaco's generated Codicon font is covered by Monaco's MIT
+license and third-party notices. The release asset checker fails when an
+unrecorded public asset enters the frontend or when a stale build directory
+retains a removed asset.
 
 The pinned Wails module graph contains github.com/konoui/go-qsort@v0.1.0,
 whose upstream archive has no detected license, but it is not present in any
@@ -39,6 +41,8 @@ of the four supported production package closures. The release generator
 will fail if a future target imports it. Do not treat this NOTICE as legal
 advice or as a substitute for the upstream terms.
 
-Tag releases also publish one mandatory SPDX JSON SBOM per final platform
-archive and an unsigned in-toto provenance statement. The provenance file is
-release metadata, not a signed attestation.
+Tag releases also publish one mandatory SPDX JSON SBOM per executable/installer
+artifact (portable archive or native installer) and an unsigned in-toto
+provenance statement. The provenance file is release metadata, not a signed
+attestation. LICENSE, NOTICE, and inventory files are release metadata and are
+covered by SHA256SUMS rather than assigned an executable SBOM.

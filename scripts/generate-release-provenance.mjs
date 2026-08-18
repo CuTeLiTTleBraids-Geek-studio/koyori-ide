@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -15,6 +16,7 @@ const requiredEnvironment = [
   "GITHUB_REPOSITORY",
   "GITHUB_REF",
   "GITHUB_SHA",
+  "RELEASE_COMMIT_SHA",
   "GITHUB_RUN_ID",
   "GITHUB_RUN_ATTEMPT",
   "GITHUB_WORKFLOW_REF",
@@ -24,6 +26,29 @@ for (const name of requiredEnvironment) {
     console.error(`[provenance] required environment variable is missing: ${name}`);
     process.exit(1);
   }
+}
+
+const shaPattern = /^[0-9a-f]{40}$/;
+for (const name of ["GITHUB_SHA", "RELEASE_COMMIT_SHA"]) {
+  if (!shaPattern.test(process.env[name])) {
+    console.error(`[provenance] ${name} must be a lowercase 40-character Git SHA`);
+    process.exit(1);
+  }
+}
+
+let checkoutCommit;
+try {
+  checkoutCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+    encoding: "utf8",
+    windowsHide: true,
+  }).trim();
+} catch {
+  console.error("[provenance] unable to resolve the checked-out commit");
+  process.exit(1);
+}
+if (!shaPattern.test(checkoutCommit) || checkoutCommit !== process.env.RELEASE_COMMIT_SHA) {
+  console.error(`[provenance] checked-out commit ${checkoutCommit || "<invalid>"} does not match RELEASE_COMMIT_SHA`);
+  process.exit(1);
 }
 
 const subjects = [];
@@ -63,7 +88,7 @@ const statement = {
       },
       resolvedDependencies: [{
         uri: `git+${server}/${repository}@${process.env.GITHUB_REF}`,
-        digest: { gitCommit: process.env.GITHUB_SHA },
+        digest: { gitCommit: process.env.RELEASE_COMMIT_SHA },
       }],
     },
     runDetails: {

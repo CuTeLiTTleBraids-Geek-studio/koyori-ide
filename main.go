@@ -152,6 +152,10 @@ func init() {
 }
 
 func main() {
+	if err := enforceServerBindAddress(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	// Initialize structured logging (N-11) before any service is created
 	// so all services inherit the configured default logger. The cleanup
 	// function closes the log file on shutdown.
@@ -477,9 +481,13 @@ func registerWailsServices(app *application.Options, serviceSet *bootstrapServic
 }
 
 func setupHTTPRoutes(app *application.Options, serviceSet *bootstrapServices) {
+	middleware := assetMiddleware(serviceSet.Plugin)
+	if guard := serverTransportMiddleware(); guard != nil {
+		middleware = application.ChainMiddleware(guard, middleware)
+	}
 	app.Assets = application.AssetOptions{
 		Handler:    application.AssetFileServerFS(assets),
-		Middleware: assetMiddleware(serviceSet.Plugin),
+		Middleware: middleware,
 	}
 }
 

@@ -83,7 +83,7 @@ cd "$WORK"
 command -v go >/dev/null || fail "Go not installed. Run wsl-install-toolchain.sh first."
 command -v node >/dev/null || fail "Node not installed. Run wsl-install-toolchain.sh first."
 command -v gcc >/dev/null || fail "gcc missing."
-command -v nfpm >/dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+command -v nfpm >/dev/null || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.44.1
 
 if ! pkg-config --exists webkit2gtk-4.1 && ! pkg-config --exists webkitgtk-6.0; then
   fail "WebKitGTK dev packages missing."
@@ -415,7 +415,7 @@ chmod +x "${MACOS_DIR}/${APP_NAME}-server"
 cat > "${MACOS_DIR}/${APP_NAME}" <<'LAUNCHER'
 #!/bin/bash
 DIR="$(dirname "$0")"
-"${DIR}/koyori-ide-server" &
+WAILS_SERVER_HOST=127.0.0.1 WAILS_SERVER_PORT=34115 "${DIR}/koyori-ide-server" &
 SERVER_PID=$!
 sleep 2
 open "http://localhost:34115" 2>/dev/null || open "http://127.0.0.1:34115"
@@ -505,7 +505,7 @@ cp koyori-ide-server "${INSTALL_DIR}/${APP_NAME}"
 chmod +x "${INSTALL_DIR}/${APP_NAME}"
 ln -sf "${INSTALL_DIR}/${APP_NAME}" "${BIN_PATH}"
 echo "Installed server mode to ${BIN_PATH}"
-echo "Run: ${BIN_PATH}  then open http://localhost:34115"
+echo "Run: WAILS_SERVER_HOST=127.0.0.1 WAILS_SERVER_PORT=34115 ${BIN_PATH}  then open http://localhost:34115"
 LINST
   chmod +x "$stage/install.sh"
   local tg="$WORK/bin/${APP_NAME}-${VERSION}-linux-${darch}-server-offline.tar.gz"

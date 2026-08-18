@@ -6,9 +6,9 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 ## Source Digests
 
-- `go.mod`: `c50c5c816bd097599af5a2c731573286a601b9fb0fcb7c32d0234a48cf5a7190`
-- `go.sum`: `9048fc023832e4352fb617e570b776872b9a4667a69dba949744c0006c960229`
-- `frontend/package-lock.json`: `aac20fa640702ea762a77762e4f8ca526cdd52630ec32461a14a9faff6130dc1`
+- `go.mod`: `09d3144e8295c0e682f8878c36d6270d317749a817b2ad6b79d1d2a0953cb066`
+- `go.sum`: `4538e466e6fbdad819c2eb1c5aab64caaa0f59848a39b556b5d2c6c9cb12d9dc`
+- `frontend/package-lock.json`: `b34117d439f9dc74a1369e402f2b51aa03779391833a7237917db8ae4ef4f858`
 
 ## Review Summary
 
@@ -46,7 +46,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @vue/runtime-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/server-renderer@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/shared@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
-| @wailsio/runtime@3.0.0-beta.5 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @wailsio/runtime@3.0.0-beta.8 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | assertion-error@2.0.1 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@1.1.18 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@2.1.4 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -56,7 +56,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | csstype@3.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | dompurify@3.4.12 | (MPL-2.0 OR Apache-2.0) | package-lock v3 entry omitted license; checked installed package.json |
 | glob@10.5.0 | ISC | package-lock v3 entry omitted license; checked installed package.json |
-| nanoid@3.3.17 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | postcss@8.5.25 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vitest@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vue-demi@0.14.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -109,7 +108,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/remyoudompheng/bigfft | v0.0.0-20230129092748-24d4a6f8daec | BSD-3-Clause | LICENSE |
 | github.com/sergi/go-diff | v1.4.0 | MIT | LICENSE |
 | github.com/skeema/knownhosts | v1.3.2 | Apache-2.0 | LICENSE |
-| github.com/wailsapp/wails/v3 | v3.0.0-beta.5 | MIT | LICENSE |
+| github.com/wailsapp/wails/v3 | v3.0.0-beta.8 | MIT | LICENSE |
 | github.com/xanzy/ssh-agent | v0.3.3 | Apache-2.0 | LICENSE |
 | golang.org/x/crypto | v0.54.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/net | v0.56.0 | BSD-3-Clause | LICENSE |
@@ -270,7 +269,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @vueuse/core | 14.3.0 | MIT | package-lock.json |
 | @vueuse/metadata | 14.3.0 | MIT | package-lock.json |
 | @vueuse/shared | 14.3.0 | MIT | package-lock.json |
-| @wailsio/runtime | 3.0.0-beta.5 | MIT | package-lock.json |
+| @wailsio/runtime | 3.0.0-beta.8 | MIT | package-lock.json |
 | @xterm/addon-fit | 0.11.0 | MIT | package-lock.json |
 | @xterm/xterm | 6.0.0 | MIT | package-lock.json |
 | abbrev | 2.0.0 | ISC | package-lock.json |
@@ -444,7 +443,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | monaco-editor | 0.52.2 | MIT | package-lock.json |
 | ms | 2.1.3 | MIT | package-lock.json |
 | muggle-string | 0.4.1 | MIT | package-lock.json |
-| nanoid | 3.3.17 | MIT | package-lock.json |
+| nanoid | 3.3.18 | MIT | package-lock.json |
 | natural-compare | 1.4.0 | MIT | package-lock.json |
 | nopt | 7.2.1 | ISC | package-lock.json |
 | normalize-wheel-es | 1.2.0 | BSD-3-Clause | package-lock.json |

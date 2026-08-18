@@ -583,7 +583,7 @@ async function removeTemporaryDirectory(directory) {
 }
 
 if (dryRun) {
-  assert.equal(await wailsPin(), "v3.0.0-alpha2.111");
+  assert.equal(await wailsPin(), "v3.0.0-beta.8");
   const source = await readFile(fileURLToPath(import.meta.url), "utf8");
   for (const required of [
     "prepare-crash",

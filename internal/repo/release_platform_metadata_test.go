@@ -202,3 +202,155 @@ func TestBuildScriptsReadVERSIONAndFailClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestReleaseVersionReaderPreservesOnlyOneLineEnding(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	tempDir, err := os.MkdirTemp(".", ".version-reader-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+	script := "../../scripts/read-release-version.sh"
+	cases := []struct {
+		name    string
+		content string
+		wantOK  bool
+	}{
+		{name: "no terminator", content: "1.2.3", wantOK: true},
+		{name: "LF", content: "1.2.3\n", wantOK: true},
+		{name: "CRLF", content: "1.2.3\r\n", wantOK: true},
+		{name: "lone CR", content: "1.2.3\r"},
+		{name: "two LF", content: "1.2.3\n\n"},
+		{name: "two CRLF", content: "1.2.3\r\n\r\n"},
+		{name: "embedded NUL", content: "1.2.3\x00\n"},
+		{name: "trailing data", content: "1.2.3\njunk"},
+		{name: "leading zero", content: "01.2.3\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := filepath.Join(tempDir, "VERSION")
+			if err := os.WriteFile(fixture, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := exec.Command(bash, script, filepath.ToSlash(fixture)).CombinedOutput()
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("reader rejected valid VERSION: %v\n%s", err, output)
+				}
+				if got := string(output); !strings.HasSuffix(got, "1.2.3\n") {
+					t.Fatalf("reader output = %q, want a final %q", got, "1.2.3\\n")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("reader accepted malformed VERSION: %q", tc.content)
+			}
+		})
+	}
+}
+
+func TestBuildScriptsRequireViteCompatibleNode(t *testing.T) {
+	if lock := repoFile(t, filepath.Join("frontend", "package-lock.json")); !strings.Contains(lock, `"node": "^20.19.0 || >=22.12.0"`) {
+		t.Fatal("frontend lockfile no longer contains the Vite Node engine boundary; update this contract with the toolchain")
+	}
+
+	tests := []struct {
+		rel      string
+		required []string
+	}{
+		{
+			rel: filepath.Join("build", "scripts", "build-linux.sh"),
+			required: []string{
+				`[ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]`,
+				`[ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]`,
+				`[ "$NODE_MAJOR" -gt 22 ]`,
+			},
+		},
+		{
+			rel: filepath.Join("build", "scripts", "build-macos.sh"),
+			required: []string{
+				`[ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]`,
+				`[ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]`,
+				`[ "$NODE_MAJOR" -gt 22 ]`,
+			},
+		},
+		{
+			rel: filepath.Join("build", "scripts", "build-windows.ps1"),
+			required: []string{
+				`$NodeMajor -eq 20 -and $NodeMinor -ge 19`,
+				`$NodeMajor -eq 22 -and $NodeMinor -ge 12`,
+				`$NodeMajor -gt 22`,
+			},
+		},
+	}
+	for _, test := range tests {
+		script := repoFile(t, test.rel)
+		for _, required := range append(test.required, "^20.19.0", ">=22.12.0") {
+			if !strings.Contains(script, required) {
+				t.Errorf("%s does not enforce Vite's Node engine boundary %q", test.rel, required)
+			}
+		}
+		for _, stale := range []string{"Node.js 18+", "需要 18+", "NODE_MAJOR\" -lt 18", "NodeMajor -lt 18"} {
+			if strings.Contains(script, stale) {
+				t.Errorf("%s retains stale Node requirement %q", test.rel, stale)
+			}
+		}
+	}
+}
+
+func TestBuildScriptsRequireStableVersions(t *testing.T) {
+	stableVersion := `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`
+	for _, rel := range []string{
+		filepath.Join("build", "scripts", "build-linux.sh"),
+		filepath.Join("build", "scripts", "build-macos.sh"),
+	} {
+		script := repoFile(t, rel)
+		if !strings.Contains(script, "read-release-version.sh") {
+			t.Errorf("%s does not use the exact shared VERSION reader", rel)
+		}
+		if strings.Contains(script, "sed 's/\\r$//'") || strings.Contains(script, "tr -d") {
+			t.Errorf("%s contains a lossy VERSION normalizer", rel)
+		}
+	}
+	reader := repoFile(t, filepath.Join("scripts", "read-release-version.sh"))
+	if !strings.Contains(reader, stableVersion) || !strings.Contains(reader, "exactly one value") {
+		t.Error("shared VERSION reader must enforce stable syntax and exact line shape")
+	}
+	for _, rel := range []string{
+		filepath.Join("build", "scripts", "build-windows.ps1"),
+		filepath.Join("build", "scripts", "build-msi.ps1"),
+	} {
+		script := repoFile(t, rel)
+		if !strings.Contains(script, stableVersion) {
+			t.Errorf("%s does not enforce the stable VERSION policy", rel)
+		}
+	}
+	for _, rel := range []string{
+		filepath.Join("build", "scripts", "build-linux.sh"),
+		filepath.Join("build", "scripts", "build-macos.sh"),
+		filepath.Join("build", "scripts", "build-windows.ps1"),
+		filepath.Join("build", "scripts", "build-msi.ps1"),
+	} {
+		if script := repoFile(t, rel); !strings.Contains(script, "node scripts/sync-release-metadata.mjs --check") {
+			t.Errorf("%s can build without verifying synchronized release metadata", rel)
+		}
+	}
+	msi := repoFile(t, filepath.Join("build", "scripts", "build-msi.ps1"))
+	for _, required := range []string{
+		"$VersionMatch = [regex]::Match",
+		"$VersionMatch.Groups[1].Value",
+		"$VersionMatch.Groups[2].Value",
+		"$VersionMatch.Groups[3].Value",
+		"VERSION exceeds MSI limits",
+	} {
+		if !strings.Contains(msi, required) {
+			t.Errorf("build-msi.ps1 does not map SemVer to numeric MSI ProductVersion via %q", required)
+		}
+	}
+	if strings.Contains(msi, "$MsiVersion = ($Version -split '-')[0]") {
+		t.Error("build-msi.ps1 must derive ProductVersion from validated numeric groups")
+	}
+}

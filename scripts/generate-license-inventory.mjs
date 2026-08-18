@@ -22,7 +22,6 @@ const npmLicenseOverrides = new Map([
   ["brace-expansion@5.0.9", "MIT"],
   ["dompurify@3.4.12", "(MPL-2.0 OR Apache-2.0)"],
   ["glob@10.5.0", "ISC"],
-  ["nanoid@3.3.17", "MIT"],
   ["postcss@8.5.25", "MIT"],
   // G-CI-13: npm 9 lockfile regeneration drops the license field for these
   // entries; every expression below was verified against the registry
@@ -47,7 +46,7 @@ const npmLicenseOverrides = new Map([
   ["@vue/runtime-dom@3.5.41", "MIT"],
   ["@vue/server-renderer@3.5.41", "MIT"],
   ["@vue/shared@3.5.41", "MIT"],
-  ["@wailsio/runtime@3.0.0-beta.5", "MIT"],
+  ["@wailsio/runtime@3.0.0-beta.8", "MIT"],
   ["assertion-error@2.0.1", "MIT"],
   ["chai@6.2.2", "MIT"],
   ["convert-source-map@2.0.0", "MIT"],

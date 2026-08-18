@@ -16,19 +16,35 @@ on:
   push:
     branches: [main, master]
     paths:
-      - "build/scripts/build-macos.sh"
-      - "build/scripts/build-linux.sh"
-      - "build/scripts/build-windows.ps1"
-      - "build/darwin/**"
-      - "build/linux/**"
-      - "build/windows/**"
-      - "build/appicon.png"
-      - "build/config.yml"
+      # Package whenever application code, embedded frontend assets, version
+      # metadata, or build configuration can change the produced desktop
+      # artifacts. A narrow build-script-only filter can leave main behind a
+      # stale package after an otherwise valid source change lands on main.
+      - "VERSION"
+      - "go.mod"
+      - "go.sum"
+      - "*.go"
+      - "services/**"
+      - "internal/**"
+      - "frontend/**"
+      - "Taskfile.yml"
+      - "scripts/**"
+      - "build/**"
       - ".github/workflows/package.yml"
   pull_request:
     branches: [main, master]
     paths:
-      - "build/scripts/**"
+      - "VERSION"
+      - "go.mod"
+      - "go.sum"
+      - "*.go"
+      - "services/**"
+      - "internal/**"
+      - "frontend/**"
+      - "Taskfile.yml"
+      - "scripts/**"
+      - "build/**"
+      - ".github/workflows/package.yml"
   workflow_dispatch:
     inputs:
       skip_dmg:
@@ -40,19 +56,39 @@ permissions:
   contents: read
 
 jobs:
+  metadata:
+    name: Verify release metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20.19"
+
+      - name: Require synchronized stable release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/read-release-version.sh VERSION
+          node scripts/sync-release-metadata.mjs --check
+
   # ===========================================================================
   # macOS 构建（arm64 + amd64）
   # ===========================================================================
   macos:
     name: macOS (${{ matrix.arch }})
+    needs: metadata
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
-            runner: macos-14          # Apple Silicon (M1)
+            runner: macos-15          # Apple Silicon
           - arch: amd64
-            runner: macos-15          # Intel
+            runner: macos-15-intel    # Intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -60,7 +96,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Node.js
@@ -80,9 +116,20 @@ jobs:
           node scripts/generate-bindings.mjs
           node scripts/check-bindings.mjs
 
-      - name: Install create-dmg
+      - name: Install pinned create-dmg
         if: ${{ !inputs.skip_dmg }}
-        run: brew install create-dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/create-dmg-v1.3.0.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            https://github.com/create-dmg/create-dmg/archive/refs/tags/v1.3.0.tar.gz \
+            --output "$archive"
+          echo "c50d2bc97c3d6292642bac55f530d247eaf4bf65ee605f26b4caf339383e381c  $archive" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/create-dmg-src" "$RUNNER_TEMP/create-dmg-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/create-dmg-src" --strip-components=1
+          make -C "$RUNNER_TEMP/create-dmg-src" install prefix="$RUNNER_TEMP/create-dmg-bin"
+          echo "$RUNNER_TEMP/create-dmg-bin/bin" >> "$GITHUB_PATH"
 
       - name: Make build script executable
         run: chmod +x build/scripts/build-macos.sh
@@ -96,15 +143,47 @@ jobs:
           ./build/scripts/build-macos.sh $ARGS
         shell: bash
 
-      - name: Verify产物
+      - name: Verify macOS artifacts
+        id: verify
         run: |
-          echo "=== bin 目录内容 ==="
+          set -euo pipefail
           ls -lh bin/
-          echo ""
-          echo "=== .app 结构 ==="
-          if [ -d "bin/koyori-ide.app" ]; then
-            find bin/koyori-ide.app -type f | head -20
+          version="$(bash scripts/read-release-version.sh VERSION)"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "::error::VERSION must be a stable X.Y.Z value: $version"
+            exit 1
+          }
+          app_binary=bin/koyori-ide.app/Contents/MacOS/koyori-ide
+          test -x "$app_binary"
+          test -s bin/koyori-ide
+          expected_arch="${{ matrix.arch }}"
+          if [ "$expected_arch" = "amd64" ]; then expected_arch="x86_64"; fi
+          lipo "$app_binary" -verify_arch "$expected_arch"
+          [ "$(lipo -archs "$app_binary")" = "$expected_arch" ] || {
+            echo "::error::macOS app must contain exactly the ${expected_arch} slice"
+            exit 1
+          }
+          shopt -s nullglob
+          dmgs=(bin/koyori-ide-*.dmg)
+          if [ "${{ inputs.skip_dmg }}" = "true" ]; then
+            if [ "${#dmgs[@]}" -ne 0 ]; then
+              echo "::error::DMG output is forbidden when skip_dmg is true"
+              exit 1
+            fi
+            printf 'dmg_path=\n' >> "$GITHUB_OUTPUT"
+          else
+            expected_dmg="bin/koyori-ide-${version}-macos-${{ matrix.arch }}.dmg"
+            if [ "${#dmgs[@]}" -ne 1 ] || [ "${dmgs[0]}" != "$expected_dmg" ] || [ ! -s "$expected_dmg" ]; then
+              echo "::error::Expected exactly one non-empty macOS DMG: $expected_dmg"
+              exit 1
+            fi
+            printf 'dmg_path=%s\n' "$expected_dmg" >> "$GITHUB_OUTPUT"
           fi
+          portable_archive="bin/koyori-ide-${version}-macos-${{ matrix.arch }}-portable.tar.gz"
+          rm -f "$portable_archive"
+          tar -czf "$portable_archive" -C bin koyori-ide.app koyori-ide
+          test -s "$portable_archive"
+          printf 'portable_path=%s\n' "$portable_archive" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Upload macOS artifacts
@@ -113,9 +192,9 @@ jobs:
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            bin/koyori-ide.app
-            bin/koyori-ide*.dmg
-            bin/koyori-ide
+            ${{ steps.verify.outputs.portable_path }}
+            ${{ steps.verify.outputs.dmg_path }}
+          if-no-files-found: error
           retention-days: 30
 
   # ===========================================================================
@@ -123,6 +202,7 @@ jobs:
   # ===========================================================================
   linux:
     name: Linux (${{ matrix.arch }})
+    needs: metadata
     strategy:
       fail-fast: false
       matrix:
@@ -138,7 +218,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Node.js
@@ -174,19 +254,41 @@ jobs:
         shell: bash
 
       - name: Verify产物
+        id: verify
         run: |
+          set -euo pipefail
+          version="$(bash scripts/read-release-version.sh VERSION)"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "::error::VERSION must be a stable X.Y.Z value: $version"
+            exit 1
+          }
+          expected_appimage="bin/koyori-ide-${version}-linux-${{ matrix.arch }}.AppImage"
+          expected_deb="bin/koyori-ide-${version}-linux-${{ matrix.arch }}.deb"
+          expected_rpm="bin/koyori-ide-${version}-linux-${{ matrix.arch }}.rpm"
+          test -s bin/koyori-ide
+          for artifact in "$expected_appimage" "$expected_deb" "$expected_rpm"; do
+            if [ ! -s "$artifact" ]; then
+              echo "::error::Missing required Linux package: $artifact"
+              exit 1
+            fi
+          done
+          portable_archive="bin/koyori-ide-${version}-linux-${{ matrix.arch }}-portable.tar.gz"
+          rm -f "$portable_archive"
+          tar -czf "$portable_archive" -C bin "$(basename "$expected_appimage")" koyori-ide
+          test -s "$portable_archive"
+          printf 'portable_path=%s\n' "$portable_archive" >> "$GITHUB_OUTPUT"
+          printf 'deb_path=%s\n' "$expected_deb" >> "$GITHUB_OUTPUT"
+          printf 'rpm_path=%s\n' "$expected_rpm" >> "$GITHUB_OUTPUT"
           echo "=== bin 目录内容 ==="
           ls -lh bin/
           echo ""
           echo "=== AppImage 信息 ==="
-          if ls bin/*.AppImage 1>/dev/null 2>&1; then
-            file bin/*.AppImage
-          fi
+          file "$expected_appimage"
           echo ""
           echo "=== deb 包信息 ==="
-          if ls bin/*.deb 1>/dev/null 2>&1; then
-            dpkg-deb -I bin/*.deb 2>/dev/null || true
-          fi
+          dpkg-deb -I "$expected_deb"
+          echo "=== rpm 包信息 ==="
+          file "$expected_rpm"
         shell: bash
 
       - name: Upload Linux artifacts
@@ -195,10 +297,10 @@ jobs:
         with:
           name: linux-${{ matrix.arch }}
           path: |
-            bin/koyori-ide
-            bin/koyori-ide*.AppImage
-            bin/koyori-ide*.deb
-            bin/koyori-ide*.rpm
+            ${{ steps.verify.outputs.portable_path }}
+            ${{ steps.verify.outputs.deb_path }}
+            ${{ steps.verify.outputs.rpm_path }}
+          if-no-files-found: error
           retention-days: 30
 
   # ===========================================================================
@@ -206,6 +308,7 @@ jobs:
   # ===========================================================================
   windows:
     name: Windows (${{ matrix.arch }})
+    needs: metadata
     strategy:
       fail-fast: false
       matrix:
@@ -219,7 +322,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Node.js
@@ -241,10 +344,10 @@ jobs:
           node scripts/check-bindings.mjs
 
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
       - name: Install WiX Toolset v3
-        run: choco install wixtoolset -y --no-progress
+        run: choco install wixtoolset --version=3.14.1.20250415 -y --no-progress --allow-downgrade
 
       - name: Run Windows build script (exe + MSI installer)
         shell: pwsh
@@ -253,8 +356,26 @@ jobs:
           ./build/scripts/build-msi.ps1 -Arch ${{ matrix.arch }}
 
       - name: Verify产物
+        id: verify
         shell: pwsh
         run: |
+          $version = (Get-Content VERSION -Raw) -replace '\r?\n$', ''
+          if ($version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw "VERSION must be a stable X.Y.Z value: $version" }
+          $expectedMsi = "bin/koyori-ide-v$version-windows-${{ matrix.arch }}.msi"
+          $expected = @(
+            "bin/koyori-ide.exe",
+            $expectedMsi
+          )
+          foreach ($artifact in $expected) {
+            $item = Get-Item -LiteralPath $artifact -ErrorAction Stop
+            if ($item.Length -le 0) { throw "Empty Windows artifact: $artifact" }
+          }
+          $msis = @(Get-ChildItem -LiteralPath bin -Filter "koyori-ide-v*-windows-*.msi" -File)
+          if ($msis.Count -ne 1 -or $msis[0].Name -cne [IO.Path]::GetFileName($expectedMsi)) {
+            throw "Expected exactly one Windows MSI named $([IO.Path]::GetFileName($expectedMsi)); found $($msis.Name -join ', ')"
+          }
+          "exe_path=bin/koyori-ide.exe" >> $env:GITHUB_OUTPUT
+          "msi_path=$expectedMsi" >> $env:GITHUB_OUTPUT
           echo "=== bin 目录内容 ==="
           Get-ChildItem bin/koyori-ide* | ForEach-Object {
             $sizeMb = [math]::Round($_.Length / 1MB, 1)
@@ -267,8 +388,9 @@ jobs:
         with:
           name: windows-${{ matrix.arch }}
           path: |
-            bin/koyori-ide.exe
-            bin/koyori-ide-v*-windows-*.msi
+            ${{ steps.verify.outputs.exe_path }}
+            ${{ steps.verify.outputs.msi_path }}
+          if-no-files-found: error
           retention-days: 30
 
   # ===========================================================================

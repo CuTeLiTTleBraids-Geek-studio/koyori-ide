@@ -340,7 +340,7 @@ function gitCommit() {
 }
 
 if (dryRun) {
-  assert.equal(await pinnedVersion(), "v3.0.0-alpha2.111");
+    assert.equal(await pinnedVersion(), "v3.0.0-beta.8");
   log("dry-run", "source plan validated; no packaged process was launched and evidence remains U");
   process.exit(0);
 }

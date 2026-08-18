@@ -1,0 +1,13 @@
+# Default review ownership. Keep release, dependency, and security changes
+# visible to the repository maintainer instead of allowing silent self-merge.
+* @CuTeLiTTleBraids-Geek-studio
+
+# High-impact paths get an explicit owner entry so future rules can narrow the
+# default without accidentally dropping review coverage.
+/.github/ @CuTeLiTTleBraids-Geek-studio
+/build/docker/ @CuTeLiTTleBraids-Geek-studio
+/frontend/package.json @CuTeLiTTleBraids-Geek-studio
+/frontend/package-lock.json @CuTeLiTTleBraids-Geek-studio
+/go.mod @CuTeLiTTleBraids-Geek-studio
+/go.sum @CuTeLiTTleBraids-Geek-studio
+/scripts/ @CuTeLiTTleBraids-Geek-studio

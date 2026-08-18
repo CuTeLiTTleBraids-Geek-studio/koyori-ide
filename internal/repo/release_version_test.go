@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -51,7 +52,7 @@ var (
 	windowsManifestVersionRe = regexp.MustCompile(`^[\s\S]*?<assemblyIdentity[^>]*version="([^"]+)"`)
 	// The MSIX Identity element carries a four-part package version.
 	msixIdentityVersionRe = regexp.MustCompile(`^[\s\S]*?<Identity[^>]*Version="([^"]+)"`)
-	numericSemverRe       = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)`)
+	stableVersionRe       = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 )
 
 // checkReleaseVersionConsistency returns every inconsistency it finds. An empty
@@ -62,12 +63,28 @@ var (
 func checkReleaseVersionConsistency(meta releaseMetadata) []string {
 	var problems []string
 
-	version := strings.TrimSpace(meta.Version)
+	version := meta.Version
+	if strings.HasSuffix(version, "\r\n") {
+		version = strings.TrimSuffix(version, "\r\n")
+	} else {
+		version = strings.TrimSuffix(version, "\n")
+	}
 	if version == "" {
 		return []string{"VERSION is empty; it is the single source of truth and must declare a version"}
 	}
-	if !regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.\-]+)?(\+[0-9A-Za-z.\-]+)?$`).MatchString(version) {
-		problems = append(problems, fmt.Sprintf("VERSION %q is not a SemVer version", version))
+	if !stableVersionRe.MatchString(version) {
+		problems = append(problems, fmt.Sprintf("VERSION %q is not a stable X.Y.Z version", version))
+	} else {
+		parts := stableVersionRe.FindStringSubmatch(version)
+		limits := []uint64{255, 255, 65535}
+		for index, limit := range limits {
+			value, err := strconv.ParseUint(parts[index+1], 10, 64)
+			if err != nil || value > limit {
+				problems = append(problems, fmt.Sprintf(
+					"VERSION %q exceeds Windows installer limits (major/minor <= 255, patch <= 65535)", version))
+				break
+			}
+		}
 	}
 
 	// build/config.yml drives the packaged artifact's metadata.
@@ -99,16 +116,14 @@ func checkReleaseVersionConsistency(meta releaseMetadata) []string {
 			"build/windows/wails.exe.manifest version %q != VERSION %q", m[1], version))
 	}
 
-	// MSIX package manifest: Identity Version is four-part and cannot carry
-	// prerelease/build-metadata characters, so the tested mapping is
-	// <major>.<minor>.<patch>.0. Unmappable versions already fail the SemVer
-	// gate above.
+	// MSIX package manifest: Identity Version is the stable version plus a zero
+	// fourth component, which is the repository's tested Windows package mapping.
 	if m := msixIdentityVersionRe.FindStringSubmatch(meta.MSIXManifest); m == nil {
 		problems = append(problems, "build/windows/msix/app_manifest.xml declares no Identity Version")
 	} else {
-		numeric := numericSemverRe.FindStringSubmatch(version)
+		numeric := stableVersionRe.FindStringSubmatch(version)
 		if numeric == nil {
-			problems = append(problems, fmt.Sprintf("VERSION %q has no numeric triple for MSIX", version))
+			problems = append(problems, fmt.Sprintf("VERSION %q has no stable numeric triple for MSIX", version))
 		} else {
 			wantMSIX := numeric[1] + "." + numeric[2] + "." + numeric[3] + ".0"
 			if m[1] != wantMSIX {
@@ -291,11 +306,11 @@ func TestReleaseVersionConsistency_RejectsDrift(t *testing.T) {
 			wantSub: "VERSION is empty",
 		},
 		{
-			name: "non-SemVer VERSION",
+			name: "non-stable VERSION",
 			mutate: func(m *releaseMetadata) {
 				m.Version = "0.2\n"
 			},
-			wantSub: "not a SemVer version",
+			wantSub: "not a stable X.Y.Z version",
 		},
 		{
 			name: "build config declares no version",
@@ -352,10 +367,7 @@ func TestReleaseVersionConsistency_RejectsDrift(t *testing.T) {
 	}
 }
 
-// TestReleaseVersionConsistency_AcceptsBuildMetadata verifies SemVer build
-// metadata (+suffix) is a valid VERSION: every consumer keeps the full string
-// and MSIX maps to the numeric triple.
-func TestReleaseVersionConsistency_AcceptsBuildMetadata(t *testing.T) {
+func TestReleaseVersionConsistency_RejectsBuildMetadata(t *testing.T) {
 	meta := validMeta()
 	meta.Version = "0.2.0+build.7"
 	meta.BuildConfig = "info:\n  version: \"0.2.0+build.7\" # The application version\n"
@@ -365,14 +377,13 @@ func TestReleaseVersionConsistency_AcceptsBuildMetadata(t *testing.T) {
 	meta.Changelog = "## [Unreleased]\n\n- wip\n\n## [0.2.0+build.7]\n\n- shipped\n"
 	meta.MSIXManifest = "<Identity Name=\"com.koyori.app\" Version=\"0.2.0.0\" />"
 
-	if problems := checkReleaseVersionConsistency(meta); len(problems) > 0 {
-		t.Fatalf("build-metadata VERSION was rejected: %v", problems)
+	problems := strings.Join(checkReleaseVersionConsistency(meta), "; ")
+	if !strings.Contains(problems, "not a stable X.Y.Z version") {
+		t.Fatalf("build-metadata VERSION was not rejected: %s", problems)
 	}
 }
 
-// TestReleaseVersionConsistency_PrereleaseMSIXMapping verifies the explicit
-// four-part MSIX mapping under a prerelease VERSION.
-func TestReleaseVersionConsistency_PrereleaseMSIXMapping(t *testing.T) {
+func TestReleaseVersionConsistency_RejectsPrerelease(t *testing.T) {
 	meta := validMeta()
 	meta.Version = "0.3.0-rc.1"
 	meta.BuildConfig = "info:\n  version: \"0.3.0-rc.1\"\n"
@@ -385,15 +396,38 @@ func TestReleaseVersionConsistency_PrereleaseMSIXMapping(t *testing.T) {
 		"| **0.3.x** | ✅ | current |\n" +
 		"| **0.2.x** | ❌ | upgrade |\n"
 
-	if problems := checkReleaseVersionConsistency(meta); len(problems) > 0 {
-		t.Fatalf("prerelease VERSION with mapped MSIX was rejected: %v", problems)
+	problems := strings.Join(checkReleaseVersionConsistency(meta), "; ")
+	if !strings.Contains(problems, "not a stable X.Y.Z version") {
+		t.Fatalf("prerelease VERSION was not rejected: %s", problems)
 	}
+}
 
-	// A wrong four-part value under a prerelease VERSION must be rejected.
-	meta.MSIXManifest = "<Identity Name=\"com.koyori.app\" Version=\"0.3.0.1\" />"
-	problems := checkReleaseVersionConsistency(meta)
-	if len(problems) == 0 || !strings.Contains(strings.Join(problems, "; "), "app_manifest.xml Version") {
-		t.Fatalf("MSIX prerelease mapping drift was accepted: %v", problems)
+func TestReleaseVersionConsistency_RejectsLeadingZeroesAndWhitespace(t *testing.T) {
+	for _, version := range []string{
+		"01.2.3", "1.02.3", "1.2.03", " 1.2.3", "1.2.3 ",
+		"1.2.3\r", "1.2.3\n\n", "1.2.3\r\n\r\n",
+	} {
+		t.Run(fmt.Sprintf("%q", version), func(t *testing.T) {
+			meta := validMeta()
+			meta.Version = version
+			problems := strings.Join(checkReleaseVersionConsistency(meta), "; ")
+			if !strings.Contains(problems, "not a stable X.Y.Z version") {
+				t.Fatalf("VERSION %q was not rejected: %s", version, problems)
+			}
+		})
+	}
+}
+
+func TestReleaseVersionConsistency_RejectsWindowsInstallerOverflow(t *testing.T) {
+	for _, version := range []string{"256.0.0", "1.256.0", "1.2.65536", "18446744073709551616.0.0"} {
+		t.Run(version, func(t *testing.T) {
+			meta := validMeta()
+			meta.Version = version + "\n"
+			problems := strings.Join(checkReleaseVersionConsistency(meta), "; ")
+			if !strings.Contains(problems, "exceeds Windows installer limits") {
+				t.Fatalf("VERSION %q was not rejected: %s", version, problems)
+			}
+		})
 	}
 }
 
