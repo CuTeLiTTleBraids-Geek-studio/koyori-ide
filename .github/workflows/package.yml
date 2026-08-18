@@ -96,7 +96,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.4"
           cache: true
 
       - name: Set up Node.js
@@ -158,7 +158,7 @@ jobs:
           test -s bin/koyori-ide
           expected_arch="${{ matrix.arch }}"
           if [ "$expected_arch" = "amd64" ]; then expected_arch="x86_64"; fi
-          lipo -verify_arch "$expected_arch" "$app_binary"
+          lipo "$app_binary" -verify_arch "$expected_arch"
           [ "$(lipo -archs "$app_binary")" = "$expected_arch" ] || {
             echo "::error::macOS app must contain exactly the ${expected_arch} slice"
             exit 1
@@ -218,7 +218,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.4"
           cache: true
 
       - name: Set up Node.js
@@ -322,7 +322,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.4"
           cache: true
 
       - name: Set up Node.js
@@ -347,7 +347,7 @@ jobs:
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
       - name: Install WiX Toolset v3
-        run: choco install wixtoolset --version=3.14.1 -y --no-progress
+        run: choco install wixtoolset --version=3.14.1.20250415 -y --no-progress --allow-downgrade
 
       - name: Run Windows build script (exe + MSI installer)
         shell: pwsh

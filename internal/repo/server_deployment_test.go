@@ -12,7 +12,7 @@ func TestServerDeploymentRequiresAuthenticatedBoundary(t *testing.T) {
 	if !strings.Contains(goMod, "github.com/wailsapp/wails/v3 v3.0.0-beta.8") {
 		t.Error("server deployment must use Wails beta.8+, whose server WebSocket transport enforces same-origin checks")
 	}
-	dockerfile := readRepositoryFile(t, "../../build/docker/Dockerfile.server")
+	dockerfile := strings.ReplaceAll(readRepositoryFile(t, "../../build/docker/Dockerfile.server"), "\r\n", "\n")
 	for _, required := range []string{
 		"FROM golang:1.25-alpine@sha256:",
 		"FROM node:20.19-alpine@sha256:",

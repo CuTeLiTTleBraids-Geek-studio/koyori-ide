@@ -235,7 +235,7 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		t.Error("release build/final checkout must use the peeled quality-gate commit")
 	}
 	macArchitecture := steps["Verify macOS bundle architecture"]
-	for _, requirement := range []string{"file -b", "wrong architecture", "lipo -verify_arch", "lipo -archs", `expected_arch="${GOARCH}"`, "single ${expected_arch} slice"} {
+	for _, requirement := range []string{"file -b", "wrong architecture", "-verify_arch", "lipo -archs", `expected_arch="${GOARCH}"`, "single ${expected_arch} slice"} {
 		if !strings.Contains(macArchitecture, requirement) {
 			t.Errorf("macOS architecture verification is missing %q", requirement)
 		}
@@ -357,10 +357,10 @@ func TestPackageWorkflowCoversArtifactInputs(t *testing.T) {
 	for _, requirement := range []string{
 		"create-dmg/archive/refs/tags/v1.3.0.tar.gz",
 		"c50d2bc97c3d6292642bac55f530d247eaf4bf65ee605f26b4caf339383e381c",
-		"choco install wixtoolset --version=3.14.1",
+		"choco install wixtoolset --version=3.14.1.20250415",
 		"app_binary=bin/koyori-ide.app/Contents/MacOS/koyori-ide",
 		"test -s bin/koyori-ide",
-		"lipo -verify_arch",
+		"-verify_arch",
 		"macOS app must contain exactly the ${expected_arch} slice",
 		"Expected exactly one non-empty macOS DMG",
 		`version="$(bash scripts/read-release-version.sh VERSION)"`,

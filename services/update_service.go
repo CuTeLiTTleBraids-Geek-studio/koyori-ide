@@ -352,9 +352,10 @@ func selectUpdateAsset(assets []githubReleaseAsset, goos, goarch string) (github
 		// distribution spelling (x86_64/aarch64).
 		debianArch := goarch
 		rpmArch := goarch
-		if goarch == "amd64" {
+		switch goarch {
+		case "amd64":
 			rpmArch = "x86_64"
-		} else if goarch == "arm64" {
+		case "arm64":
 			rpmArch = "aarch64"
 		}
 		suffixes = append(suffixes,
