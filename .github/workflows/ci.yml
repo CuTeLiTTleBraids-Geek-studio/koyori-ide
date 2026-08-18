@@ -149,7 +149,7 @@ jobs:
       # `flatted/golang`) and the build/android + build/ios scaffolding — not
       # our code to lint.
       - name: Vet
-        run: go vet ./services/... . ./internal/repo/...
+        run: go vet ./services/... . ./internal/repo/... ./build/docker/server-gateway/...
 
       - name: Build
         # Output to bin/ (gitignored): on Windows `go build .` would leave
@@ -177,7 +177,7 @@ jobs:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           KOYORI_DISABLE_KEYCHAIN: "1"
-        run: go test -race ./services/... . ./internal/repo/... -count=1
+        run: go test -race ./services/... . ./internal/repo/... ./build/docker/server-gateway/... -count=1
 
       # Compiles and exercises the test-only loopback hook (internal/e2e) on
       # every supported source platform. This is not a packaged artifact run.
@@ -227,7 +227,7 @@ jobs:
           version: v2.12.2
           # Scope to project packages: root + services. Avoids traversing
           # frontend/node_modules and build/ scaffolding.
-          args: --timeout=10m ./services/... .
+          args: --timeout=10m ./services/... . ./internal/repo/... ./build/docker/server-gateway/...
       # P3: gofmt + goimports format check. golangci-lint intentionally
       # does not enable gofmt/goimports linters (they produce noisy diffs
       # on existing code). Instead we run a dedicated formatter pass that
@@ -235,7 +235,7 @@ jobs:
       # files that would be changed; a non-empty list means failure.
       - name: Check formatting (gofmt)
         run: |
-          unformatted=$(gofmt -l services/ *.go 2>&1)
+          unformatted=$(gofmt -l services/ internal/repo/ build/docker/server-gateway/ *.go 2>&1)
           if [ -n "$unformatted" ]; then
             echo "The following files are not gofmt-formatted:"
             echo "$unformatted"
@@ -246,7 +246,7 @@ jobs:
       - name: Check imports (goimports)
         run: |
           go install golang.org/x/tools/cmd/goimports@v0.48.0
-          unformatted=$(goimports -l services/ *.go 2>&1)
+          unformatted=$(goimports -l services/ internal/repo/ build/docker/server-gateway/ *.go 2>&1)
           if [ -n "$unformatted" ]; then
             echo "The following files have goimports issues:"
             echo "$unformatted"
@@ -399,9 +399,9 @@ jobs:
         run: npm ci --registry=https://registry.npmjs.org
         working-directory: frontend
 
-      # Match the wails v3 version pinned in go.mod (v3.0.0-beta.5).
+      # Match the wails v3 version pinned in go.mod (v3.0.0-beta.8).
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
       - name: Wails build
         run: wails3 build -tags desktop,production
@@ -456,7 +456,7 @@ jobs:
       # Must match the wails v3 version pinned in go.mod. check-wails-pin.mjs
       # enforces that this stays in sync.
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
 
       - name: Install real Go language server fixture dependency
         run: go install golang.org/x/tools/gopls@v0.21.1
@@ -500,53 +500,82 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - name: Govulncheck
-        run: govulncheck ./services/... .
+        run: govulncheck ./services/... . ./build/docker/server-gateway/...
 
-  # G-PERF-04: Performance comparison. Runs Go benchmarks on the services
-  # package and uses benchstat to report statistical differences from a
-  # committed baseline; this command does not enforce a percentage threshold. The
-  # baseline (.benchmark-baseline.txt) is committed at the repo root; if
-  # absent, the current run is recorded as the new baseline (no failure).
+  # G-PERF-04: Performance comparison. Runs Go benchmarks for the base commit
+  # and the candidate on the same runner, then fails on a statistically
+  # significant >20% regression in time, bytes, or allocations. Comparing the
+  # two commits on one runner avoids a stale or machine-specific committed
+  # baseline and never bootstraps a result from the candidate itself.
   perf-benchmark:
     name: Performance Benchmark
     runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25'
           cache: true
-      - name: Run benchmarks
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20.19'
+      - name: Test benchmark regression gate
+        run: node --test scripts/check-benchmark-regressions.test.mjs
+      - name: Prepare base-commit worktree
+        shell: bash
         run: |
-          go test -bench=. -benchmem -count=5 ./services/... 2>&1 | tee benchmark_results.txt
+          set -euo pipefail
+          base_sha="${BASE_SHA:-}"
+          if [[ ! "$base_sha" =~ ^[0-9a-fA-F]{40}$ ]] || [[ "$base_sha" =~ ^0+$ ]]; then
+            base_sha="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          fi
+          if [[ ! "$base_sha" =~ ^[0-9a-fA-F]{40}$ ]] || [[ "$base_sha" =~ ^0+$ ]]; then
+            echo "::error::Unable to resolve a distinct base commit for benchmark comparison"
+            exit 1
+          fi
+          git cat-file -e "$base_sha^{commit}"
+          base_dir="$RUNNER_TEMP/koyori-benchmark-base"
+          git worktree add --detach "$base_dir" "$base_sha"
+          echo "BENCHMARK_BASE_DIR=$base_dir" >> "$GITHUB_ENV"
+          echo "BENCHMARK_BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+      - name: Run base-commit benchmarks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$BENCHMARK_BASE_DIR"
+          go test -run '^$' -bench=. -benchmem -count=10 ./services/... 2>&1 \
+            | tee "$GITHUB_WORKSPACE/benchmark_baseline.txt"
+      - name: Run candidate benchmarks
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -run '^$' -bench=. -benchmem -count=10 ./services/... 2>&1 \
+            | tee benchmark_results.txt
       - name: Store benchmark results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-results
-          path: benchmark_results.txt
-      - name: Compare with baseline (if exists)
+          path: |
+            benchmark_baseline.txt
+            benchmark_results.txt
+      - name: Compare base and candidate
+        shell: bash
         run: |
-          # Check if baseline exists
-          if [ -f .benchmark-baseline.txt ]; then
-            echo "Comparing against baseline..."
-            # GOAL-P1-06: benchstat output is parsed for ±20% or worse regressions.
-            # Any line with a delta outside that window causes this step to fail so
-            # CI blocks the PR rather than silently accepting a significant slowdown.
-            output=$(go run golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d .benchmark-baseline.txt benchmark_results.txt 2>&1)
-            echo "$output"
-            # Fail on statistically significant regressions (indicated by a + delta
-            # that exceeds the threshold). benchstat marks significant changes with
-            # a p-value; lines without a ~ or ± symbol or containing +[0-9] indicate
-            # potential regressions. We use a simple heuristic: any tilde-free line
-            # with a positive delta of more than 20% exits non-zero.
-            if echo "$output" | grep -E '\+[2-9][0-9]\.[0-9]+%|\+[0-9]{3,}\.[0-9]+%' | grep -v '~'; then
-              echo "FAIL: significant performance regression detected (>20%)"
-              exit 1
-            fi
-            echo "Performance within acceptable bounds (no >20% regression detected)"
-          else
-            echo "No baseline found, using current results as baseline"
-            cp benchmark_results.txt .benchmark-baseline.txt
+          set -euo pipefail
+          go run golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d \
+            -format csv benchmark_baseline.txt benchmark_results.txt > benchmark_stats.csv
+          node scripts/check-benchmark-regressions.mjs benchmark_stats.csv
+      - name: Remove base worktree
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${BENCHMARK_BASE_DIR:-}" ]; then
+            git worktree remove --force "$BENCHMARK_BASE_DIR" || true
           fi
 
   # P1/G19: the shared gate scans the official registry and verifies lockfile
@@ -566,6 +595,8 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies (lockfile + official registry)
         run: npm ci --registry=https://registry.npmjs.org
+      - name: Test dependency governance failure paths
+        run: node ../scripts/npm-audit-gate.test.mjs
       # G19: official-registry audit (high+) + lockfile stability, same gate
       # release.yml uses; a mirror that cannot audit does not count as zero.
       - name: Dependency governance gate (audit + lockfile stability)
