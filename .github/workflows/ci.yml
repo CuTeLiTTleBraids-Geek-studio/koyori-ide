@@ -552,13 +552,16 @@ jobs:
         run: |
           set -euo pipefail
           cd "$BENCHMARK_BASE_DIR"
-          go test -run '^$' -bench=. -benchmem -count=10 ./services/... 2>&1 \
+          # Keep module/toolchain diagnostics on stderr. benchstat treats
+          # arbitrary "key: value" lines as configuration and would split
+          # the base and candidate into unrelated tables.
+          go test -run '^$' -bench=. -benchmem -count=10 ./services/... \
             | tee "$GITHUB_WORKSPACE/benchmark_baseline.txt"
       - name: Run candidate benchmarks
         shell: bash
         run: |
           set -euo pipefail
-          go test -run '^$' -bench=. -benchmem -count=10 ./services/... 2>&1 \
+          go test -run '^$' -bench=. -benchmem -count=10 ./services/... \
             | tee benchmark_results.txt
       - name: Store benchmark results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

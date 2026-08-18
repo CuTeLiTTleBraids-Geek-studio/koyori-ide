@@ -540,6 +540,9 @@ func TestPerformanceWorkflowDoesNotBootstrapItsOwnBaseline(t *testing.T) {
 			t.Errorf("performance workflow still contains self-bootstrapping baseline logic %q", forbidden)
 		}
 	}
+	if strings.Contains(text, "-benchmem -count=10 ./services/... 2>&1") {
+		t.Error("performance workflow must keep Go diagnostics out of benchstat input")
+	}
 }
 
 func TestReleasePublishingIsSingleGatedJob(t *testing.T) {
