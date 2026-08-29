@@ -5,12 +5,18 @@ package services
 // 支持 4 个 provider：Slack / Discord / 飞书 / 企业微信。
 // 提供发送消息和 AI 主动通知；不提供 IM 入站能力。
 //
-// 安全模型（G-SEC-07 / G-SEC-12）：
+// 安全模型（G-SEC-07 / G-SEC-12 / P19 P0-02）：
 //   - Bot Token / Webhook URL 用 EncryptSecret 加密存储（AES-256-GCM / DPAPI）
 //     LoadConfig 不回传明文，仅返回 configured 布尔（G-SEC-07）。
-//   - IM 发送视同 Restricted 扩展能力，首次需审批（G-SEC-12）。
+//   - IM 发送视同 Restricted 扩展能力，首次需审批（G-SEC-12）；
+//     Webhook URL 变更即更换出站目的地，必须重新走原生同意边界。
 //   - 配置文件 0600 + atomicWriteJSON（G-SEC-09）。
 //   - 出站 HTTP 请求用 LimitReader 64KB 限制响应体（G-SEC-07）。
+//   - Webhook URL 保存时经 ValidateNonPrivateURL 强校验（拒绝私网/环回/
+//     链路本地/元数据地址），发送时经 SSRF 安全传输拨号复核（防 DNS
+//     rebinding），不跟随重定向；与 MCP/AI/HTTPClient 的 C-1 姿态一致。
+//   - wechat_work（企业微信群机器人）按官方规范经 `key` query 参数真实
+//     发送 token。
 //
 // 通知规则：事件 → 频道 → Markdown 模板（Step 5/7）。
 
@@ -20,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,15 +113,33 @@ type IMService struct {
 	approvalProof string
 }
 
+// newIMHTTPClient installs the production HTTP client for IM webhook
+// delivery. It is a package variable only so tests can point the service at
+// a local httptest fixture; the loopback refusal of the SSRF guard must
+// never be weakened outside tests (P19 P0-02, C-1 alignment).
+var newIMHTTPClient = func() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		// Webhook endpoints are fixed destinations: never follow redirects.
+		CheckRedirect: noRedirectPolicy,
+		// SSRF-safe transport re-validates the resolved IP at dial time,
+		// defeating DNS rebinding between URL validation and the request.
+		Transport: NewSSRFSafeTransport(),
+	}
+}
+
+// validateIMWebhookURL is the save-time URL policy for outbound webhooks.
+// Package variable only so fixture tests can accept loopback httptest URLs;
+// production uses ValidateNonPrivateURL (fail-closed on private/loopback).
+var validateIMWebhookURL = ValidateNonPrivateURL
+
 // NewIMService 创建服务。configDir 用于配置文件路径。
 func NewIMService(configDir string) *IMService {
 	svc := &IMService{
 		configDir: configDir,
 		cfgPath:   filepath.Join(configDir, "koyori-ide", "im.json"),
-		http: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		approve: nativeIMApproval,
+		http:      newIMHTTPClient(),
+		approve:   nativeIMApproval,
 	}
 	_ = svc.loadConfig()
 	return svc
@@ -241,19 +266,53 @@ func (s *IMService) saveConfigLocked() error {
 
 // UpdateConfig 更新配置并持久化（Step 1 / G-SEC-07 / G-SEC-09）。
 // 首次启用（Approved=false → true）需用户显式确认（G-SEC-12）。
+// Webhook URL 在保存阶段强校验（拒绝私网/环回/元数据目标）；任何 provider
+// 的 Webhook URL 发生变更即更换了出站目的地，撤销已批准状态并要求重新走
+// 原生同意边界（P19 P0-02）。
 func (s *IMService) UpdateConfig(cfg IMConfig) error {
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		if p.WebhookURL == "" {
+			continue
+		}
+		if _, err := validateIMWebhookURL(p.WebhookURL); err != nil {
+			return fmt.Errorf("provider %s webhook url rejected: %w", p.Name, err)
+		}
+	}
 	// Approval is a backend-owned capability. Renderer DTOs cannot grant it by
 	// setting Approved=true; the dedicated Approve flow is the only grant path.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	previous := cloneIMConfig(s.config)
+	previousProof := s.approvalProof
 	cfg.Approved = s.config.Approved
+	if imWebhookDestinationsChanged(previous.Providers, cfg.Providers) {
+		cfg.Approved = false
+		s.approvalProof = ""
+	}
 	s.config = cloneIMConfig(cfg)
 	if err := s.saveConfigLocked(); err != nil {
 		s.config = previous
+		s.approvalProof = previousProof
 		return err
 	}
 	return nil
+}
+
+// imWebhookDestinationsChanged reports whether any provider's outbound
+// webhook destination changed (edited URL, or a new provider carrying a
+// webhook). Provider identity is the user-chosen Name.
+func imWebhookDestinationsChanged(previous, next []IMProvider) bool {
+	previousURLs := make(map[string]string, len(previous))
+	for _, p := range previous {
+		previousURLs[p.Name] = p.WebhookURL
+	}
+	for _, p := range next {
+		if p.WebhookURL != "" && previousURLs[p.Name] != p.WebhookURL {
+			return true
+		}
+	}
+	return false
 }
 
 // IsApproved 返回 IM 集成是否已获用户批准（G-SEC-12）。
@@ -366,6 +425,7 @@ func (s *IMService) buildSendPayload(providerType, channel, text string, attachm
 }
 
 // sendToProvider 通过 HTTP POST 发送到 provider Webhook（G-SEC-07：64KB 限制）。
+// 传输层为 SSRF 安全 client（拨号复核 + 不跟随重定向，P19 P0-02）。
 func (s *IMService) sendToProvider(ctx context.Context, provider *IMProvider, payload map[string]interface{}) error {
 	if provider.WebhookURL == "" {
 		return fmt.Errorf("provider %s has no webhook URL configured: %w", provider.Name, ErrInvalidInput)
@@ -388,7 +448,16 @@ func (s *IMService) sendToProvider(ctx context.Context, provider *IMProvider, pa
 		case "feishu":
 			req.Header.Set("Authorization", "Bearer "+provider.BotToken)
 		case "wechat_work":
-			// 企微通过 query 参数 token，此处略；生产环境需补充。
+			// 企业微信群机器人按官方规范经 `key` query 参数认证：把配置的
+			// token 真实放入请求 URL（覆盖用户可能手填的旧 key）。
+			u, perr := url.Parse(provider.WebhookURL)
+			if perr != nil {
+				return fmt.Errorf("parse im webhook url: %w", perr)
+			}
+			q := u.Query()
+			q.Set("key", provider.BotToken)
+			u.RawQuery = q.Encode()
+			req.URL = u
 		}
 	}
 	resp, err := s.http.Do(req)
@@ -399,8 +468,10 @@ func (s *IMService) sendToProvider(ctx context.Context, provider *IMProvider, pa
 	// G-SEC-07：限制响应体 64KB，防止内存爆炸。
 	limited := io.LimitReader(resp.Body, 64*1024)
 	respBody, _ := io.ReadAll(limited)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("im provider returned %d: %s", resp.StatusCode, string(respBody))
+	if resp.StatusCode >= 300 {
+		// 3xx 一律失败：client 不跟随重定向（防止把 token/payload 带到
+		// 非预期目的地），2xx 之外的任何状态都不算成功。
+		return fmt.Errorf("im provider returned %d (redirects are not followed): %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }
