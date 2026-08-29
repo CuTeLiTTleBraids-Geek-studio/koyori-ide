@@ -8,7 +8,7 @@
  *   - corrupt package (truncated/not a zip)
  *   - missing entrypoint (declared main absent from archive)
  *   - unknown API namespace (activation would throw)
- *   - missing permission declaration (blocked)
+ *   - missing permission declaration (inferred, not blocked)
  *   - duplicate identity
  *   - empty corpus
  *   - unsafe zip entry names (path traversal) fail closed
@@ -212,18 +212,19 @@ test("unknown API namespace is unsupported (would throw on activation)", async (
   });
 });
 
-test("missing permission declaration is blocked, not supported", async (t) => {
+test("missing permission declaration is inferred, not blocked", async (t) => {
   await withTempDir(async (dir) => {
     const filePath = await writeVsix(dir, "noperm.vsix", [
       {
         name: "extension/package.json",
         data: Buffer.from(manifestJson({ koyoriIde: undefined })),
       },
-      { name: "extension/dist/main.js", data: Buffer.from("module.exports = { activate() {} };") },
+      { name: "extension/dist/main.js", data: Buffer.from("const vscode = require('vscode');\nmodule.exports = { activate() {} };") },
     ]);
     const record = await analyzePackage(filePath);
-    assert.equal(record.disposition, "blocked");
-    assert.match(record.reason, /no koyoriIde\.permissions declaration/);
+    assert.equal(record.disposition, "supported");
+    assert.equal(record.inferredPermissions, true);
+    assert.match(record.reason, /permissions inferred/);
   });
 });
 

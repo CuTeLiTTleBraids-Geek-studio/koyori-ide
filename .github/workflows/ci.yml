@@ -49,6 +49,8 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Check repository text encoding
         run: node scripts/check-encoding.mjs
+      - name: Check for personal filesystem paths
+        run: node scripts/check-personal-paths.mjs
       - name: Packaged E2E driver source contract (not an artifact run)
         shell: bash
         run: |

@@ -43,6 +43,7 @@ const steps = [
   { name: "node scripts/check-wails-pin.mjs", command: node, args: ["scripts/check-wails-pin.mjs"], cwd: root },
   { name: "node scripts/check-doc-links.mjs", command: node, args: ["scripts/check-doc-links.mjs"], cwd: root },
   { name: "node scripts/check-doc-numbers.mjs", command: node, args: ["scripts/check-doc-numbers.mjs"], cwd: root },
+  { name: "node scripts/check-personal-paths.mjs", command: node, args: ["scripts/check-personal-paths.mjs"], cwd: root },
 ];
 
 let failed = false;
