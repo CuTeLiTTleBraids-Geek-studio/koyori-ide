@@ -27,11 +27,13 @@ tasks:
       - node scripts/generate-bindings.mjs
 
   bindings:check:
-    summary: Verify the complete generated tree, export policy, and drift failures
+    summary: Verify the generated tree, export policy, drift, and import layering (P19 P1-07)
     dir: .
     cmds:
       - node --test scripts/wails-bindings.test.mjs
+      - node --test scripts/check-bindings-imports.test.mjs
       - node scripts/check-bindings.mjs
+      - node scripts/check-bindings-imports.mjs
 
   docs:check:
     summary: Verify README numbers match code constants (MAX_TOOL_CALLS)

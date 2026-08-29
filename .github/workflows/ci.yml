@@ -51,6 +51,8 @@ jobs:
         run: node scripts/check-encoding.mjs
       - name: Check for personal filesystem paths
         run: node scripts/check-personal-paths.mjs
+      - name: Enforce bindings import layering (P19 P1-07)
+        run: node scripts/check-bindings-imports.mjs
       - name: Check single package manager (npm only)
         run: node scripts/check-package-manager.mjs
       - name: Packaged E2E driver source contract (not an artifact run)
@@ -86,7 +88,7 @@ jobs:
       - name: Verify Wails pin consistency
         run: node scripts/check-wails-pin.mjs
       - name: Test pin, entrypoint ownership, drift, FQN, and forbidden-export failures
-        run: node --test scripts/wails-bindings.test.mjs
+        run: node --test scripts/wails-bindings.test.mjs scripts/check-bindings-imports.test.mjs
       - name: Generate untracked bindings with the pinned CLI
         run: node scripts/generate-bindings.mjs
       - name: Check generated bindings
