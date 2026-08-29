@@ -50,10 +50,6 @@ const requiredExports = {
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/agentservice.ts": [
     "ExecCommand",
     "CheckCommand",
-    "RequestCommandApproval",
-    "ExecuteApprovedCommand",
-    "RequestWriteApproval",
-    "ExecuteApprovedWrite",
   ],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/taskservice.ts": [
     "LoadTasks",

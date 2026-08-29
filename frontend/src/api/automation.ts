@@ -482,10 +482,6 @@ export const workflowService = {
 	): Promise<AgentToolExecutionResult> => normalizeAgentToolExecutionResult(
 		await AgentServiceBindings.ExecuteAgentTool(request),
 	),
-  requestCommandApproval: (command: string, cwd: string) =>
-    AgentServiceBindings.RequestCommandApproval(command, cwd) as Promise<string>,
-  executeApprovedCommand: (command: string, cwd: string, approvalToken: string) =>
-    AgentServiceBindings.ExecuteApprovedCommand(command, cwd, approvalToken) as Promise<ExecResult>,
   checkCommand: (command: string) =>
     AgentServiceBindings.CheckCommand(command) as Promise<CommandCheck>,
   // GOAL-P1-02: the tool-call budget is enforced in the backend. These two
@@ -496,11 +492,6 @@ export const workflowService = {
     AgentServiceBindings.GetToolBudget() as Promise<ToolBudgetStatus>,
   startNewToolBudgetEpoch: (limit: number) =>
     AgentServiceBindings.StartNewToolBudgetEpoch(limit) as Promise<ToolBudgetStatus>,
-  // G-02: write-file capability — mirrors requestCommandApproval/executeApprovedCommand.
-  requestWriteApproval: (targetPath: string, contentHash: string, size: number) =>
-    AgentServiceBindings.RequestWriteApproval(targetPath, contentHash, size) as Promise<string>,
-  executeApprovedWrite: (targetPath: string, content: string, token: string) =>
-    AgentServiceBindings.ExecuteApprovedWrite(targetPath, content, token) as Promise<void>,
 };
 
 export interface AgentToolDefinition {

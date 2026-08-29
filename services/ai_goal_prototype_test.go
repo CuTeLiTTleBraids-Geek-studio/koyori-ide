@@ -215,14 +215,9 @@ func TestPrototypeOptInDoesNotBypassCommandApproval(t *testing.T) {
 	svc.SetPrototypeExecutionEnabled(true)
 	newPrototypeTestGoal(t, svc, "p5")
 
-	// The executor requests approval internally via RequestCommandApproval, so
-	// this must not panic or silently execute without a token. Either it obtains
-	// a backend token for the exact argv/cwd, or it errors; it must never run an
-	// unapproved command.
+	// The executor requests approval internally through the agentcore Runtime,
+	// so this must not panic or silently execute without a capability. Either it
+	// obtains a backend capability for the exact argv/cwd, or it errors; it must
+	// never run an unapproved command.
 	_ = svc.RunGoal("p5", nil, nil)
-
-	// Prove the approval path is still mandatory by attempting a forged token.
-	if _, err := agent.executeApprovedCommandLegacy("go env GOOS", root, "forged-token"); err == nil {
-		t.Fatal("ExecuteApprovedCommand accepted a forged token; prototype opt-in must not weaken approval")
-	}
 }

@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	crypto_rand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -114,18 +113,13 @@ type AgentService struct {
 	// mcpLister overrides mcpService for tool listing when non-nil
 	// (test injection). In production this is nil and mcpService is used.
 	mcpLister      mcpToolLister
-	approvalMu     sync.Mutex
-	approvals      map[string]commandApproval
 	rootGeneration uint64
 	approveCommand func(command, cwd string, risk RiskLevel) bool
 	// approveAI is a trusted host callback for workflow AI operations. It is
 	// intentionally separate from command approval so a prompt can never be
 	// reinterpreted as shell input at the approval boundary.
-	approveAI func(operation string) bool
-	// G-02: write-file approval (mirrors the command approval flow).
-	writeApprovalMu sync.Mutex
-	writeApprovals  map[string]writeApproval
-	approveWrite    func(targetPath string, size int64) bool
+	approveAI    func(operation string) bool
+	approveWrite func(targetPath string, size int64) bool
 	// GOAL-P1-02: backend-enforced tool-call budget. See agent_budget.go.
 	//
 	// Lazily initialized via ensureBudget because AgentService is constructed
@@ -142,19 +136,6 @@ type AgentService struct {
 	// single publication order, an older workflow/MCP/Skill snapshot can finish
 	// after a newer refresh and overwrite the authoritative ToolDef source.
 	catalogRefreshMu sync.Mutex
-}
-
-type commandApproval struct {
-	argv           []string
-	cwd            string
-	rootGeneration uint64
-	expiresAt      time.Time
-	// budgetEpoch binds this capability to the tool-budget epoch that issued it
-	// (GOAL-P1-02). Redemption re-checks it so a token minted before the user
-	// opened a new epoch cannot be spent afterwards, and vice versa. Without
-	// this, a caller could mint tokens up to the ceiling, ask the user to
-	// "continue", and then spend the old batch on top of the fresh allowance.
-	budgetEpoch uint64
 }
 
 // mcpToolLister abstracts MCP tool listing for caching (M-7) and test
@@ -292,6 +273,30 @@ func nativeCommandApproval(command, cwd string, risk RiskLevel) bool {
 	result := make(chan bool, 1)
 	dialog := app.Dialog.Question().SetTitle("Approve command execution").SetMessage(
 		fmt.Sprintf("Risk: %s\nWorking directory: %s\n\n%s", risk, cwd, command),
+	)
+	dialog.AddButton("Yes").SetAsDefault().OnClick(func() { result <- true })
+	dialog.AddButton("No").SetAsCancel().OnClick(func() { result <- false })
+	dialog.Show()
+	select {
+	case approved := <-result:
+		return approved
+	case <-time.After(5 * time.Minute):
+		return false
+	}
+}
+
+// nativeWriteApproval shows a native OS dialog asking the user to approve an
+// agent file write. It is the production value of AgentService.approveWrite
+// and the only surviving piece of the former write-approval pipeline (P19
+// P1-03: token minting/redeeming lives solely in the agentcore Runtime now).
+func nativeWriteApproval(targetPath string, size int64) bool {
+	app := application.Get()
+	if app == nil {
+		return false
+	}
+	result := make(chan bool, 1)
+	dialog := app.Dialog.Question().SetTitle("Approve file write").SetMessage(
+		fmt.Sprintf("Agent wants to write:\n%s\n(%d bytes)", targetPath, size),
 	)
 	dialog.AddButton("Yes").SetAsDefault().OnClick(func() { result <- true })
 	dialog.AddButton("No").SetAsCancel().OnClick(func() { result <- false })
@@ -747,133 +752,6 @@ func (s *AgentService) restoreWorkspaceRoot(root string) error {
 	return nil
 }
 
-// RequestCommandApproval creates a short-lived, single-use capability for a
-// specific command and working directory. Checking a command in the renderer
-// is only advisory; execution requires this backend-issued token.
-func (s *AgentService) RequestCommandApproval(command, cwd string) (string, error) {
-	return "", fmt.Errorf("use RequestAgentToolCapability with the run ToolDef: %w", ErrInvalidInput)
-}
-
-func (s *AgentService) requestCommandApprovalLegacy(command, cwd string) (string, error) {
-	check := s.CheckCommand(command)
-	if check.Blocked {
-		return "", fmt.Errorf("command blocked: %s", check.BlockReason)
-	}
-	if strings.TrimSpace(command) == "" {
-		return "", fmt.Errorf("command is required: %w", ErrInvalidInput)
-	}
-	lease, err := s.acquireWorkspaceLease()
-	if err != nil {
-		return "", err
-	}
-	resolvedCwd, err := lease.resolve(cwd)
-	if err != nil {
-		return "", err
-	}
-	generation := lease.generation
-	argv, err := parseCommand(command)
-	if err != nil {
-		return "", err
-	}
-	// GOAL-P1-02: fail before prompting when the budget is already spent.
-	//
-	// This pre-check is a UX affordance only — prompting the user and *then*
-	// refusing would be worse than refusing up front. It is deliberately not the
-	// enforcement point: two concurrent callers can both pass it. The atomic
-	// consume below is what actually bounds issuance.
-	if err := s.ensureBudget().precheck(); err != nil {
-		return "", err
-	}
-	if s.approveCommand == nil || !s.approveCommand(command, resolvedCwd, check.RiskLevel) {
-		return "", fmt.Errorf("command execution was not approved: %w", ErrNotAllowed)
-	}
-	if err := lease.validateCurrent(); err != nil {
-		return "", err
-	}
-	// GOAL-P1-02: consume atomically, after approval and before minting.
-	//
-	// Ordering is the contract for execution point 4: a declined approval must
-	// not spend budget (otherwise declining is punished), while an approved call
-	// must spend it before a token exists (otherwise a caller could obtain
-	// tokens beyond the ceiling and spend them later). Concurrent approvals
-	// serialize on the budget mutex, so N racing callers consume N distinct
-	// slots and the (limit+1)-th is refused.
-	budgetEpoch, err := s.ensureBudget().reserve()
-	if err != nil {
-		return "", err
-	}
-	raw := make([]byte, 32)
-	if _, err := crypto_rand.Read(raw); err != nil {
-		return "", fmt.Errorf("create approval token: %w", err)
-	}
-	token := hex.EncodeToString(raw)
-	s.approvalMu.Lock()
-	if s.approvals == nil {
-		s.approvals = make(map[string]commandApproval)
-	}
-	s.approvals[token] = commandApproval{
-		argv:           argv,
-		cwd:            resolvedCwd,
-		rootGeneration: generation,
-		budgetEpoch:    budgetEpoch,
-		expiresAt:      time.Now().Add(2 * time.Minute),
-	}
-	s.approvalMu.Unlock()
-	return token, nil
-}
-
-func (s *AgentService) consumeCommandApproval(token, command, cwd string) error {
-	if token == "" {
-		return fmt.Errorf("command approval is required: %w", ErrInvalidInput)
-	}
-	resolvedCwd, generation, err := s.validateCwdWithGeneration(cwd)
-	if err != nil {
-		return err
-	}
-	argv, err := parseCommand(command)
-	if err != nil {
-		return err
-	}
-	s.approvalMu.Lock()
-	approval, ok := s.approvals[token]
-	if ok {
-		delete(s.approvals, token)
-	}
-	s.approvalMu.Unlock()
-	argvMatches := len(approval.argv) == len(argv)
-	if argvMatches {
-		for i := range argv {
-			if approval.argv[i] != argv[i] {
-				argvMatches = false
-				break
-			}
-		}
-	}
-	if !ok || time.Now().After(approval.expiresAt) || !argvMatches || approval.cwd != resolvedCwd || approval.rootGeneration != generation {
-		return fmt.Errorf("invalid, expired, or mismatched command approval: %w", ErrInvalidInput)
-	}
-	// GOAL-P1-02 AC 3: a capability is bound to the budget epoch that issued it.
-	//
-	// Without this, a caller could mint tokens right up to the ceiling, ask the
-	// user to open a new epoch, and then redeem the stockpiled tokens on top of
-	// the fresh allowance — spending 2N calls for an N-call budget. The token is
-	// already deleted above, so a rejected cross-epoch token is also burned
-	// rather than left available for another attempt.
-	if approval.budgetEpoch != s.ensureBudget().currentEpoch() {
-		return fmt.Errorf(
-			"command approval was issued in a previous tool-budget epoch: %w",
-			ErrInvalidInput,
-		)
-	}
-	return nil
-}
-
-func (s *AgentService) discardCommandApproval(token string) {
-	s.approvalMu.Lock()
-	delete(s.approvals, token)
-	s.approvalMu.Unlock()
-}
-
 // setMCPService injects the MCP service so the agent can dispatch
 // mcp.<server>.<tool> tool calls (Plan 11 Task 4 Step 6). Without this,
 // MCP namespaced commands are treated as unknown and blocked.
@@ -1242,23 +1120,6 @@ func (s *AgentService) executionCommandTimeout() time.Duration {
 // duration, and risk level.
 func (s *AgentService) ExecCommand(command, cwd string) (ExecResult, error) {
 	return ExecResult{Command: command, Cwd: cwd, Blocked: true, BlockReason: "backend approval token required"}, fmt.Errorf("backend approval token required: %w", ErrInvalidInput)
-}
-
-// ExecuteApprovedCommand consumes a backend-issued approval and executes the
-// exact command it was issued for. The token cannot be replayed.
-func (s *AgentService) ExecuteApprovedCommand(command, cwd, approvalToken string) (ExecResult, error) {
-	return ExecResult{Command: command, Cwd: cwd, Blocked: true, BlockReason: "use ExecuteApprovedAgentTool"}, fmt.Errorf("use ExecuteApprovedAgentTool with the run ToolDef: %w", ErrInvalidInput)
-}
-
-func (s *AgentService) executeApprovedCommandLegacy(command, cwd, approvalToken string) (ExecResult, error) {
-	lease, err := s.acquireWorkspaceLease()
-	if err != nil {
-		return ExecResult{Command: command, Cwd: cwd, Blocked: true, BlockReason: err.Error()}, err
-	}
-	if err := s.consumeCommandApproval(approvalToken, command, cwd); err != nil {
-		return ExecResult{Command: command, Cwd: cwd, Blocked: true, BlockReason: err.Error()}, err
-	}
-	return s.executeCommandWithLease(command, cwd, lease)
 }
 
 func (s *AgentService) executeCommand(command, cwd string) (ExecResult, error) {

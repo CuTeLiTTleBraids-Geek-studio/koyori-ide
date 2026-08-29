@@ -32,12 +32,6 @@ func TestTaskServiceCommandApprovalRequiresUnifiedCore(t *testing.T) {
 	if _, err := service.RequestExecutionApproval(trustedTaskContext(), "no-core", "go version", ""); !errors.Is(err, ErrNotAllowed) {
 		t.Fatalf("RequestExecutionApproval error = %v, want ErrNotAllowed", err)
 	}
-	agent.approvalMu.Lock()
-	legacyApprovals := len(agent.approvals)
-	agent.approvalMu.Unlock()
-	if legacyApprovals != 0 {
-		t.Fatalf("request fell back to %d legacy command approvals", legacyApprovals)
-	}
 }
 
 func TestTaskServiceCommandUsesUnifiedCapabilityBudgetAndAudit(t *testing.T) {
@@ -66,12 +60,6 @@ func TestTaskServiceCommandUsesUnifiedCapabilityBudgetAndAudit(t *testing.T) {
 	if spent := agent.GetToolBudget().Spent; spent != 1 {
 		t.Fatalf("tool budget spent = %d, want 1", spent)
 	}
-	agent.approvalMu.Lock()
-	legacyApprovals := len(agent.approvals)
-	agent.approvalMu.Unlock()
-	if legacyApprovals != 0 {
-		t.Errorf("request populated %d legacy command approvals", legacyApprovals)
-	}
 
 	result, err := service.ExecuteApproved(trustedTaskContext(), "core-pipeline", "go version", "", token)
 	if err != nil {
@@ -79,12 +67,6 @@ func TestTaskServiceCommandUsesUnifiedCapabilityBudgetAndAudit(t *testing.T) {
 	}
 	if result.ExitCode != 0 || !strings.Contains(result.Stdout, "go version") {
 		t.Fatalf("unexpected task result: %+v", result)
-	}
-	agent.approvalMu.Lock()
-	legacyApprovals = len(agent.approvals)
-	agent.approvalMu.Unlock()
-	if legacyApprovals != 0 {
-		t.Errorf("execution used %d legacy command approvals", legacyApprovals)
 	}
 
 	logOutput := audit.String()

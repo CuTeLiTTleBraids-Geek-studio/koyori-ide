@@ -150,54 +150,6 @@ func TestExecCommand_RequiresBackendApproval(t *testing.T) {
 	}
 }
 
-func TestApprovedCommandTokenIsSingleUseAndBoundToArguments(t *testing.T) {
-	svc := NewAgentService()
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
-	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	token, err := svc.requestCommandApprovalLegacy("go version", "")
-	if err != nil {
-		t.Fatalf("request approval: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go env", ""); err == nil {
-		t.Fatal("expected changed argv to invalidate token")
-	}
-	if err := svc.consumeCommandApproval(token, "go version", ""); err == nil {
-		t.Fatal("expected mismatched attempt to consume token")
-	}
-
-	token, err = svc.requestCommandApprovalLegacy("go version", "")
-	if err != nil {
-		t.Fatalf("request second approval: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go   version", ""); err != nil {
-		t.Fatalf("equivalent parsed argv should be accepted: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go version", ""); err == nil {
-		t.Fatal("expected token replay to fail")
-	}
-}
-
-func TestApprovedCommandTokenInvalidatedByWorkspaceChange(t *testing.T) {
-	svc := NewAgentService()
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
-	root := t.TempDir()
-	if err := svc.configureWorkspaceRoot(root); err != nil {
-		t.Fatalf("set root: %v", err)
-	}
-	token, err := svc.requestCommandApprovalLegacy("go version", root)
-	if err != nil {
-		t.Fatalf("request approval: %v", err)
-	}
-	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
-		t.Fatalf("reset root: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go version", root); err == nil {
-		t.Fatal("expected workspace generation change to invalidate token")
-	}
-}
-
 func TestExecCommand_CapturesStderr(t *testing.T) {
 	svc := NewAgentService()
 	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
@@ -685,24 +637,15 @@ func TestAgentService_ValidateCwdEmptyRootFailsClosed(t *testing.T) {
 			t.Errorf("validateCwd(%q) accepted cwd without a workspace root", cwd)
 		}
 	}
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
-	if _, err := svc.requestCommandApprovalLegacy("go version", t.TempDir()); err == nil {
-		t.Fatal("approval accepted external cwd without a workspace root")
-	}
 	if _, err := svc.executeCommand("go version", t.TempDir()); err == nil {
 		t.Fatal("execution accepted external cwd without a workspace root")
 	}
 }
 
-func TestAgentService_RestoreEmptyRootFailsClosedAndInvalidatesToken(t *testing.T) {
+func TestAgentService_RestoreEmptyRootFailsClosed(t *testing.T) {
 	svc := NewAgentService()
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
 	root := t.TempDir()
 	if err := svc.setWorkspaceRoot(root); err != nil {
-		t.Fatal(err)
-	}
-	token, err := svc.requestCommandApprovalLegacy("go version", root)
-	if err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.restoreWorkspaceRoot(""); err != nil {
@@ -710,9 +653,6 @@ func TestAgentService_RestoreEmptyRootFailsClosedAndInvalidatesToken(t *testing.
 	}
 	if _, err := svc.validateCwd(root); err == nil {
 		t.Fatal("restored empty root allowed an external cwd")
-	}
-	if err := svc.consumeCommandApproval(token, "go version", root); err == nil {
-		t.Fatal("root restoration did not invalidate the approval token")
 	}
 }
 

@@ -124,20 +124,6 @@ func TestGitService_init_fails_when_workspace_root_is_empty(t *testing.T) {
 	}
 }
 
-func TestAgentService_approval_fails_when_workspace_root_is_empty(t *testing.T) {
-	// Given
-	service := NewAgentService()
-	t.Cleanup(func() { _ = service.Close() })
-
-	// When
-	_, err := service.requestCommandApprovalLegacy("go version", t.TempDir())
-
-	// Then
-	if err == nil {
-		t.Fatal("agent command approval succeeded without an active workspace")
-	}
-}
-
 func TestTerminalService_start_fails_when_workspace_root_is_empty(t *testing.T) {
 	// Given
 	service := NewTerminalService()

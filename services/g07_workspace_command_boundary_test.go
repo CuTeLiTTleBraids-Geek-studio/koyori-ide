@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -59,9 +58,8 @@ func TestG07CommandEntrypointsRejectEmptySharedWorkspace(t *testing.T) {
 
 	agent := NewAgentServiceWithWorkspaceContext(ctx)
 	t.Cleanup(func() { _ = agent.Close() })
-	agent.approveCommand = func(string, string, RiskLevel) bool { return true }
-	if _, err := agent.requestCommandApprovalLegacy("go version", outside); err == nil {
-		t.Fatal("agent command approval accepted an empty shared workspace")
+	if _, err := agent.executeCommand("go version", outside); err == nil {
+		t.Fatal("agent command execution accepted an empty shared workspace")
 	}
 }
 
@@ -103,8 +101,7 @@ func TestG07CommandEntrypointsRejectWorkspaceEscape(t *testing.T) {
 
 	agent := NewAgentServiceWithWorkspaceContext(ctx)
 	t.Cleanup(func() { _ = agent.Close() })
-	agent.approveCommand = func(string, string, RiskLevel) bool { return true }
-	if _, err := agent.requestCommandApprovalLegacy("go version", outside); err == nil {
+	if _, err := agent.executeCommand("go version", outside); err == nil {
 		t.Fatal("agent accepted a working directory outside the workspace")
 	}
 }
@@ -179,24 +176,6 @@ func TestG07CommandEntrypointsRejectWorkspaceGenerationChangeBeforeStart(t *test
 		svc := NewTerminalServiceWithWorkspaceContext(ctx)
 		svc.beforeWorkspaceCommandStart = func() { setWorkspaceContextRoot(t, ctx, rootB) }
 		err := svc.StartSession("generation", rootA, "")
-		assertNotAllowed(t, err)
-	})
-
-	t.Run("agent", func(t *testing.T) {
-		ctx := NewWorkspaceContext()
-		setWorkspaceContextRoot(t, ctx, rootA)
-		svc := NewAgentServiceWithWorkspaceContext(ctx)
-		t.Cleanup(func() { _ = svc.Close() })
-		svc.approveCommand = func(string, string, RiskLevel) bool { return true }
-		token, err := svc.requestCommandApprovalLegacy("go version", rootA)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var once sync.Once
-		svc.beforeWorkspaceCommandStart = func() {
-			once.Do(func() { setWorkspaceContextRoot(t, ctx, rootB) })
-		}
-		_, err = svc.executeApprovedCommandLegacy("go version", rootA, token)
 		assertNotAllowed(t, err)
 	})
 }
@@ -317,19 +296,4 @@ func TestG07ToolchainTargetsAreBoundToSharedWorkspace(t *testing.T) {
 	if err != nil || state.Current != host || state.Overridden {
 		t.Fatalf("reset target failed: state=%+v err=%v", state, err)
 	}
-}
-
-func TestG07AgentApprovalRejectsWorkspaceChangeDuringNativePrompt(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	ctx := NewWorkspaceContext()
-	setWorkspaceContextRoot(t, ctx, rootA)
-	svc := NewAgentServiceWithWorkspaceContext(ctx)
-	t.Cleanup(func() { _ = svc.Close() })
-	svc.approveCommand = func(string, string, RiskLevel) bool {
-		setWorkspaceContextRoot(t, ctx, rootB)
-		return true
-	}
-	_, err := svc.requestCommandApprovalLegacy("go version", rootA)
-	assertNotAllowed(t, err)
 }

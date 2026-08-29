@@ -25,15 +25,11 @@ vi.mock("@/api/services", () => ({
 			metadata: {},
 			usage: { unitId: "u1", sessionId: "chat-test", unitKind: "tool", operation: "read", cost: 0, costBasis: "not-applicable", estimated: false, success: true },
 		}),
-    requestCommandApproval: vi.fn().mockResolvedValue("approval-token"),
-    executeApprovedCommand: vi.fn(),
     checkCommand: vi.fn(),
     // GOAL-P1-02: budget methods added to the facade — mock so refreshToolBudget
     // does not throw during tests that set toolCallCount directly.
     getToolBudget: vi.fn().mockResolvedValue({ spent: 0, limit: 20, remaining: 20, exhausted: false, timedOut: false, epoch: 1, startedAt: "", expiresAt: "" }),
     startNewToolBudgetEpoch: vi.fn(),
-    requestWriteApproval: vi.fn().mockResolvedValue("write-token"),
-    executeApprovedWrite: vi.fn(),
   },
   aiService: {
     getAgentSystemPrompt: vi.fn(),
@@ -523,8 +519,6 @@ describe("agent store", () => {
 				toolId: "write",
 				arguments: { path: "out.ts", content: "console.log('hi');" },
 			}));
-			expect(agentService.requestWriteApproval).not.toHaveBeenCalled();
-			expect(agentService.executeApprovedWrite).not.toHaveBeenCalled();
       expect(fileService.writeFile).not.toHaveBeenCalled();
       expect(out).toContain("Wrote out.ts");
     });
@@ -543,7 +537,6 @@ describe("agent store", () => {
 
       await expect(executeToolCall(tc)).rejects.toThrow(/not approved/);
 			expect(agentService.executeAgentTool).toHaveBeenCalledTimes(1);
-			expect(agentService.executeApprovedWrite).not.toHaveBeenCalled();
       expect(fileService.writeFile).not.toHaveBeenCalled();
     });
 
@@ -704,8 +697,6 @@ describe("agent store", () => {
 			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
 				toolId: "run", arguments: { command: "go test" },
 			}));
-			expect(agentService.requestCommandApproval).not.toHaveBeenCalled();
-			expect(agentService.executeApprovedCommand).not.toHaveBeenCalled();
       expect(out).toContain("Ran: go test");
       expect(out).toContain("Exit code: 0");
       expect(out).toContain("stdout:");
