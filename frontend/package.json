@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.2.0",
   "type": "module",
+  "packageManager": "npm@11.16.0",
+  "overrides": {
+    "nanoid": "^3.3.18"
+  },
   "scripts": {
     "bindings:generate": "node ../scripts/generate-bindings.mjs",
     "predev": "npm run bindings:generate",
@@ -20,7 +24,8 @@
     "pretest:coverage": "npm run bindings:generate",
     "test:coverage": "vitest run --coverage",
     "prelint": "npm run bindings:generate",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
@@ -43,15 +48,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
-    "@types/dompurify": "^3.0.5",
-    "@types/marked": "^5.0.2",
     "@vitejs/plugin-vue": "^6.0.0",
     "@vitest/coverage-v8": "^4.1.9",
     "@vue/test-utils": "^2.4.11",
     "eslint": "^9.18.0",
     "eslint-plugin-vue": "^9.32.0",
     "globals": "^15.14.0",
-    "jest": "30.2.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.9.6",
     "typescript": "^5.6.0",
