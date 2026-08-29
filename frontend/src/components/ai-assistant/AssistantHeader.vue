@@ -2,7 +2,7 @@
 // Koyori IDE 组件 · Assistant Header。
 // 喵，这是 Assistant Header，负责 Koyori IDE 的界面呈现喵~
 // Plan 11 Task 1 — AI 助手独立页面顶部 Header。
-// 模式切换（Chat/Plan/Goal/Agent）、当前模型显示、返回编辑器按钮。
+// Mode switcher exposes only workflows with a complete input path.
 // Persona 选择器在 Task 8 接入；模型 dropdown 在 Task 12 接入完整路由。
 import { useI18n } from "@/lib/i18n";
 import { aiAssistantState, switchMode } from "@/stores/aiAssistant";
@@ -13,7 +13,7 @@ import { useRouter } from "vue-router";
 const { t } = useI18n();
 const router = useRouter();
 
-const modes: AiMode[] = ["chat", "plan", "goal", "agent"];
+const modes: AiMode[] = ["chat", "goal", "agent"];
 
 function handleBack(): void {
   void router.push("/editor");
@@ -53,7 +53,7 @@ function handleBack(): void {
   justify-content: space-between;
   padding: 8px 16px;
   border-bottom: 1px solid var(--color-border-subtle, #2a2a2a);
-  background: var(--color-bg-surface, #1e1e1e);
+  background: var(--color-bg-surface, #fafafc);
   flex-shrink: 0;
 }
 .ai-header__modes {

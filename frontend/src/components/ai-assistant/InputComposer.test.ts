@@ -7,8 +7,8 @@
  *   - Image paste → image chip via FileReader (Step 3).
  *   - Code block paste → codeblock chip with detected language (Step 4).
  *   - detectLanguage identifies Go/TypeScript/Vue/Python (Step 4).
- *   - estimateTokensLocal blends CJK + ASCII heuristics (Step 9).
- *   - selectSlash switches mode for /plan, /goal, /agent (Step 6).
+ *   - selectSlash switches mode for /goal and /agent (Step 6).
+ *   - Legacy /plan input is not exposed and never creates an empty plan.
  *   - selectSlash clears messages for /clear (Step 6).
  *   - contextChips preview row + remove button (Step 8).
  *   - tokenCount includes text + chips content (Step 9).
@@ -27,6 +27,7 @@ const {
   storeFnsMock,
   mcpMock,
   skillsMock,
+	agentStateMock,
 } = vi.hoisted(() => ({
   aiStateMock: {
     messages: [] as Array<{ role: string; content: string }>,
@@ -68,7 +69,6 @@ const {
         tool: string;
         description: string;
         riskLevel: string;
-        autoApproved: boolean;
       }>,
     },
     refresh: vi.fn(),
@@ -96,6 +96,7 @@ const {
     activate: vi.fn(async () => true),
     skillsState: { error: null as string | null },
   },
+	agentStateMock: { sessionId: "chat-test" },
 }));
 
 // Mock @/lib/i18n to cut the @/stores/app → @/lib/monaco-themes → monaco-editor
@@ -119,7 +120,7 @@ vi.mock("@/stores/ai", () => ({
 vi.mock("@/stores/aiAssistant", () => ({
   aiAssistantState: aiAssistantStateMock,
   switchMode: vi.fn((mode: string) => {
-    aiAssistantStateMock.mode = mode;
+    aiAssistantStateMock.mode = mode === "plan" ? "chat" : mode;
   }),
 }));
 
@@ -144,6 +145,11 @@ vi.mock("@/stores/skills", () => ({
   loadSkills: skillsMock.load,
   activateSkill: skillsMock.activate,
   skillsState: skillsMock.skillsState,
+}));
+
+vi.mock("@/stores/agent", () => ({
+	agentState: agentStateMock,
+	ensureAgentSession: vi.fn(() => agentStateMock.sessionId),
 }));
 
 // prompt-5 Task D / BUG-M2: implementation uses ElMessageBox.confirm, not window.confirm.
@@ -199,7 +205,6 @@ interface ExposedVM {
     tool: string;
     description: string;
     riskLevel: string;
-    autoApproved: boolean;
   }>;
   filteredSkills: Array<{
     id: string;
@@ -271,6 +276,7 @@ function vmOf(w: ReturnType<typeof mountComposer>): ExposedVM {
 describe("InputComposer (Plan 11 Task 3)", () => {
   beforeEach(() => {
     storeFnsMock.sendMessage.mockReset();
+    storeFnsMock.sendMessage.mockResolvedValue(true);
     storeFnsMock.stopGeneration.mockReset();
     storeFnsMock.addContextChip.mockReset();
     storeFnsMock.removeContextChip.mockReset();
@@ -280,6 +286,7 @@ describe("InputComposer (Plan 11 Task 3)", () => {
     elMessageBoxConfirmMock.mockReset();
     elMessageBoxConfirmMock.mockResolvedValue("confirm");
     aiStateMock.streaming = false;
+    aiStateMock.globalStreamBusy = false;
     aiStateMock.contextChips = [];
     aiAssistantStateMock.mode = "chat";
     appStateMock.aiModel = "gpt-4";
@@ -358,15 +365,13 @@ describe("InputComposer (Plan 11 Task 3)", () => {
       expect(vm.filteredSlashCommands.length).toBeGreaterThan(0);
     });
 
-    it("filters commands by typed prefix", async () => {
+    it("does not expose the unfinished /plan command", async () => {
       const w = mountComposer();
       const vm = vmOf(w);
       vm.text = "/pl";
       vm.onInput();
       await nextTick();
-      // Should match /plan at minimum
-      const cmds = vm.filteredSlashCommands.map((c) => c.cmd);
-      expect(cmds).toContain("/plan");
+      expect(vm.filteredSlashCommands.map((cmd) => cmd.cmd)).not.toContain("/plan");
     });
 
     it("hides popup when text has a space", async () => {
@@ -422,12 +427,13 @@ describe("InputComposer (Plan 11 Task 3)", () => {
 
   // --- Step 6: slash command selection semantics ---
   describe("selectSlash (Step 6)", () => {
-    it("/plan switches to plan mode and clears text", () => {
+    it("normalizes legacy /plan selection to chat without creating a plan", () => {
       const w = mountComposer();
       const vm = vmOf(w);
       vm.text = "/plan";
       vm.selectSlash({ cmd: "/plan", mode: "plan" });
-      expect(aiAssistantStateMock.mode).toBe("plan");
+      expect(aiAssistantStateMock.mode).toBe("chat");
+      expect(storeFnsMock.createPlan).not.toHaveBeenCalled();
       expect(vm.text).toBe("");
     });
 
@@ -462,7 +468,7 @@ describe("InputComposer (Plan 11 Task 3)", () => {
     });
   });
 
-  it("plan mode creates an empty plan instead of an executable echo step", async () => {
+  it("does not create an empty plan when a legacy plan mode is restored", async () => {
     const w = mountComposer();
     const vm = vmOf(w);
     aiAssistantStateMock.mode = "plan";
@@ -470,13 +476,8 @@ describe("InputComposer (Plan 11 Task 3)", () => {
 
     await vm.handleSend();
 
-    expect(storeFnsMock.createPlan).toHaveBeenCalledOnce();
-    expect(storeFnsMock.createPlan).toHaveBeenCalledWith(
-      expect.stringMatching(/^plan-/),
-      "review the workspace",
-      [],
-    );
-    expect(JSON.stringify(storeFnsMock.createPlan.mock.calls[0][2])).not.toContain("echo");
+    expect(storeFnsMock.createPlan).not.toHaveBeenCalled();
+    expect(storeFnsMock.sendMessage).toHaveBeenCalledWith("review the workspace");
   });
 
   // --- Step 5: @ mention popup ---
@@ -697,13 +698,39 @@ describe("InputComposer (Plan 11 Task 3)", () => {
 
   // --- Step 7: send / stop buttons ---
   describe("send + stop (Step 7)", () => {
-    it("handleSend calls sendMessage with trimmed text and clears input", () => {
+    it("handleSend calls sendMessage with trimmed text and clears input", async () => {
       const w = mountComposer();
       const vm = vmOf(w);
       vm.text = "  hi  ";
-      vm.handleSend();
+      await vm.handleSend();
       expect(storeFnsMock.sendMessage).toHaveBeenCalledWith("hi");
       expect(vm.text).toBe("");
+    });
+
+    it("keeps the draft when the store rejects stream admission", async () => {
+      storeFnsMock.sendMessage.mockResolvedValueOnce(false);
+      const w = mountComposer();
+      const vm = vmOf(w);
+      vm.text = "keep this draft";
+
+      await vm.handleSend();
+
+      expect(storeFnsMock.sendMessage).toHaveBeenCalledWith("keep this draft");
+      expect(vm.text).toBe("keep this draft");
+    });
+
+    it("does not send while the backend stream slot is still busy", async () => {
+      aiStateMock.globalStreamBusy = true;
+      const w = mountComposer();
+      const vm = vmOf(w);
+      vm.text = "wait for cleanup";
+      await nextTick();
+
+      await vm.handleSend();
+
+      expect(storeFnsMock.sendMessage).not.toHaveBeenCalled();
+      expect(vm.text).toBe("wait for cleanup");
+      expect(w.get(".ai-input__send").attributes("disabled")).toBeDefined();
     });
 
     it("handleStop calls stopGeneration", () => {
@@ -732,13 +759,12 @@ describe("InputComposer (Plan 11 Task 3)", () => {
 
   // --- Step 7: bottom toolbar mode select ---
   describe("bottom toolbar (Step 7)", () => {
-    it("renders mode select with 4 options", () => {
+    it("renders only complete input modes", () => {
       const w = mountComposer();
       const select = w.find(".ai-input__select");
       expect(select.exists()).toBe(true);
-      const options = select.findAll("option");
-      const values = options.map((o) => o.attributes("value"));
-      expect(values).toEqual(expect.arrayContaining(["chat", "plan", "goal", "agent"]));
+      const values = select.findAll("option").map((o) => o.attributes("value"));
+      expect(values).toEqual(["chat", "goal", "agent"]);
     });
 
     it("renders model display", () => {
@@ -775,7 +801,6 @@ describe("InputComposer (Plan 11 Task 3)", () => {
           tool: "read_file",
           description: "Read a file",
           riskLevel: "elevated",
-          autoApproved: false,
         },
       ];
       const w = mountComposer();
@@ -800,7 +825,6 @@ describe("InputComposer (Plan 11 Task 3)", () => {
           tool: "t1",
           description: "",
           riskLevel: "elevated",
-          autoApproved: false,
         },
         {
           namespace: "mcp.a.t2",
@@ -808,7 +832,6 @@ describe("InputComposer (Plan 11 Task 3)", () => {
           tool: "t2",
           description: "",
           riskLevel: "dangerous",
-          autoApproved: false,
         },
       ];
       const w = mountComposer();
@@ -831,7 +854,6 @@ describe("InputComposer (Plan 11 Task 3)", () => {
           tool: "do",
           description: "do something",
           riskLevel: "dangerous",
-          autoApproved: false,
         },
       ];
       const w = mountComposer();
@@ -852,7 +874,6 @@ describe("InputComposer (Plan 11 Task 3)", () => {
           tool: "do",
           description: "",
           riskLevel: "elevated",
-          autoApproved: false,
         },
       ];
       const w = mountComposer();
@@ -897,7 +918,7 @@ describe("InputComposer (Plan 11 Task 3)", () => {
       expect(vm.filteredSkills.map((s) => s.id)).toEqual(["high", "mid", "low"]);
     });
 
-    it("selectSkill on user-scoped skill inserts chip without approval", async () => {
+    it("selectSkill on user-scoped skill binds the current session without a dialog", async () => {
       skillsMock.skillsListRef.value = [
         { id: "user-skill", name: "User Skill", description: "A user skill", priority: 1, trigger: {}, systemPrompt: "You are a user skill.", scope: "user" },
       ];
@@ -906,7 +927,7 @@ describe("InputComposer (Plan 11 Task 3)", () => {
       vm.selectMention({ kind: "skill", labelKey: "aiAssistant.mentionSkill" });
       await vm.selectSkill(0);
       expect(vm.showSkillMenu).toBe(false);
-      expect(skillsMock.activate).not.toHaveBeenCalled();
+	  expect(skillsMock.activate).toHaveBeenCalledWith("user-skill", "chat-test");
       expect(storeFnsMock.addContextChip).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: "skill",
@@ -926,7 +947,7 @@ describe("InputComposer (Plan 11 Task 3)", () => {
       vm.selectMention({ kind: "skill", labelKey: "aiAssistant.mentionSkill" });
       await vm.selectSkill(0);
       expect(elMessageBoxConfirmMock).toHaveBeenCalled();
-      expect(skillsMock.activate).toHaveBeenCalledWith("proj-skill");
+	  expect(skillsMock.activate).toHaveBeenCalledWith("proj-skill", "chat-test");
       expect(storeFnsMock.addContextChip).toHaveBeenCalledWith(
         expect.objectContaining({ kind: "skill", label: "Project Skill", content: "project prompt" }),
       );
@@ -961,11 +982,12 @@ describe("InputComposer (Plan 11 Task 3)", () => {
       storeFnsMock.addContextChip.mockClear();
       skillsMock.activate.mockClear();
       elMessageBoxConfirmMock.mockClear();
-      // Second activation: cached approval, no confirm, no activate call.
+	  // Second activation: cached approval, no confirm, but the backend still
+	  // refreshes the binding for the current Agent session.
       vm.selectMention({ kind: "skill", labelKey: "aiAssistant.mentionSkill" });
       await vm.selectSkill(0);
       expect(elMessageBoxConfirmMock).not.toHaveBeenCalled();
-      expect(skillsMock.activate).not.toHaveBeenCalled();
+	  expect(skillsMock.activate).toHaveBeenCalledWith("proj-skill", "chat-test");
       expect(storeFnsMock.addContextChip).toHaveBeenCalled();
     });
 

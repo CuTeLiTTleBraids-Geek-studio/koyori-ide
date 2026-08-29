@@ -12,11 +12,18 @@ const { readFileMock, writeFileMock, listDirMock, execMock } = vi.hoisted(() => 
     { name: "package.json", path: "/proj/package.json", isDir: false, size: 10, modified: 0 },
   ]),
   execMock: vi.fn().mockResolvedValue({
-    command: "echo ok",
-    exitCode: 0,
-    stdout: "ok\n",
-    stderr: "",
-    durationMs: 1,
+    observation: "Exit code: 0\nstdout:\nok",
+    metadata: {},
+    usage: {
+      unitId: "smoke-usage",
+      sessionId: "smoke-session",
+      unitKind: "tool",
+      operation: "run",
+      cost: 0,
+      costBasis: "not-applicable",
+      estimated: false,
+      success: true,
+    },
   }),
 }));
 
@@ -27,8 +34,37 @@ vi.mock("@/api/services", () => ({
     listDirectory: listDirMock,
   },
   agentService: {
-    requestCommandApproval: vi.fn().mockResolvedValue("smoke-approval"),
-    executeApprovedCommand: execMock,
+    getToolCatalog: vi.fn().mockResolvedValue({
+      revision: 1,
+      tools: [
+        {
+          id: "run",
+          wireName: "run",
+          description: "Run a command",
+          inputSchema: {
+            type: "object",
+            properties: { command: { type: "string", minLength: 1 } },
+            required: ["command"],
+            additionalProperties: false,
+          },
+          source: "builtin",
+          risk: "elevated",
+          approval: "manual",
+          mutation: "external",
+        },
+      ],
+    }),
+    executeAgentTool: execMock,
+    getToolBudget: vi.fn().mockResolvedValue({
+      spent: 1,
+      limit: 20,
+      remaining: 19,
+      exhausted: false,
+      timedOut: false,
+      epoch: 1,
+      startedAt: "",
+      expiresAt: "",
+    }),
     checkCommand: vi.fn().mockResolvedValue({ riskLevel: "elevated", blockReason: "" }),
   },
   searchService: {
@@ -58,15 +94,22 @@ vi.mock("@wailsio/runtime", () => ({
 
 import { openFileFromPath, editorState, updateContent } from "@/stores/editor";
 import { appState } from "@/stores/app";
-import { executeToolCall, type ToolCall } from "@/stores/agent";
+import {
+  agentState,
+  executeToolCall,
+  refreshAgentToolCatalog,
+  type ToolCall,
+} from "@/stores/agent";
 
 describe("e2e smoke (prompt-5 Task J)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     editorState.openFiles = [];
     editorState.activeFilePath = null;
     appState.currentProject = "/proj";
+    agentState.sessionId = "smoke-session";
     readFileMock.mockClear();
     execMock.mockClear();
+    await refreshAgentToolCatalog();
   });
 
   it("open project file → edit buffer → run echo tool", async () => {
@@ -87,7 +130,12 @@ describe("e2e smoke (prompt-5 Task J)", () => {
       status: "pending",
     };
     const obs = await executeToolCall(tc);
-    expect(execMock).toHaveBeenCalledWith("echo ok", "/proj", "smoke-approval");
+    expect(execMock).toHaveBeenCalledWith({
+      sessionId: "smoke-session",
+      catalogRevision: 1,
+      toolId: "run",
+      arguments: { command: "echo ok" },
+    });
     expect(obs).toMatch(/Exit code:\s*0/i);
   });
 });

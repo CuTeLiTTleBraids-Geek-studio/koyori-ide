@@ -20,6 +20,7 @@
 
 import { reactive, computed, ref } from "vue";
 import { errorMessage } from "@/lib/errors";
+import type { ContextChip } from "@/types";
 
 // ---------------------------------------------------------------------------
 // 类型 — 镜像 Go 结构体（services/mcp_service.go）
@@ -47,11 +48,6 @@ export interface MCPServerConfig {
    * （等同 Restricted 扩展的显式审批）。
    */
   enabled: boolean;
-  /**
-   * 免审批工具名白名单。G-SEC-02：即使在此名单中，后端仍记录审计日志，
-   * 不会归为 RiskSafe。默认空（全部需审批）。
-   */
-  autoApprove?: string[];
 }
 
 /** MCP server 暴露的工具。镜像 Go `MCPTool`。 */
@@ -72,13 +68,124 @@ export interface AgentMCPTool {
   description: string;
   inputSchema: Record<string, unknown>;
   riskLevel: RiskLevel;
-  autoApproved: boolean;
 }
 
 /** MCP 工具调用结果。镜像 Go `MCPToolResult`。 */
 export interface MCPToolResult {
   content: Array<{ type: string; text?: string }>;
   isError: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// P1-03-E 类型 — 镜像 Go services/mcp_capability.go / mcp_client.go
+// ---------------------------------------------------------------------------
+
+/** MCP server 暴露的资源。镜像 Go `MCPResource`。 */
+export interface MCPResource {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+/** MCP server 暴露的 prompt 模板。镜像 Go `MCPPrompt`。 */
+export interface MCPPrompt {
+  name: string;
+  description?: string;
+  arguments?: Array<Record<string, unknown>>;
+}
+
+/** capability 解析状态。镜像 Go `MCPCapabilityState`。 */
+export type MCPCapabilityState = "supported" | "missing" | "unsupported" | "unknown";
+
+/** 单个 capability 特性。镜像 Go `MCPCapabilityFeature`。 */
+export interface MCPCapabilityFeature {
+  state: MCPCapabilityState;
+  declared: boolean;
+  listChanged?: boolean;
+  subscribe?: boolean;
+}
+
+/** capability 报告。镜像 Go `MCPCapabilityReport`。 */
+export interface MCPCapabilityReport {
+  tools: MCPCapabilityFeature;
+  resources: MCPCapabilityFeature;
+  prompts: MCPCapabilityFeature;
+  sampling: MCPCapabilityFeature;
+  elicitation: MCPCapabilityFeature;
+  logging: MCPCapabilityFeature;
+  unknown?: string[];
+}
+
+/** initialize 校验结果的服务端身份。镜像 Go `MCPServerIdentity`。 */
+export interface MCPServerIdentity {
+  name: string;
+  version: string;
+}
+
+/** capability 快照。镜像 Go `MCPCapabilitySnapshot`（绑定 workspace/generation）。 */
+export interface MCPCapabilitySnapshot {
+  protocolVersion: string;
+  serverInfo: MCPServerIdentity;
+  instructions?: string;
+  capabilities: MCPCapabilityReport;
+  serverName: string;
+  workspaceRoot?: string;
+  rootGeneration: number;
+  lifecycleGeneration: number;
+  run: number;
+  establishedAt: string;
+}
+
+/** 校验后的资源内容块。镜像 Go `MCPResourceContent`。 */
+export interface MCPResourceContent {
+  uri: string;
+  mimeType?: string;
+  text: string;
+}
+
+/** 带来源信息的资源读取结果。镜像 Go `MCPResourceRead`。 */
+export interface MCPResourceRead {
+  server: string;
+  uri: string;
+  contents: MCPResourceContent[];
+  rootGeneration: number;
+  lifecycleGeneration: number;
+}
+
+/** 保留 role/content 的 prompt 消息。镜像 Go `MCPPromptMessage`。 */
+export interface MCPPromptMessage {
+  role: string;
+  content: { type: string; text?: string };
+}
+
+/** 带来源信息的 prompt 渲染结果。镜像 Go `MCPPromptRender`。 */
+export interface MCPPromptRender {
+  server: string;
+  prompt: string;
+  messages: MCPPromptMessage[];
+  rootGeneration: number;
+  lifecycleGeneration: number;
+}
+
+/**
+ * 单个 server 上下文/发现状态。区分：未加载、加载中、已加载、generation
+ * 过期（stale）、能力未声明（unsupported）、错误、空列表。
+ */
+export type McpListStatus = "unloaded" | "loading" | "loaded" | "stale" | "unsupported" | "error" | "empty";
+
+/** 按 server 分组的发现状态。 */
+export interface McpServerContextState {
+  status: McpListStatus;
+  resourcesStatus: McpListStatus;
+  resources: MCPResource[];
+  resourcesError: string | null;
+  promptsStatus: McpListStatus;
+  prompts: MCPPrompt[];
+  promptsError: string | null;
+  capabilities: MCPCapabilitySnapshot | null;
+  error: string | null;
+  lifecycleGeneration: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +199,10 @@ interface McpStoreState {
   connected: Record<string, boolean>;
   /** agent 可用工具缓存（mcp.<server>.<tool>）。 */
   agentTools: AgentMCPTool[];
+  /** 按 server 分组的 resources/prompts/capabilities 发现状态（P1-03-E）。 */
+  serverContexts: Record<string, McpServerContextState>;
+  /** 上下文加载时的工作区根；变化即全部 stale。 */
+  contextsWorkspaceRoot: string | null;
   loading: boolean;
   error: string | null;
 }
@@ -100,6 +211,8 @@ export const mcpState = reactive<McpStoreState>({
   servers: [],
   connected: {},
   agentTools: [],
+  serverContexts: {},
+  contextsWorkspaceRoot: null,
   loading: false,
   error: null,
 });
@@ -119,7 +232,7 @@ export const editingServer = ref<MCPServerConfig | null>(null);
 
 export function openServerEditor(cfg?: MCPServerConfig): void {
   editingServer.value = cfg
-    ? { ...cfg, args: cfg.args ? [...cfg.args] : undefined, autoApprove: cfg.autoApprove ? [...cfg.autoApprove] : undefined }
+    ? { ...cfg, args: cfg.args ? [...cfg.args] : undefined }
     : {
         name: "",
         transport: "stdio",
@@ -127,7 +240,6 @@ export function openServerEditor(cfg?: MCPServerConfig): void {
         args: [],
         env: {},
         enabled: false,
-        autoApprove: [],
       };
 }
 
@@ -149,8 +261,12 @@ export interface McpBackend {
   disconnectServer(name: string): Promise<void>;
   listTools(name: string): Promise<MCPTool[]>;
   listAgentMCPTools(): Promise<AgentMCPTool[]>;
-  requestToolApproval(server: string, tool: string, args: Record<string, unknown>): Promise<string>;
-  executeApprovedTool(server: string, tool: string, args: Record<string, unknown>, approvalToken: string): Promise<MCPToolResult>;
+  /** P1-03-E: 资源/prompt 发现、读取与能力快照（全部经后端安全边界）。 */
+  serverCapabilities(name: string): Promise<MCPCapabilitySnapshot>;
+  listResources(name: string): Promise<MCPResource[]>;
+  readResource(name: string, uri: string): Promise<MCPResourceRead>;
+  listPrompts(name: string): Promise<MCPPrompt[]>;
+  getPrompt(name: string, prompt: string, args: Record<string, string>): Promise<MCPPromptRender>;
 }
 
 let backend: McpBackend | null = null;
@@ -175,8 +291,11 @@ interface McpBindingsShape {
   DisconnectServer(name: string): Promise<void>;
   ListTools(name: string): Promise<MCPTool[]>;
   ListAgentMCPTools(): Promise<AgentMCPTool[]>;
-  RequestToolApproval(server: string, tool: string, args: Record<string, unknown>): Promise<string>;
-  ExecuteApprovedTool(server: string, tool: string, args: Record<string, unknown>, approvalToken: string): Promise<MCPToolResult>;
+  ServerCapabilities(name: string): Promise<MCPCapabilitySnapshot>;
+  ListResources(name: string): Promise<MCPResource[] | null>;
+  ReadResource(name: string, uri: string): Promise<MCPResourceRead | null>;
+  ListPrompts(name: string): Promise<MCPPrompt[] | null>;
+  GetPrompt(name: string, prompt: string, args: Record<string, string>): Promise<MCPPromptRender | null>;
 }
 
 let bindingsCache: McpBindingsShape | null = null;
@@ -228,13 +347,29 @@ function getDefaultBackend(): McpBackend {
       const b = await loadBindings();
       return (await b.ListAgentMCPTools()) ?? [];
     },
-    async requestToolApproval(server, tool, args) {
-	  const b = await loadBindings();
-	  return b.RequestToolApproval(server, tool, args);
-	},
-	async executeApprovedTool(server, tool, args, approvalToken) {
-	  const b = await loadBindings();
-	  return b.ExecuteApprovedTool(server, tool, args, approvalToken);
+    async serverCapabilities(name) {
+      const b = await loadBindings();
+      return b.ServerCapabilities(name);
+    },
+    async listResources(name) {
+      const b = await loadBindings();
+      return (await b.ListResources(name)) ?? [];
+    },
+    async readResource(name, uri) {
+      const b = await loadBindings();
+      const read = await b.ReadResource(name, uri);
+      if (!read) throw new Error(`backend returned no content for resource ${uri}`);
+      return read;
+    },
+    async listPrompts(name) {
+      const b = await loadBindings();
+      return (await b.ListPrompts(name)) ?? [];
+    },
+    async getPrompt(name, prompt, args) {
+      const b = await loadBindings();
+      const render = await b.GetPrompt(name, prompt, args);
+      if (!render) throw new Error(`backend returned no render for prompt ${prompt}`);
+      return render;
     },
   };
 }
@@ -243,6 +378,14 @@ function getBackend(): McpBackend {
   if (backend) return backend;
   backend = getDefaultBackend();
   return backend;
+}
+
+async function reconcileMcpStateAfterMutation(): Promise<void> {
+  // A backend mutation may commit its config before transport teardown fails.
+  // Always re-read both views so a partial-success error cannot leave the
+  // renderer showing stale enabled/connected/catalog state.
+  await loadMcpServers();
+  await refreshAgentMcpTools();
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +397,26 @@ export async function loadMcpServers(): Promise<void> {
   mcpState.loading = true;
   mcpState.error = null;
   try {
-    mcpState.servers = await getBackend().listServers();
+    const servers = await getBackend().listServers();
+    mcpState.servers = servers;
+    // A committed disable/delete is authoritative even when its transport
+    // teardown returned an error. Drop only entries that the config snapshot
+    // proves cannot still be connected; an enabled entry remains unchanged
+    // until a dedicated connection snapshot is available.
+    for (const name of Object.keys(mcpState.connected)) {
+      const server = servers.find((candidate) => candidate.name === name);
+      if (!server || !server.enabled) {
+        delete mcpState.connected[name];
+        // P1-03-E: the disconnected server's discovery state and injected
+        // context must not survive the authoritative disconnect.
+        markServerContextStale(name);
+      }
+    }
+    for (const name of Object.keys(mcpState.serverContexts)) {
+      if (!servers.some((candidate) => candidate.name === name)) {
+        delete mcpState.serverContexts[name];
+      }
+    }
   } catch (e: unknown) {
     mcpState.error = errorMessage(e);
   } finally {
@@ -268,29 +430,39 @@ export async function loadMcpServers(): Promise<void> {
  */
 export async function saveMcpServer(cfg: MCPServerConfig): Promise<boolean> {
   mcpState.error = null;
+  let operationError: unknown = null;
   try {
     await getBackend().saveServer(cfg);
-    await loadMcpServers();
-    return true;
   } catch (e: unknown) {
-    mcpState.error = errorMessage(e);
+    operationError = e;
+  } finally {
+    await reconcileMcpStateAfterMutation();
+  }
+  if (operationError !== null) {
+    mcpState.error = errorMessage(operationError);
     return false;
   }
+  return true;
 }
 
 /** 删除一个 server 配置；若已连接会先断开。 */
 export async function deleteMcpServer(name: string): Promise<boolean> {
   mcpState.error = null;
+  let operationError: unknown = null;
   try {
     await getBackend().deleteServer(name);
     delete mcpState.connected[name];
-    await loadMcpServers();
-    await refreshAgentMcpTools();
-    return true;
+    delete mcpState.serverContexts[name];
   } catch (e: unknown) {
-    mcpState.error = errorMessage(e);
+    operationError = e;
+  } finally {
+    await reconcileMcpStateAfterMutation();
+  }
+  if (operationError !== null) {
+    mcpState.error = errorMessage(operationError);
     return false;
   }
+  return true;
 }
 
 /**
@@ -299,29 +471,55 @@ export async function deleteMcpServer(name: string): Promise<boolean> {
  */
 export async function connectMcpServer(name: string): Promise<boolean> {
   mcpState.error = null;
+  let operationError: unknown = null;
   try {
     await getBackend().connectServer(name);
     mcpState.connected[name] = true;
-    await refreshAgentMcpTools();
-    return true;
+    // A successful connect is a fresh backend run with new generations; any
+    // previous discovery state belongs to the old run and must be reloaded.
+    delete mcpState.serverContexts[name];
   } catch (e: unknown) {
-    mcpState.error = errorMessage(e);
+    // ConnectServer either installs a client and returns nil, or tears down
+    // the provisional transport before returning an error. A prior local
+    // flag is therefore stale once this attempt fails; do not claim a live
+    // connection without a backend connection snapshot.
+    delete mcpState.connected[name];
+    operationError = e;
+  } finally {
+    await reconcileMcpStateAfterMutation();
+  }
+  if (operationError !== null) {
+    mcpState.error = errorMessage(operationError);
     return false;
   }
+  return true;
 }
 
 /** 断开一个已连接的 server。 */
 export async function disconnectMcpServer(name: string): Promise<boolean> {
   mcpState.error = null;
+  let operationError: unknown = null;
   try {
     await getBackend().disconnectServer(name);
     delete mcpState.connected[name];
-    await refreshAgentMcpTools();
-    return true;
   } catch (e: unknown) {
-    mcpState.error = errorMessage(e);
+    // DisconnectServer detaches the backend client before reporting a
+    // transport teardown error. Keep the renderer from claiming a live
+    // connection when the process is already no longer owned by the service.
+    delete mcpState.connected[name];
+    operationError = e;
+  } finally {
+    // P1-03-E: the server can no longer serve what it served before; its
+    // discovery state goes stale and its injected context leaves the
+    // sendable queue in every outcome.
+    markServerContextStale(name);
+    await reconcileMcpStateAfterMutation();
+  }
+  if (operationError !== null) {
+    mcpState.error = errorMessage(operationError);
     return false;
   }
+  return true;
 }
 
 /**
@@ -331,15 +529,23 @@ export async function disconnectMcpServer(name: string): Promise<boolean> {
  */
 export async function toggleMcpServerEnabled(name: string, enabled: boolean): Promise<boolean> {
   mcpState.error = null;
+  let operationError: unknown = null;
   try {
     await getBackend().setServerEnabled(name, enabled);
-    if (!enabled) delete mcpState.connected[name];
-    await loadMcpServers();
-    return true;
+    if (!enabled) {
+      delete mcpState.connected[name];
+      markServerContextStale(name);
+    }
   } catch (e: unknown) {
-    mcpState.error = errorMessage(e);
+    operationError = e;
+  } finally {
+    await reconcileMcpStateAfterMutation();
+  }
+  if (operationError !== null) {
+    mcpState.error = errorMessage(operationError);
     return false;
   }
+  return true;
 }
 
 /** 刷新 agent 可用的 MCP 工具列表（`mcp.<server>.<tool>` 命名空间）。 */
@@ -353,20 +559,293 @@ export async function refreshAgentMcpTools(): Promise<void> {
   }
 }
 
-/** 调用一个 MCP 工具（agent 执行路径，需经 CheckCommand 审批后调用）。 */
-export async function callMcpTool(
-  server: string,
-  tool: string,
-  args: Record<string, unknown>,
-): Promise<MCPToolResult | null> {
+// ---------------------------------------------------------------------------
+// P1-03-E: 资源/prompt 发现、读取与上下文注入
+// ---------------------------------------------------------------------------
+
+/** 注入上下文的单条长度预算；超出部分截断并带显式标记（不伪造完整成功）。 */
+export const mcpContextInjectionBudget = 64 * 1024;
+
+function ensureServerContext(name: string): McpServerContextState {
+  let ctx = mcpState.serverContexts[name];
+  if (!ctx) {
+    ctx = {
+      status: "unloaded",
+      resourcesStatus: "unloaded",
+      resources: [],
+      resourcesError: null,
+      promptsStatus: "unloaded",
+      prompts: [],
+      promptsError: null,
+      capabilities: null,
+      error: null,
+      lifecycleGeneration: 0,
+    };
+    mcpState.serverContexts[name] = ctx;
+  }
+  return ctx;
+}
+
+/**
+ * P1-03-E: MCP 上下文 chip 清扫。server 为 null 时清扫全部 MCP 注入 chip。
+ * 默认实现惰性加载 ai store，避免 store 图的静态环；测试可注入记录器。
+ */
+export type McpContextSweeper = (server: string | null) => void;
+
+let contextSweeper: McpContextSweeper | null = null;
+
+export function setMcpContextSweeper(sweeper: McpContextSweeper | null): void {
+  contextSweeper = sweeper;
+}
+
+function sweepMcpContextChips(server: string | null): void {
+  if (contextSweeper) {
+    contextSweeper(server);
+    return;
+  }
+  void import("@/stores/ai")
+    .then(({ aiState, removeContextChip }) => {
+      for (const chip of [...aiState.contextChips]) {
+        if (chip.kind !== "mcp") continue;
+        if (server !== null && chip.mcpServer !== server) continue;
+        removeContextChip(chip.id);
+      }
+    })
+    .catch((error: unknown) => {
+      // A teardown racing the lazy import must not surface as an unhandled
+      // rejection; the next sweep retries with the module cache warm.
+      console.warn("[mcp] context chip sweep failed", error);
+    });
+}
+
+async function upsertMcpChip(chip: ContextChip): Promise<void> {
+  const ai = await import("@/stores/ai");
+  ai.upsertContextChip(chip);
+}
+
+function truncateForInjection(text: string): string {
+  if (text.length <= mcpContextInjectionBudget) return text;
+  return `${text.slice(0, mcpContextInjectionBudget)}\n…[MCP context truncated at the ${mcpContextInjectionBudget}-character injection budget]`;
+}
+
+/** 将一个 server 的发现状态标记为 stale 并移除其可发送上下文。 */
+function markServerContextStale(name: string): void {
+  const ctx = mcpState.serverContexts[name];
+  if (ctx) {
+    ctx.status = "stale";
+    ctx.resourcesStatus = "stale";
+    ctx.promptsStatus = "stale";
+    ctx.resources = [];
+    ctx.prompts = [];
+  }
+  sweepMcpContextChips(name);
+}
+
+/**
+ * 工作区切换后由 workspaceStore（惰性）调用：全部 server 上下文过期，
+ * 所有 MCP 注入上下文从可发送队列移除。同根重复调用为 no-op。
+ */
+export function markMcpWorkspaceChanged(workspaceRoot: string): void {
+  if (mcpState.contextsWorkspaceRoot === workspaceRoot) return;
+  mcpState.contextsWorkspaceRoot = workspaceRoot;
+  for (const name of Object.keys(mcpState.serverContexts)) {
+    markServerContextStale(name);
+  }
+  sweepMcpContextChips(null);
+}
+
+/**
+ * 刷新一个 server 的发现状态：先取 capability 快照（后端校验 workspace/
+ * lifecycle generation），resources/prompts 仅在后端声明 supported 时列出。
+ * 每个家族独立区分 loaded/empty/unsupported/error，失败保留可诊断错误。
+ */
+export async function refreshMcpServerContext(name: string): Promise<void> {
+  const ctx = ensureServerContext(name);
+  ctx.status = "loading";
+  ctx.error = null;
+  try {
+    const capabilities = await getBackend().serverCapabilities(name);
+    ctx.capabilities = capabilities;
+    ctx.lifecycleGeneration = capabilities.lifecycleGeneration;
+    await refreshContextFamily(name, ctx, "resources");
+    await refreshContextFamily(name, ctx, "prompts");
+    ctx.status = "loaded";
+  } catch (e: unknown) {
+    ctx.status = "error";
+    ctx.error = errorMessage(e);
+  }
+}
+
+async function refreshContextFamily(
+  name: string,
+  ctx: McpServerContextState,
+  family: "resources" | "prompts",
+): Promise<void> {
+  const capability = ctx.capabilities?.capabilities[family];
+  if (!capability || capability.state !== "supported") {
+    if (family === "resources") {
+      ctx.resources = [];
+      ctx.resourcesStatus = "unsupported";
+      ctx.resourcesError = capability
+        ? `server did not declare the ${family} capability`
+        : "capability snapshot unavailable";
+    } else {
+      ctx.prompts = [];
+      ctx.promptsStatus = "unsupported";
+      ctx.promptsError = capability
+        ? `server did not declare the ${family} capability`
+        : "capability snapshot unavailable";
+    }
+    return;
+  }
+  if (family === "resources") {
+    ctx.resourcesStatus = "loading";
+    ctx.resourcesError = null;
+    try {
+      ctx.resources = await getBackend().listResources(name);
+      ctx.resourcesStatus = ctx.resources.length === 0 ? "empty" : "loaded";
+    } catch (e: unknown) {
+      ctx.resourcesStatus = "error";
+      ctx.resourcesError = errorMessage(e);
+    }
+  } else {
+    ctx.promptsStatus = "loading";
+    ctx.promptsError = null;
+    try {
+      ctx.prompts = await getBackend().listPrompts(name);
+      ctx.promptsStatus = ctx.prompts.length === 0 ? "empty" : "loaded";
+    } catch (e: unknown) {
+      ctx.promptsStatus = "error";
+      ctx.promptsError = errorMessage(e);
+    }
+  }
+}
+
+/** 读取资源内容（预览用，不注入）。失败保留错误并返回 null。 */
+export async function readMcpResource(name: string, uri: string): Promise<MCPResourceRead | null> {
   mcpState.error = null;
   try {
-    const approvalToken = await getBackend().requestToolApproval(server, tool, args);
-    return await getBackend().executeApprovedTool(server, tool, args, approvalToken);
+    return await getBackend().readResource(name, uri);
   } catch (e: unknown) {
     mcpState.error = errorMessage(e);
     return null;
   }
+}
+
+/** 渲染 prompt（预览用，不注入）。失败保留错误并返回 null。 */
+export async function getMcpPrompt(
+  name: string,
+  prompt: string,
+  args: Record<string, string>,
+): Promise<MCPPromptRender | null> {
+  mcpState.error = null;
+  try {
+    return await getBackend().getPrompt(name, prompt, args);
+  } catch (e: unknown) {
+    mcpState.error = errorMessage(e);
+    return null;
+  }
+}
+
+/**
+ * 显式用户动作：读取资源并注入为带来源标签的上下文 chip。同一来源重复
+ * 注入会替换内容（按确定性 id 去重），不产生重复 chip。未连接或 stale
+ * 状态拒绝注入。
+ */
+export async function injectMcpResourceContext(name: string, uri: string): Promise<boolean> {
+  mcpState.error = null;
+  if (!mcpState.connected[name]) {
+    mcpState.error = `MCP server "${name}" is not connected; context injection refused`;
+    return false;
+  }
+  const ctx = mcpState.serverContexts[name];
+  if (ctx && ctx.status === "stale") {
+    mcpState.error = `MCP server "${name}" context is stale; refresh before injecting`;
+    return false;
+  }
+  let read: MCPResourceRead;
+  try {
+    read = await getBackend().readResource(name, uri);
+  } catch (e: unknown) {
+    mcpState.error = errorMessage(e);
+    return false;
+  }
+  await upsertMcpChip({
+    id: `mcp-res:${name}:${uri}`,
+    kind: "mcp",
+    label: uri,
+    content: truncateForInjection(read.contents.map((c) => c.text).join("\n\n")),
+    mcpServer: name,
+    mcpUri: uri,
+    mcpGeneration: read.lifecycleGeneration,
+  });
+  return true;
+}
+
+/**
+ * 显式用户动作：渲染 prompt 并注入为带来源标签的上下文 chip，消息保留
+ * role 标记。去重/budget/连接检查与资源注入一致。
+ */
+export async function injectMcpPromptContext(
+  name: string,
+  prompt: string,
+  args: Record<string, string> = {},
+): Promise<boolean> {
+  mcpState.error = null;
+  if (!mcpState.connected[name]) {
+    mcpState.error = `MCP server "${name}" is not connected; context injection refused`;
+    return false;
+  }
+  const ctx = mcpState.serverContexts[name];
+  if (ctx && ctx.status === "stale") {
+    mcpState.error = `MCP server "${name}" context is stale; refresh before injecting`;
+    return false;
+  }
+  let render: MCPPromptRender;
+  try {
+    render = await getBackend().getPrompt(name, prompt, args);
+  } catch (e: unknown) {
+    mcpState.error = errorMessage(e);
+    return false;
+  }
+  await upsertMcpChip({
+    id: `mcp-prompt:${name}:${prompt}`,
+    kind: "mcp",
+    label: prompt,
+    content: truncateForInjection(
+      render.messages.map((m) => `[${m.role}]\n${m.content.text ?? ""}`).join("\n\n"),
+    ),
+    mcpServer: name,
+    mcpPrompt: prompt,
+    mcpGeneration: render.lifecycleGeneration,
+  });
+  return true;
+}
+
+/** 清理一个 server 的发现状态（unloaded）。 */
+export function clearMcpServerContext(name: string): void {
+  delete mcpState.serverContexts[name];
+}
+
+/** 清理所有已过期（stale）的发现状态。 */
+export function clearStaleMcpContexts(): void {
+  for (const name of Object.keys(mcpState.serverContexts)) {
+    if (mcpState.serverContexts[name].status === "stale") {
+      delete mcpState.serverContexts[name];
+    }
+  }
+}
+
+/** Legacy renderer MCP execution is deny-only. Agent calls are parsed from the
+ * backend ToolDef catalog and executed by AgentService's unified capability
+ * facade; keeping a second token pipeline here would reintroduce the bypass. */
+export async function callMcpTool(
+  _server: string,
+  _tool: string,
+  _args: Record<string, unknown>,
+): Promise<MCPToolResult | null> {
+	mcpState.error = "MCP Agent execution requires the unified Agent tool catalog";
+	return null;
 }
 
 /** 重置 store 状态。测试专用。 */
@@ -374,9 +853,12 @@ export function resetMcpStore(): void {
   mcpState.servers = [];
   mcpState.connected = {};
   mcpState.agentTools = [];
+  mcpState.serverContexts = {};
+  mcpState.contextsWorkspaceRoot = null;
   mcpState.loading = false;
   mcpState.error = null;
   editingServer.value = null;
   backend = null;
   bindingsCache = null;
+  contextSweeper = null;
 }

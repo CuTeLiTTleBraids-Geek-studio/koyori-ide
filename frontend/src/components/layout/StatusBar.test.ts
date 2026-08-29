@@ -48,7 +48,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/stores/app", () => ({ appState: mocks.appState, toggleTerminal: vi.fn() }));
 vi.mock("@/stores/editor", () => ({ editorState: { openFiles: [] }, activeFile: { value: null } }));
-vi.mock("@/stores/inlineCompletion", () => ({ toggleInlineCompletion: vi.fn() }));
+vi.mock("@/stores/inlineCompletion", () => ({
+  toggleInlineCompletion: vi.fn(),
+  inlineCompletionUnavailable: { value: false },
+}));
 vi.mock("@/lib/connectivity", () => ({ connectivityState: { online: true } }));
 vi.mock("@/stores/lsp", () => ({
   lspState: mocks.lspState,

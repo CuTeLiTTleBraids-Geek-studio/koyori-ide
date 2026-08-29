@@ -11,6 +11,8 @@ import MainLayout from "@/components/layout/MainLayout.vue";
 import RecoveryDialog from "@/components/modals/RecoveryDialog.vue";
 import { notifyError } from "@/lib/notifications";
 import { appState } from "@/stores/app";
+import { createExtensionDecorationType, createExtensionTextEditor } from "@/lib/extensionDecorations";
+import { showExtensionInputBox, showExtensionQuickPick } from "@/lib/extensionHostUiBridge";
 import { pushOutput } from "@/stores/output";
 import { scanRecoverable } from "@/stores/recovery";
 
@@ -31,28 +33,16 @@ const releaseFrontendRuntime = frontendRuntimeOwner
 let appLifecycleGeneration = 0;
 let appUnmounted = false;
 let recoveryScanWorkspace: string | null = null;
-
-const stopRecoveryWatch = ownsFullIDERuntime
-  ? watch(
-      () => appState.currentProject,
-      (project) => {
-        if (appUnmounted) return;
-        if (!project) {
-          recoveryScanWorkspace = null;
-          return;
-        }
-        if (project === recoveryScanWorkspace) return;
-        recoveryScanWorkspace = project;
-        void scanRecoverable();
-      },
-      { immediate: true },
-    )
-  : () => undefined;
+let stopRecoveryWatch: (() => void) | undefined;
+let stopExtensionConfigurationWatch: (() => void) | undefined;
 
 onBeforeUnmount(() => {
   appUnmounted = true;
   appLifecycleGeneration += 1;
-  stopRecoveryWatch();
+  stopRecoveryWatch?.();
+  stopRecoveryWatch = undefined;
+  stopExtensionConfigurationWatch?.();
+  stopExtensionConfigurationWatch = undefined;
   releaseFrontendRuntime?.();
 });
 
@@ -85,6 +75,23 @@ onErrorCaptured((err, _instance, info) => {
 // 使扩展宿主能访问真实的编辑器状态和用户设置。
 onMounted(() => {
   if (!ownsFullIDERuntime) return;
+  appUnmounted = false;
+  recoveryScanWorkspace = null;
+  stopRecoveryWatch?.();
+  stopRecoveryWatch = watch(
+    () => appState.currentProject,
+    (project) => {
+      if (appUnmounted) return;
+      if (!project) {
+        recoveryScanWorkspace = null;
+        return;
+      }
+      if (project === recoveryScanWorkspace) return;
+      recoveryScanWorkspace = project;
+      void scanRecoverable();
+    },
+    { immediate: true },
+  );
   const generation = ++appLifecycleGeneration;
   const isCurrent = () =>
     !appUnmounted && generation === appLifecycleGeneration;
@@ -102,25 +109,89 @@ onMounted(() => {
 
       // Editor state callback
       const { activeFile } = await import("@/stores/editor");
+      activationMod.setExtensionHostWorkspaceFoldersCallback(() => {
+        const project = appState.currentProject;
+        if (!project) return undefined;
+        const normalized = project.replaceAll("\\", "/");
+        const name = normalized.split("/").filter(Boolean).pop() ?? "workspace";
+        return [{
+          uri: { fsPath: project, path: normalized, scheme: "file" },
+          name,
+          index: 0,
+        }];
+      });
+
       activationMod.setExtensionHostActiveEditorCallback(() => {
         const file = activeFile.value;
         if (!file) return undefined;
-        return {
-          document: {
-            uri: { fsPath: file.path, path: file.path, scheme: "file" },
-            fileName: file.path,
-            languageId: file.language,
-            getText: () => file.content ?? "",
-          },
-          selection: undefined,
-        } as unknown as import("@/lib/extensionHost/vscodeApi").TextEditor;
+        const text = file.content ?? "";
+        const lines = text.split(/\r\n|\r|\n/);
+        const document = {
+          uri: { fsPath: file.path, path: file.path, scheme: "file" },
+          fileName: file.path,
+          languageId: file.language,
+          lineCount: lines.length,
+          lineAt: (line: number) => ({ text: lines[line] ?? "" }),
+          getText: () => text,
+        };
+        return createExtensionTextEditor(file.path, document);
       });
+      activationMod.setExtensionHostDecorationCallback((extensionId, options) =>
+        createExtensionDecorationType(extensionId, options),
+      );
 
-      // Configuration callback
+      // Configuration callback. Expose only editor-safe settings; AI keys,
+      // provider credentials, approval policy, and workspace internals never
+      // enter the Extension Host snapshot.
       const { settingsStore } = await import("@/stores/app");
-      activationMod.setExtensionHostConfigurationCallback(() => {
-        return { ...settingsStore } as Record<string, unknown>;
+      const extensionConfiguration = () => ({
+        editor: {
+          fontSize: settingsStore.fontSize,
+          fontFamily: settingsStore.fontFamily,
+          tabSize: settingsStore.tabSize,
+          wordWrap: settingsStore.wordWrap,
+          minimap: settingsStore.minimap,
+          stickyScrollEnabled: settingsStore.stickyScrollEnabled,
+          inlayHintsEnabled: settingsStore.inlayHintsEnabled,
+          lineNumbers: settingsStore.lineNumbers,
+          cursorBlinking: settingsStore.cursorBlinking,
+          cursorStyle: settingsStore.cursorStyle,
+          bracketColorization: settingsStore.bracketColorization,
+          insertSpaces: settingsStore.insertSpaces,
+          insertFinalNewline: settingsStore.insertFinalNewline,
+          trimTrailingWhitespace: settingsStore.trimTrailingWhitespace,
+        },
+        files: {
+          autoSave: settingsStore.autoSave,
+          autoSaveDelay: settingsStore.autoSaveDelay,
+          formatOnSave: settingsStore.formatOnSave,
+        },
+        terminal: {
+          fontSize: settingsStore.terminalFontSize,
+          cursorStyle: settingsStore.terminalCursorStyle,
+          scrollback: settingsStore.scrollback,
+        },
+        git: { gitBlameEnabled: settingsStore.gitBlameEnabled },
       });
+      activationMod.setExtensionHostConfigurationCallback((section) => {
+        const snapshot = extensionConfiguration();
+        if (!section) return snapshot;
+        const value = snapshot[section as keyof typeof snapshot];
+        return value && typeof value === "object"
+          ? value as Record<string, unknown>
+          : {};
+      });
+      stopExtensionConfigurationWatch?.();
+      stopExtensionConfigurationWatch = watch(
+        settingsStore,
+        () => activationMod.notifyExtensionHostConfigurationChange(),
+        { deep: true },
+      );
+      if (!isCurrent()) {
+        stopExtensionConfigurationWatch?.();
+        stopExtensionConfigurationWatch = undefined;
+        return;
+      }
 
       // G13: real saveAll (flush dirty buffers, propagate per-file failures)
       // and real notifications (lib/notifications), so extension APIs do not
@@ -134,6 +205,30 @@ onMounted(() => {
         if (level === "error") notifications.notifyError(message, "Extension");
         else if (level === "warn") notifications.notifyWarning(message, "Extension");
         else notifications.notifyInfo(message, "Extension");
+      });
+      const extensionUi = await import("@/stores/extensionHostUi");
+      activationMod.setExtensionHostInputCallback(showExtensionInputBox);
+      activationMod.setExtensionHostQuickPickCallback(showExtensionQuickPick);
+      activationMod.setExtensionHostStatusBarCallback(
+        extensionUi.setExtensionStatusBarMessage,
+        extensionUi.createExtensionStatusBarItem,
+      );
+      activationMod.setExtensionHostOutputCallback(extensionUi.writeExtensionOutput);
+      activationMod.setExtensionHostProgressCallback(async (options, task) => {
+        extensionUi.extensionProgress.value = { title: options.title };
+        try {
+          return await task({
+            report: (value) => {
+              extensionUi.extensionProgress.value = {
+                title: options.title,
+                message: value.message,
+                increment: value.increment,
+              };
+            },
+          });
+        } finally {
+          extensionUi.extensionProgress.value = null;
+        }
       });
 
       if (!isCurrent()) return;

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick, type App } from "vue";
-import ElementPlus, { ElMessage, ElMessageBox, type MessageBoxData } from "element-plus";
+import ElementPlus, { ElDropdown, ElMessage, ElMessageBox, type MessageBoxData } from "element-plus";
 
 // 用 vi.hoisted 定义 mock 引用：vi.mock 调用会被提升到文件顶部，
 // 早于任何 const 声明，因此普通顶层 const 会落入暂时性死区。
@@ -23,6 +23,7 @@ const {
   loadBranchesMock,
   stageFileMock,
   unstageFileMock,
+  loadMoreGitChangesMock,
   commitChangesMock,
   pushChangesMock,
   pullChangesMock,
@@ -73,12 +74,14 @@ const {
 
     // gitState：变更列表、分支名、ahead/behind、loading、error
     gitState: {
-      changes: [] as Array<{ path: string; status: string }>,
+      changes: [] as Array<{ path: string; status: string; staged?: boolean; oldPath?: string }>,
       branchName: "main",
       ahead: 0,
       behind: 0,
       loading: false,
       error: null as string | null,
+      truncated: false,
+      totalChanges: 0,
     },
 
     // branchState：分支列表，第一个为 HEAD
@@ -142,6 +145,7 @@ const {
     loadBranchesMock: resolved(),
     stageFileMock: resolved(),
     unstageFileMock: resolved(),
+    loadMoreGitChangesMock: vi.fn().mockReturnValue(0),
     commitChangesMock: resolved(),
     pushChangesMock: resolved(),
     pullChangesMock: resolved(),
@@ -213,6 +217,7 @@ vi.mock("@/stores/git", () => ({
   loadBranches: loadBranchesMock,
   stageFile: stageFileMock,
   unstageFile: unstageFileMock,
+  loadMoreGitChanges: loadMoreGitChangesMock,
   commitChanges: commitChangesMock,
   pushChanges: pushChangesMock,
   pullChanges: pullChangesMock,
@@ -322,6 +327,11 @@ vi.mock("@/lib/i18n", () => ({
         "git.noReviewYet": "No review yet",
         "git.gitignoreCreated": "Created",
         "git.gitignoreExists": "Exists",
+        "git.truncated": "Showing {shown} of more than {max} changes",
+        "git.loadMoreChanges": "Load remaining {count} changes",
+        "git.moreActions": "More Git actions",
+        "git.stagedCount": "Staged ({count})",
+        "git.changesCount": "Changes ({count})",
         // 优先级 3: Stash / Tag / Amend
         "git.amend": "Amend",
         "git.amendBtn": "Amend Commit",
@@ -365,7 +375,7 @@ vi.mock("@/lib/i18n", () => ({
 vi.mock("@/components/editor/DiffView.vue", () => ({
   default: {
     name: "DiffView",
-    props: ["repoPath", "filePath", "visible"],
+    props: ["repoPath", "filePath", "visible", "staged"],
     emits: ["close"],
     template: '<div class="stub-diff-view" />',
   },
@@ -417,10 +427,10 @@ function deferred<T = void>() {
 }
 
 // 真实合理的 GitFileChange 样本数据
-const sampleChanges: Array<{ path: string; status: string }> = [
-  { path: "src/main.ts", status: "Modified" },
-  { path: "README.md", status: "Added" },
-  { path: "old/deleted.go", status: "Deleted" },
+const sampleChanges: Array<{ path: string; status: string; staged?: boolean }> = [
+  { path: "src/main.ts", status: "Modified", staged: false },
+  { path: "README.md", status: "Added", staged: true },
+  { path: "old/deleted.go", status: "Deleted", staged: false },
 ];
 
 function mountGitPanel(options: { attachTo?: string | Element } = {}) {
@@ -442,6 +452,8 @@ function resetState() {
   gitState.behind = 0;
   gitState.loading = false;
   gitState.error = null;
+  gitState.truncated = false;
+  gitState.totalChanges = 0;
   branchState.branches = [
     { name: "main", isHead: true },
     { name: "dev", isHead: false },
@@ -526,13 +538,13 @@ describe("GitPanel", () => {
     expect(wrapper.find(".git-panel__branch-current").text()).toContain("main");
   });
 
-  it("renders commit history as an open collapsible section", () => {
+  it("renders commit history as a collapsed collapsible section", () => {
     const wrapper = mountGitPanel();
 
     const section = wrapper.find(".git-panel__commit-graph");
     const graph = wrapper.findComponent({ name: "CommitGraph" });
     expect(section.element.tagName).toBe("DETAILS");
-    expect(section.attributes("open")).toBeDefined();
+    expect(section.attributes("open")).toBeUndefined();
     expect(graph.props()).toMatchObject({ repoPath: "/proj", branch: "main" });
   });
 
@@ -563,6 +575,99 @@ describe("GitPanel", () => {
     expect(wrapper.text()).toContain("old/deleted.go");
   });
 
+  it("splits staged and unstaged rows and keeps matching actions", () => {
+    gitState.changes = sampleChanges;
+    const wrapper = mountGitPanel();
+    const staged = wrapper.find('[data-testid="git-staged"]');
+    const unstaged = wrapper.find('[data-testid="git-unstaged"]');
+    expect(staged.text()).toContain("README.md");
+    expect(staged.find('button[aria-label="Stage"]').exists()).toBe(false);
+    expect(staged.find('button[aria-label="Unstage"]').exists()).toBe(true);
+    expect(unstaged.text()).toContain("src/main.ts");
+    expect(unstaged.find('button[aria-label="Stage"]').exists()).toBe(true);
+    expect(unstaged.find('button[aria-label="Unstage"]').exists()).toBe(false);
+    expect(wrapper.find(".git-panel__path").attributes("title")).toBeTruthy();
+  });
+
+  it("shows a truncation banner when the backend capped the list", () => {
+    gitState.changes = sampleChanges;
+    gitState.truncated = true;
+    const wrapper = mountGitPanel();
+    expect(wrapper.find(".git-panel__truncated").exists()).toBe(true);
+    expect(wrapper.find(".git-panel__truncated").text()).toMatch(/3/);
+  });
+
+  it("renders a proven staged rename as one old → new row (P1-04)", () => {
+    gitState.changes = [{ path: "new.txt", status: "Renamed", staged: true, oldPath: "old.txt" }];
+    const wrapper = mountGitPanel();
+    const staged = wrapper.find('[data-testid="git-staged"]');
+    expect(staged.exists()).toBe(true);
+    expect(staged.text()).toContain("old.txt → new.txt");
+    expect(staged.find(".git-panel__path").attributes("title")).toBe("old.txt → new.txt");
+    expect(staged.find(".git-panel__status--renamed").text()).toBe("R");
+  });
+
+  it("unstaging a rename row resets both the added and deleted paths (P1-04)", async () => {
+    gitState.changes = [{ path: "new.txt", status: "Renamed", staged: true, oldPath: "old.txt" }];
+    const wrapper = mountGitPanel();
+    vi.clearAllMocks();
+    unstageFileMock.mockResolvedValue(undefined);
+
+    await wrapper.find('[data-testid="git-staged"] button[aria-label="Unstage"]').trigger("click");
+    await flushPromises();
+
+    expect(unstageFileMock).toHaveBeenCalledTimes(2);
+    expect(unstageFileMock).toHaveBeenNthCalledWith(1, "/proj", "new.txt");
+    expect(unstageFileMock).toHaveBeenNthCalledWith(2, "/proj", "old.txt");
+  });
+
+  it("passes the clicked row's side to DiffView so both rows get their own diff (P1-04)", async () => {
+    gitState.changes = sampleChanges;
+    const wrapper = mountGitPanel();
+    const diffStub = wrapper.findComponent({ name: "DiffView" });
+
+    await wrapper.find('[data-testid="git-staged"] button[aria-label="View Diff"]').trigger("click");
+    await nextTick();
+    expect(diffStub.props("filePath")).toBe("README.md");
+    expect(diffStub.props("staged")).toBe(true);
+
+    await wrapper.find('[data-testid="git-unstaged"] button[aria-label="View Diff"]').trigger("click");
+    await nextTick();
+    expect(diffStub.props("filePath")).toBe("src/main.ts");
+    expect(diffStub.props("staged")).toBe(false);
+  });
+
+  it("truncation offers a continuation action that extends the visible window (P1-04)", async () => {
+    gitState.changes = Array.from({ length: 1000 }, (_, i) => ({
+      path: `f${i}.txt`,
+      status: "Modified",
+      staged: false,
+    }));
+    gitState.truncated = true;
+    gitState.totalChanges = 2500;
+    const wrapper = mountGitPanel();
+    const btn = wrapper.find('[data-testid="git-load-more"]');
+    expect(btn.exists()).toBe(true);
+    expect(btn.text()).toContain("500");
+
+    loadMoreGitChangesMock.mockReturnValue(1500);
+    await btn.trigger("click");
+    expect(loadMoreGitChangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the branch name visible in a 260px sidebar", () => {
+    const host = document.createElement("div");
+    host.style.width = "260px";
+    document.body.appendChild(host);
+    const wrapper = mountGitPanel({ attachTo: host });
+    const bar = wrapper.find(".git-panel__branch-bar").element as HTMLElement;
+    expect(wrapper.find(".git-panel__branch-current").text()).toContain("main");
+    expect(bar.scrollWidth).toBeLessThanOrEqual(bar.clientWidth + 1);
+    expect(wrapper.find(".git-panel__overflow-btn").exists()).toBe(true);
+    wrapper.unmount();
+    host.remove();
+  });
+
   it("点击暂存按钮调用 stageFile", async () => {
     gitState.changes = sampleChanges;
     const wrapper = mountGitPanel();
@@ -587,7 +692,7 @@ describe("GitPanel", () => {
     await unstageBtn.trigger("click");
     await flushPromises();
 
-    expect(unstageFileMock).toHaveBeenCalledWith("/proj", "src/main.ts");
+    expect(unstageFileMock).toHaveBeenCalledWith("/proj", "README.md");
   });
 
   it("无提交信息时提交按钮被禁用", () => {
@@ -689,7 +794,7 @@ describe("GitPanel", () => {
     const diffStub = wrapper.findComponent({ name: "DiffView" });
     expect(diffStub.props("visible")).toBe(false);
 
-    await wrapper.find('button[aria-label="View Diff"]').trigger("click");
+    await wrapper.find('[data-testid="git-unstaged"] button[aria-label="View Diff"]').trigger("click");
     await nextTick();
 
     expect(diffStub.props("visible")).toBe(true);
@@ -702,12 +807,9 @@ describe("GitPanel", () => {
     generateGitignoreMock.mockResolvedValue(undefined);
     refreshGitMock.mockResolvedValue(undefined);
 
-    // 定位 .gitignore 触发按钮所在的 ElDropdown
-    const dropdowns = wrapper.findAllComponents({ name: "ElDropdown" });
-    const gitignoreDropdown = dropdowns.find((d) => d.text().includes(".gitignore"));
-    expect(gitignoreDropdown).toBeTruthy();
-
-    gitignoreDropdown!.vm.$emit("command", "typescript");
+    const overflow = wrapper.findAllComponents(ElDropdown).find((candidate) => candidate.classes().includes("git-panel__overflow"))!;
+    expect(overflow.exists()).toBe(true);
+    overflow.vm.$emit("command", "gitignore:typescript");
     await flushPromises();
 
     expect(generateGitignoreMock).toHaveBeenCalledWith("typescript");
@@ -720,11 +822,8 @@ describe("GitPanel", () => {
     generateGitignoreMock.mockRejectedValue(new Error(".gitignore already exists"));
     refreshGitMock.mockResolvedValue(undefined);
 
-    const dropdowns = wrapper.findAllComponents({ name: "ElDropdown" });
-    const gitignoreDropdown = dropdowns.find((d) => d.text().includes(".gitignore"));
-    expect(gitignoreDropdown).toBeTruthy();
-
-    gitignoreDropdown!.vm.$emit("command", "go");
+    const overflow = wrapper.findAllComponents(ElDropdown).find((candidate) => candidate.classes().includes("git-panel__overflow"))!;
+    overflow.vm.$emit("command", "gitignore:go");
     await flushPromises();
 
     expect(generateGitignoreMock).toHaveBeenCalledWith("go");
@@ -737,7 +836,7 @@ describe("GitPanel", () => {
     vi.clearAllMocks();
     runReviewMock.mockResolvedValue(undefined);
 
-    await wrapper.find(".git-panel__review-btn").trigger("click");
+    wrapper.findAllComponents(ElDropdown).find((candidate) => candidate.classes().includes("git-panel__overflow"))!.vm.$emit("command", "review");
     await nextTick();
 
     // 模态框应可见
@@ -749,7 +848,7 @@ describe("GitPanel", () => {
   it("重新审查按钮调用 clearReview 与 runReview", async () => {
     const wrapper = mountGitPanel();
     // 先打开模态框
-    await wrapper.find(".git-panel__review-btn").trigger("click");
+    wrapper.findAllComponents(ElDropdown).find((candidate) => candidate.classes().includes("git-panel__overflow"))!.vm.$emit("command", "review");
     await nextTick();
     vi.clearAllMocks();
     runReviewMock.mockResolvedValue(undefined);
@@ -772,7 +871,8 @@ describe("GitPanel", () => {
       .mockResolvedValueOnce(undefined);
     const abortSpy = vi.spyOn(AbortController.prototype, "abort");
 
-    await wrapper.find(".git-panel__review-btn").trigger("click");
+    wrapper.findAllComponents(ElDropdown).find((candidate) => candidate.classes().includes("git-panel__overflow"))!.vm.$emit("command", "review");
+    await nextTick();
     await wrapper.find(".review-modal__rerun").trigger("click");
 
     expect(runReviewMock).toHaveBeenCalledTimes(2);

@@ -5,15 +5,16 @@ import { appState, toggleAiChat, saveSettings, activateAIConfig } from "@/stores
 import { computed, ref, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
 import { VueMonacoDiffEditor } from "@guolao/vue-monaco-editor";
 import MarkdownContent from "@/components/common/MarkdownContent.vue";
+import AgentExecutionTimeline from "@/components/ai-assistant/AgentExecutionTimeline.vue";
+import { agentTimelineState } from "@/stores/agentTimeline";
 import FocusTrapDialog from "@/components/common/FocusTrapDialog.vue";
 import { Close, Promotion, VideoPause, CopyDocument, ChatDotRound, Clock, Edit, Aim, Document, Search, VideoPlay, EditPen, Check, Close as CloseIcon, List, Setting, MagicStick, FullScreen, Monitor, Back, Delete, More } from "@element-plus/icons-vue";
 import { ElMessageBox } from "element-plus";
 import { aiState, sendMessage, clearMessages, stopGeneration, clearContext, loadConversation, addMentionedFile, removeMentionedFile, renameConversation, setSystemPromptOverride, deleteMessage, revokeMessagesFrom } from "@/stores/ai";
-import { openStandalonePage, openAIDesktopWindow } from "@/stores/aiAssistant";
+import { openStandalonePage, openAIDesktopWindow, switchMode as switchAssistantMode } from "@/stores/aiAssistant";
 import {
   agentState,
   isAgentMode,
-  toggleMode,
   extractToolCallBlocks,
   approveAndFeed,
   rejectAndFeed,
@@ -177,8 +178,8 @@ async function toggleHistory() {
 }
 
 async function handleLoadConversation(id: string) {
-  await loadConversation(id);
-  showHistory.value = false;
+  const loaded = await loadConversation(id);
+  if (loaded !== false) showHistory.value = false;
 }
 
 async function handleDeleteConversation(id: string) {
@@ -220,6 +221,7 @@ function formatTime(ts: number): string {
 
 // --- Agent mode helpers ---
 const pendingToolCalls = computed(() => agentState.pendingToolCalls);
+const agentTurnBusy = computed(() => aiState.streaming || aiState.globalStreamBusy);
 // G-SEC-02: show the denylist warning banner when there is at least one
 // pending `run` tool call — shell commands always require manual approval.
 const hasPendingRunToolCalls = computed(() =>
@@ -232,7 +234,12 @@ function toolCallIcon(kind: ToolCallKind) {
     case "write": return EditPen;
     case "run": return VideoPlay;
     case "search": return Search;
+		default: return MagicStick;
   }
+}
+
+function structuredArguments(tc: ToolCall): string {
+	return JSON.stringify(tc.arguments ?? {}, null, 2);
 }
 
 function toolCallStatusLabel(tc: ToolCall): string {
@@ -274,18 +281,22 @@ function riskBadgeLabel(level: RiskLevel | undefined): string {
   }
 }
 
-// Cache extracted tool-call blocks per message so we don't re-parse on every
-// render. Keyed by message index in aiState.messages.
+// Pure fenced compatibility calls are represented by approval cards, so hide
+// those valid blocks from normal Markdown. If a response already contains
+// native tool calls, retain any extra fenced text to expose protocol mixing.
 const cleanedMessageCache = computed(() =>
   aiState.messages.map((m) => {
-    if (m.role !== "assistant") return m.content;
-    const { cleanedMessage } = extractToolCallBlocks(m.content);
-    return cleanedMessage;
+    if (
+      m.role !== "assistant"
+      || !isAgentMode.value
+      || (m.toolCalls?.length ?? 0) > 0
+    ) return m.content;
+    return extractToolCallBlocks(m.content).cleanedMessage;
   }),
 );
 
 function handleApprove(tc: ToolCall) {
-  if (aiState.streaming) {
+  if (agentTurnBusy.value) {
     notifyWarning(t("aiChat.waitForResponse"));
     return;
   }
@@ -293,16 +304,23 @@ function handleApprove(tc: ToolCall) {
 }
 
 function handleReject(tc: ToolCall) {
-  if (aiState.streaming) {
+  if (agentTurnBusy.value) {
     notifyWarning(t("aiChat.waitForResponse"));
     return;
   }
   void rejectAndFeed(tc);
 }
 
+function handleClearPendingToolCalls(): void {
+  if (agentTurnBusy.value) {
+    notifyWarning(t("aiChat.waitForResponse"));
+    return;
+  }
+  clearPendingToolCalls();
+}
+
 function handleModeToggle() {
-  toggleMode();
-  // Clearing pending tool calls is handled by toggleMode itself.
+  switchAssistantMode(isAgentMode.value ? "chat" : "agent");
 }
 
 // P2-13: ⋯ more 菜单统一分发次级操作，保持原有功能与体验不变。
@@ -461,6 +479,10 @@ function renderContent(content: string): string {
   return renderMarkdownWithApplyButtons(content);
 }
 
+function boundedNativeToolText(value: string, limit = 640): string {
+  return value.length > limit ? `${value.slice(0, limit)}\n...` : value;
+}
+
 // --- Side diff apply (#12) ---
 const diffModalVisible = ref(false);
 const diffOriginal = ref("");
@@ -509,15 +531,16 @@ function confirmApplyDiff() {
 
 async function handleSend() {
   const text = inputText.value.trim();
-  if (!text || aiState.streaming) return;
+  if (!text || aiState.streaming || aiState.globalStreamBusy) return;
+  const accepted = await sendMessage(text);
+  if (!accepted) return;
   inputText.value = "";
-  await sendMessage(text);
   await nextTick();
   scrollToBottom();
 }
 
 async function sendSuggestion(text: string) {
-  if (aiState.streaming) return;
+  if (aiState.streaming || aiState.globalStreamBusy) return;
   await sendMessage(text);
   await nextTick();
   scrollToBottom();
@@ -636,9 +659,22 @@ async function ctxRevokeFromHere(): Promise<void> {
   }
 }
 
+const BODY_FOLLOW_THRESHOLD_PX = 48;
+const bodyFollowsLatest = ref(true);
+
+function bodyIsNearBottom(element: HTMLElement): boolean {
+  return element.scrollHeight - element.clientHeight - element.scrollTop <= BODY_FOLLOW_THRESHOLD_PX;
+}
+
+function onMessageBodyScroll(): void {
+  const element = messageListRef.value;
+  if (element) bodyFollowsLatest.value = bodyIsNearBottom(element);
+}
+
 function scrollToBottom() {
   if (messageListRef.value) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight;
+    bodyFollowsLatest.value = true;
   }
 }
 
@@ -653,6 +689,34 @@ watch(
   () => aiState.messages[aiState.messages.length - 1]?.content,
   () => {
     nextTick(scrollToBottom);
+  },
+);
+
+watch(
+  () => [
+    agentTimelineState.entries.map((entry) => [
+      entry.id,
+      entry.stage,
+      entry.status ?? "",
+      entry.updatedAt,
+      entry.detail ?? "",
+    ].join("\u0000")).join("\u0001"),
+    pendingToolCalls.value.map((call) => [
+      call.id,
+      call.status,
+      call.target,
+      call.result ?? "",
+      call.error ?? "",
+    ].join("\u0000")).join("\u0001"),
+  ] as const,
+  () => {
+    // Tool/reasoning activity is appended below the messages. Follow it only
+    // when the user was already reading the newest content; manual history
+    // scrolling must remain stable while a run continues in the background.
+    const shouldFollow = bodyFollowsLatest.value;
+    void nextTick(() => {
+      if (shouldFollow) scrollToBottom();
+    });
   },
 );
 </script>
@@ -887,7 +951,7 @@ watch(
         </span>
       </div>
 
-      <div ref="messageListRef" class="ai-chat-panel__body">
+      <div ref="messageListRef" class="ai-chat-panel__body" @scroll.passive="onMessageBodyScroll">
         <div v-if="!hasMessages" class="ai-chat-panel__empty">
           <div class="ai-chat-panel__empty-logo" aria-hidden="true">
             <el-icon :size="28"><MagicStick /></el-icon>
@@ -952,7 +1016,7 @@ watch(
           <div
             v-for="(msg, i) in aiState.messages"
             :key="msg.id"
-            v-memo="[msg.id, msg.content.length, msg.role]"
+            v-memo="[msg.id, msg.content, msg.role, msg.toolCalls, msg.toolResults, isAgentMode, cleanedMessageCache[i]]"
             class="ai-chat-panel__message"
             :class="'ai-chat-panel__message--' + msg.role"
             role="article"
@@ -974,10 +1038,23 @@ watch(
               </button>
             </div>
             <MarkdownContent
+              v-if="msg.content || !(msg.toolCalls?.length || msg.toolResults?.length)"
               class="ai-chat-panel__message-content markdown-body"
               :html="renderContent(cleanedMessageCache[i] ?? msg.content)"
               @click="handleContentClick"
             />
+            <div v-if="msg.toolCalls?.length" class="ai-chat-panel__native-tools" data-testid="chat-message-tool-calls">
+              <div v-for="call in msg.toolCalls" :key="call.id" class="ai-chat-panel__native-tool">
+                <strong>{{ call.name }}</strong>
+                <code>{{ boundedNativeToolText(call.arguments, 480) }}</code>
+              </div>
+            </div>
+            <div v-if="msg.toolResults?.length" class="ai-chat-panel__native-tools" data-testid="chat-message-tool-results">
+              <div v-for="result in msg.toolResults" :key="result.toolCallId" class="ai-chat-panel__native-tool" :class="{ 'is-error': result.isError }">
+                <strong>{{ result.isError ? 'Tool error' : 'Tool result' }}</strong>
+                <pre>{{ boundedNativeToolText(result.content) }}</pre>
+              </div>
+            </div>
           </div>
 
           <!-- 右键菜单：复制 / 撤回 / 删除 -->
@@ -1011,11 +1088,11 @@ watch(
               <span>{{ t("aiChat.toolCalls", { count: pendingToolCalls.length }) }}</span>
               <button
                 type="button"
-                v-if="!aiState.streaming"
                 class="agent-approvals__clear"
+                :disabled="agentTurnBusy"
                 :aria-label="t('aiChat.clearToolCalls')"
                 :title="t('aiChat.clearToolCalls')"
-                @click="clearPendingToolCalls"
+                @click="handleClearPendingToolCalls"
               >×</button>
             </div>
             <div v-if="hasPendingRunToolCalls" class="agent-approvals__denylist-warning">
@@ -1050,6 +1127,9 @@ watch(
               <div v-if="tc.kind === 'write' && tc.content" class="tool-call-card__preview">
                 <pre>{{ tc.content.length > 400 ? tc.content.slice(0, 400) + '\n…' : tc.content }}</pre>
               </div>
+							<div v-else-if="!['read', 'run', 'search'].includes(tc.kind) && tc.arguments" class="tool-call-card__preview">
+								<pre>{{ structuredArguments(tc).length > 600 ? structuredArguments(tc).slice(0, 600) + '\n…' : structuredArguments(tc) }}</pre>
+							</div>
               <div v-if="tc.result && (tc.status === 'executed' || tc.status === 'error')" class="tool-call-card__result">
                 <pre>{{ tc.result.length > 600 ? tc.result.slice(0, 600) + '\n…' : tc.result }}</pre>
               </div>
@@ -1057,7 +1137,7 @@ watch(
                 <button
                   type="button"
                   class="tool-call-card__btn tool-call-card__btn--approve"
-                  :disabled="aiState.streaming || !!tc.blockReason"
+                  :disabled="agentTurnBusy || !!tc.blockReason"
                   @click="handleApprove(tc)"
                 >
                   <el-icon :size="12"><Check /></el-icon>
@@ -1066,7 +1146,7 @@ watch(
                 <button
                   type="button"
                   class="tool-call-card__btn tool-call-card__btn--reject"
-                  :disabled="aiState.streaming"
+                  :disabled="agentTurnBusy"
                   @click="handleReject(tc)"
                 >
                   <el-icon :size="12"><CloseIcon /></el-icon>
@@ -1076,6 +1156,9 @@ watch(
             </div>
           </div>
         </section>
+        <!-- Keep execution activity visible even while the assistant message
+             list is empty (for example, during the first tool-call event). -->
+        <AgentExecutionTimeline />
       </div>
 
       <div class="ai-chat-panel__input-area">
@@ -1119,7 +1202,7 @@ watch(
             :placeholder="t('aiChat.inputPlaceholder')"
             name="ai-chat-input"
             :aria-label="t('a11y.aiChatInput')"
-            :disabled="aiState.streaming"
+            :disabled="aiState.streaming || aiState.globalStreamBusy"
             @keydown="handleKeydown"
           />
           <button
@@ -1138,7 +1221,7 @@ watch(
             class="ai-chat-panel__send"
             :aria-label="t('aiChat.sendMessage')"
             :title="!connectivityState.online ? t('aiChat.sendDisabledOffline') : t('aiChat.sendMessage')"
-            :disabled="!inputText.trim() || !connectivityState.online"
+            :disabled="!inputText.trim() || !connectivityState.online || aiState.globalStreamBusy"
             @click="handleSend"
           >
             <el-icon :size="14"><Promotion /></el-icon>
@@ -2310,6 +2393,11 @@ watch(
 .agent-approvals__clear:hover {
   color: var(--color-text-primary);
   background-color: var(--color-bg-surface-container-high);
+}
+
+.agent-approvals__clear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* G-SEC-02: denylist warning banner — always visible when run tool calls

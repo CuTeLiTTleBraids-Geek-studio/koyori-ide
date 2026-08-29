@@ -91,6 +91,18 @@ describe("terminal store (multi-session)", () => {
     expect(terminalState.activeSessionId).toBeNull();
   });
 
+  it("retains the session and backend handle when kill fails", async () => {
+    const id = await createSession("/path");
+    vi.mocked(terminalService.killSession).mockRejectedValueOnce(new Error("access denied"));
+
+    await killSession(id);
+
+    expect(terminalState.sessions[id]).toBeDefined();
+    expect(terminalState.sessions[id].lastError).toBe("access denied");
+    expect(terminalState.sessions[id].output).toContain("Terminal close failed");
+    expect(terminalState.activeSessionId).toBe(id);
+  });
+
   it("switches active session", async () => {
     const id1 = await createSession("/path1");
     const id2 = await createSession("/path2");
@@ -159,8 +171,25 @@ describe("terminal store (multi-session)", () => {
     vi.mocked(terminalService.startSession).mockClear();
     const reconnected = await reconnectSession(id);
     expect(reconnected).toBe(true);
-    expect(terminalService.startSession).toHaveBeenCalledWith(id, "/path", "cmd");
+    const reconnectBackendId = vi.mocked(terminalService.startSession).mock.calls[0][0];
+    expect(reconnectBackendId).not.toBe(id);
+    expect(reconnectBackendId).toContain(`${id}:reconnect:`);
+    expect(terminalService.startSession).toHaveBeenCalledWith(reconnectBackendId, "/path", "cmd");
     expect(terminalState.sessions[id].running).toBe(true);
+
+    vi.mocked(terminalService.writeSession).mockClear();
+    await writeToSession(id, "echo reconnected\n");
+    expect(terminalService.writeSession).toHaveBeenCalledWith(
+      reconnectBackendId,
+      "echo reconnected\n",
+    );
+
+    // Delayed events from the old PTY incarnation cannot stop or write into
+    // the newly reconnected session.
+    eventCallbacks.get("terminal:output")!({ data: { sessionId: id, data: "stale" } });
+    eventCallbacks.get("terminal:exited")!({ data: { sessionId: id, code: 9 } });
+    expect(terminalState.sessions[id].running).toBe(true);
+    expect(terminalState.sessions[id].output).not.toContain("stale");
   });
 
   it("G16: failed reconnect remains stopped and exposes the error", async () => {

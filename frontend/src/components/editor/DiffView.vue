@@ -15,6 +15,9 @@ const props = defineProps<{
   repoPath: string;
   filePath: string;
   visible: boolean;
+  /** P1-04 row identity: staged=true diffs HEAD vs index, false index vs
+   * worktree. Undefined keeps the legacy staged-first GetDiff behavior. */
+  staged?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -33,7 +36,9 @@ async function loadDiff() {
   if (!props.filePath || !props.repoPath) return;
   loading.value = true;
   try {
-    const diffText = await gitService.getDiff(props.repoPath, props.filePath);
+    const diffText = props.staged === undefined
+      ? await gitService.getDiff(props.repoPath, props.filePath)
+      : await gitService.getDiffForSide(props.repoPath, props.filePath, props.staged);
     diffContent.value = diffText;
   } catch (e) {
     notifyError(t("diff.loadFailed", { error: e instanceof Error ? e.message : String(e) }));
@@ -42,7 +47,7 @@ async function loadDiff() {
   }
 }
 
-watch(() => [props.visible, props.filePath], ([vis]) => {
+watch(() => [props.visible, props.filePath, props.staged], ([vis]) => {
   if (vis) loadDiff();
 }, { immediate: true });
 

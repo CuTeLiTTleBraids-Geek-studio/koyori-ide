@@ -71,6 +71,10 @@ export function clearOutputs(): void {
   outputState.outputs = [];
 }
 
+export function clearOutputsBySource(source: string): void {
+  outputState.outputs = outputState.outputs.filter((entry) => entry.source !== source);
+}
+
 export function pushProblem(
   severity: ProblemSeverity,
   file: string,

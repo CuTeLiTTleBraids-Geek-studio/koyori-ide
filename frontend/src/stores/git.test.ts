@@ -49,6 +49,7 @@ import {
   pullChanges,
   resolveConflictAsOurs,
   resolveConflictAsTheirs,
+  loadMoreGitChanges,
   stashState,
   tagState,
   loadStashes,
@@ -139,6 +140,53 @@ describe("git store", () => {
     const { gitService } = await import("@/api/services");
     await pullChanges("/repo", "upstream");
     expect(gitService.pull).toHaveBeenCalledWith("/repo", "upstream");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1-04: 截断续读 — 完整状态保留，可见窗口可分页扩大
+// ---------------------------------------------------------------------------
+
+describe("P1-04: 截断续读", () => {
+  it("refreshGit 保留全量并投影 1000 条可见窗口", async () => {
+    const { gitService } = await import("@/api/services");
+    const big = Array.from({ length: 2500 }, (_, i) => ({
+      path: `f${i}.txt`,
+      status: "Modified",
+      staged: false,
+    }));
+    (gitService.getStatus as any).mockResolvedValueOnce(big);
+    await refreshGit("/repo");
+    expect(gitState.changes).toHaveLength(1000);
+    expect(gitState.truncated).toBe(true);
+    expect(gitState.totalChanges).toBe(2500);
+    expect(gitState.changes[999].path).toBe("f999.txt");
+  });
+
+  it("loadMoreGitChanges 扩大一页窗口并返回剩余隐藏行数", async () => {
+    const { gitService } = await import("@/api/services");
+    const big = Array.from({ length: 2500 }, (_, i) => ({
+      path: `f${i}.txt`,
+      status: "Modified",
+      staged: false,
+    }));
+    (gitService.getStatus as any).mockResolvedValueOnce(big);
+    await refreshGit("/repo");
+    const hidden = loadMoreGitChanges();
+    expect(gitState.changes).toHaveLength(2000);
+    expect(gitState.truncated).toBe(true);
+    expect(hidden).toBe(500);
+    expect(loadMoreGitChanges()).toBe(0);
+    expect(gitState.changes).toHaveLength(2500);
+    expect(gitState.truncated).toBe(false);
+  });
+
+  it("非截断列表续读为 no-op 且 truncated 复位", async () => {
+    await refreshGit("/some/repo");
+    expect(gitState.truncated).toBe(false);
+    expect(gitState.totalChanges).toBe(2);
+    expect(loadMoreGitChanges()).toBe(0);
+    expect(gitState.changes).toHaveLength(2);
   });
 });
 

@@ -21,6 +21,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    css: true,
     // N-130: coverage configuration. Run with `npm run test:coverage`.
     // Reports go to frontend/coverage/. v8 provider requires no extra deps.
     coverage: {

@@ -6,7 +6,8 @@
 // Surfaces the Open VSX Registry search/browse/install flow in the "extensions"
 // activity tab. The panel has three regions:
 //   1. A security warning banner reminding the user that installs are
-//      disabled-by-default and SHA-256 verified (G-SEC-12 req. 2 & 3).
+//      disabled-by-default and subject to a SHA-256 integrity check (G-SEC-12
+//      req. 2 & 3).
 //   2. A search bar + results list (or the detail view for a selected hit).
 //      Includes a category dropdown and featured extensions landing page.
 //   3. An installed-extensions list with enable/disable + uninstall controls.
@@ -818,7 +819,7 @@ onMounted(async () => {
   padding: 10px 12px;
   border: 1px solid var(--color-border-default, #2a2a2c);
   border-radius: var(--radius-md);
-  background: var(--color-bg-surface-container-low, #161616);
+  background: var(--color-bg-surface-container-low, #fafafc);
   transition: border-color var(--transition-fast, 150ms) ease;
 }
 
@@ -1045,7 +1046,7 @@ onMounted(async () => {
   padding: 12px;
   border: 1px solid var(--color-border-default, #2a2a2c);
   border-radius: var(--radius-md);
-  background: var(--color-bg-surface-container-low, #161616);
+  background: var(--color-bg-surface-container-low, #fafafc);
   font-size: 0.8125rem;
   line-height: 1.55;
   color: var(--color-text-secondary, #a0a0a0);
@@ -1091,7 +1092,7 @@ onMounted(async () => {
   margin: 8px 0;
   padding: 8px;
   border-radius: var(--radius-sm);
-  background: var(--color-bg-surface-container, #0d0d0d);
+  background: var(--color-bg-surface-container, #f5f5f7);
   overflow-x: auto;
 }
 

@@ -4,9 +4,9 @@
  *
  * This store is the frontend counterpart to the Go ExtensionSecurityService.
  * It:
- *   - Manages extension security states (classification, verification,
+ *   - Manages extension security states (classification, SHA-256 integrity,
  *     enabled, blacklist, pending-review).
- *   - Calls the backend to classify, verify, enable/disable extensions.
+ *   - Calls the backend to classify, integrity-check, enable/disable extensions.
  *   - Shows the permission dialog (ExtensionPermissionDialog) when a user
  *     tries to enable a Reviewed or Restricted extension.
  *   - Blocks access to `appState.aiApiKey` from extension contexts
@@ -52,6 +52,9 @@ export interface ExtensionSecurityInfo {
   level: ExtensionSecurityLevel;
   permissions: ExtensionPermission[];
   sha256: string;
+  /** True only after the VSIX matched its expected SHA-256 digest. */
+  integrityChecked: boolean;
+  /** Deprecated compatibility alias for integrityChecked; do not use as a trust signal. */
   verified: boolean;
   enabled: boolean;
   blacklisted: boolean;
@@ -376,7 +379,7 @@ export function removeExtensionSecurityInfo(extensionId: string): void {
  *
  * 1. Fetch the extension's security info from the backend.
  * 2. If the extension is blacklisted → reject with an error.
- * 3. If the extension is unverified → reject with an error.
+ * 3. If the extension has not passed its SHA-256 integrity check → reject.
  * 4. If the extension is Restricted OR pending review → show the
  *    permission dialog. The actual enable happens in
  *    `confirmEnableExtension` after the user approves.
@@ -405,10 +408,18 @@ export async function requestEnableExtension(
     return false;
   }
 
+  // Integrity gate: the compatibility `verified` field must never bypass the
+  // explicit SHA-256 integrity result. Missing integrityChecked is fail-closed.
+  if (!info.integrityChecked) {
+    extensionSecurityStore.infos[extensionId] = info;
+    extensionSecurityStore.error =
+      "Extension has not passed the SHA-256 integrity check and cannot be enabled.";
+    return false;
+  }
+
   // Permission gate — Restricted or pending-review extensions require
-  // explicit user approval via the permission dialog. For Trusted/Reviewed
-  // extensions (even if unverified, since the user explicitly installed
-  // them from the marketplace and is choosing to enable), enable directly.
+  // explicit user approval via the permission dialog. Trusted and Reviewed
+  // extensions whose integrity was checked can otherwise enable directly.
   if (info.level === "restricted" || info.pendingReview) {
     // Show the permission dialog. The host component renders
     // ExtensionPermissionDialog bound to pendingApproval.

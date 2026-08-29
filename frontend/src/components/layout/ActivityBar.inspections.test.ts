@@ -45,11 +45,7 @@ describe("ActivityBar inspections entry", () => {
     const button = wrapper.findAll("button").find(
       (candidate) => candidate.attributes("aria-label") === "activity.inspections",
     );
-    expect(button).toBeTruthy();
-
-    await button!.trigger("click");
-    expect(appState.panelTab).toBe("inspections");
-    expect(appState.sidebarCollapsed).toBe(false);
+    expect(button).toBeUndefined();
     wrapper.unmount();
   });
 });

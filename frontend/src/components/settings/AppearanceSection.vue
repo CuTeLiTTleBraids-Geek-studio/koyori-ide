@@ -2,7 +2,7 @@
 // Koyori IDE 组件 · Appearance Section。
 // 喵，这是 Appearance Section，负责 Koyori IDE 的界面呈现喵~
 import { ref, computed } from "vue";
-import { ElMessageBox } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
   appState,
   saveSettings,
@@ -15,8 +15,15 @@ import {
   serializeCustomAccent,
   deserializeCustomAccent,
 } from "@/stores/app";
-import { accentThemes } from "@/lib/monaco-themes";
+import {
+  accentThemes,
+  applyVscodeExtensionTheme,
+} from "@/lib/monaco-themes";
 import type { AccentTheme } from "@/lib/monaco-themes";
+import {
+  getActiveVscodeExtensionTheme,
+  listVscodeExtensionThemes,
+} from "@/lib/vscodeExtensions";
 import type { CustomAccentTheme } from "@/types";
 import { errorMessage } from "@/lib/errors";
 import { useI18n } from "@/lib/i18n";
@@ -36,6 +43,9 @@ const accentColorList = computed(() =>
 // Custom accent local form state (mirrors appState.customAccent for editing).
 const customColor = ref(appState.customAccent?.color ?? "#ff6b35");
 const customName = ref(appState.customAccent?.name ?? t("appearance.defaultCustomName"));
+const extensionThemes = computed(() => listVscodeExtensionThemes());
+const activeExtensionThemeKey = computed(() => getActiveVscodeExtensionTheme()?.key);
+const loadingExtensionTheme = ref(false);
 
 // Theme options for the card-style selector.
 // Each card encodes BOTH a design language and a mode, so Claude is split
@@ -105,6 +115,17 @@ function handleThemeChange(key: ThemeCardKey) {
   appState.theme = mode;
   applyMode(mode);
   saveSettings();
+}
+async function handleExtensionThemeChange(value: string | number | boolean | undefined): Promise<void> {
+  if (typeof value !== "string" || !value || value === activeExtensionThemeKey.value) return;
+  loadingExtensionTheme.value = true;
+  try {
+    await applyVscodeExtensionTheme(value);
+  } catch (error: unknown) {
+    ElMessage.error(errorMessage(error));
+  } finally {
+    loadingExtensionTheme.value = false;
+  }
 }
 
 function handleFontSizeScalingChange(value: number | number[]) {
@@ -240,6 +261,33 @@ function importTheme() {
             </svg>
           </div>
         </button>
+      </div>
+    </div>
+
+    <div v-if="extensionThemes.length > 0" class="setting-block">
+      <label class="setting-label" for="installed-editor-theme">
+        {{ t("appearance.installedEditorTheme") }}
+      </label>
+      <div class="setting-control setting-control--column">
+        <el-select
+          id="installed-editor-theme"
+          :model-value="activeExtensionThemeKey"
+          :disabled="loadingExtensionTheme"
+          :loading="loadingExtensionTheme"
+          :placeholder="t('appearance.installedEditorThemePlaceholder')"
+          :aria-label="t('appearance.installedEditorThemeAria')"
+          size="default"
+          style="width: var(--setting-control-width)"
+          @change="handleExtensionThemeChange"
+        >
+          <el-option
+            v-for="theme in extensionThemes"
+            :key="theme.key"
+            :label="`${theme.label} — ${theme.extensionId}`"
+            :value="theme.key"
+          />
+        </el-select>
+        <span class="field-hint">{{ t("appearance.installedEditorThemeHint") }}</span>
       </div>
     </div>
 
@@ -532,6 +580,18 @@ function importTheme() {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.setting-control--column {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-hint {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 /* ── Custom accent editor ── */

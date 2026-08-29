@@ -10,7 +10,7 @@ import {
   createNewAIConfig,
   saveSettings,
 } from "@/stores/app";
-import type { AIProviderConfig } from "@/types";
+import type { AIProviderConfig, ReasoningEffort } from "@/types";
 import {
   PROVIDER_PRESETS,
   getProviderPreset,
@@ -35,6 +35,7 @@ interface DraftConfig {
   baseUrl: string;
   model: string;
   temperature: number;
+  reasoningEffort: ReasoningEffort;
   maxTokens: number;
   systemPrompt: string;
 }
@@ -46,6 +47,7 @@ interface PortableAIConfigJson {
   baseUrl?: string;
   model?: string;
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
   maxTokens?: number;
   systemPrompt?: string;
 }
@@ -64,6 +66,41 @@ const fetchingModels = ref(false);
 const autoFetchModels = ref(true);
 const configJsonText = ref("");
 let modelFetchTimer: ReturnType<typeof setTimeout> | null = null;
+const reasoningCapabilityRequestId = ref(0);
+const reasoningSupport = ref<"supported" | "unsupported" | "unknown">("unknown");
+const reasoningRequestField = ref("");
+
+async function refreshReasoningCapability(): Promise<void> {
+  const draftValue = editingDraft.value;
+  const requestId = ++reasoningCapabilityRequestId.value;
+  if (!draftValue || !draftValue.provider || !draftValue.model) {
+    reasoningSupport.value = "unknown";
+    reasoningRequestField.value = "";
+    return;
+  }
+  const provider = draftValue.provider;
+  const model = draftValue.model;
+  const protocol = draftValue.protocol || "openai";
+  try {
+    const capability = await aiService.getReasoningCapability(provider, model, protocol);
+    if (
+      requestId !== reasoningCapabilityRequestId.value ||
+      editingDraft.value !== draftValue ||
+      draftValue.provider !== provider ||
+      draftValue.model !== model ||
+      (draftValue.protocol || "openai") !== protocol
+    ) {
+      return;
+    }
+    reasoningSupport.value = capability.status;
+    reasoningRequestField.value = capability.requestField ?? "";
+  } catch {
+    if (requestId !== reasoningCapabilityRequestId.value || editingDraft.value !== draftValue) return;
+    reasoningSupport.value = "unknown";
+    reasoningRequestField.value = "";
+  }
+}
+
 let suppressProviderAutoFill = false;
 let suppressModelAutoFetch = false;
 
@@ -168,6 +205,18 @@ const modelOptions = computed(() => {
 function providerLabel(providerId: string): string {
   return getProviderPreset(providerId)?.label ?? providerId;
 }
+watch(
+  () => [
+    editingDraft.value?.provider,
+    editingDraft.value?.model,
+    editingDraft.value?.protocol,
+  ],
+  () => {
+    void refreshReasoningCapability();
+  },
+  { immediate: true },
+);
+
 
 function syncConfigJsonFromDraft(): void {
   if (!editingDraft.value) {
@@ -181,8 +230,8 @@ function syncConfigJsonFromDraft(): void {
     baseUrl: normalizeAiBaseUrl(editingDraft.value.baseUrl),
     model: editingDraft.value.model,
     temperature: editingDraft.value.temperature,
+    reasoningEffort: editingDraft.value.reasoningEffort,
     maxTokens: editingDraft.value.maxTokens,
-    systemPrompt: editingDraft.value.systemPrompt,
   };
   configJsonText.value = JSON.stringify(portable, null, 2);
 }
@@ -219,6 +268,7 @@ watch(
     editingDraft.value?.temperature,
     editingDraft.value?.maxTokens,
     editingDraft.value?.systemPrompt,
+    editingDraft.value?.reasoningEffort,
   ],
   () => {
     if (editingDraft.value) syncConfigJsonFromDraft();
@@ -308,8 +358,9 @@ function normalizeDraft(cfg: AIProviderConfig): DraftConfig {
     apiKey: cfg.apiKey,
     apiKeyConfigured: cfg.apiKeyConfigured ?? false,
     baseUrl: normalizeAiBaseUrl(cfg.baseUrl ?? ""),
-    model: cfg.model,
+    model: cfg.model ?? "",
     temperature: cfg.temperature ?? 0.7,
+    reasoningEffort: cfg.reasoningEffort ?? "",
     maxTokens: cfg.maxTokens ?? 4096,
     systemPrompt: cfg.systemPrompt ?? "",
   };
@@ -427,9 +478,9 @@ function handleApplyJson(): void {
     if (typeof parsed.baseUrl === "string") {
       editingDraft.value.baseUrl = normalizeAiBaseUrl(parsed.baseUrl);
     }
-    if (typeof parsed.model === "string") editingDraft.value.model = parsed.model;
-    if (typeof parsed.temperature === "number") editingDraft.value.temperature = parsed.temperature;
-    if (typeof parsed.maxTokens === "number") editingDraft.value.maxTokens = parsed.maxTokens;
+    if (parsed.reasoningEffort === "" || parsed.reasoningEffort === "low" || parsed.reasoningEffort === "medium" || parsed.reasoningEffort === "high") {
+      editingDraft.value.reasoningEffort = parsed.reasoningEffort;
+    }
     if (typeof parsed.systemPrompt === "string") {
       editingDraft.value.systemPrompt = parsed.systemPrompt;
     }
@@ -454,16 +505,16 @@ async function handleTestConnection() {
   testingConnection.value = true;
   testResult.value = null;
   try {
-    editingDraft.value.baseUrl = normalizeAiBaseUrl(editingDraft.value.baseUrl);
     const newKey = editingDraft.value.apiKey;
-    aiService.setConfig({
+    await aiService.setConfig({
       apiKey: newKey || undefined,
       useStoredKey: !newKey,
       configId: editingDraft.value.id,
+      provider: editingDraft.value.provider,
       baseUrl: editingDraft.value.baseUrl,
       model: editingDraft.value.model,
-      systemPrompt: editingDraft.value.systemPrompt ?? "",
       temperature: editingDraft.value.temperature ?? 0.7,
+      reasoningEffort: editingDraft.value.reasoningEffort,
       maxTokens: editingDraft.value.maxTokens ?? 4096,
       protocol: editingDraft.value.protocol ?? "openai",
     });
@@ -698,6 +749,21 @@ async function handleTestConnection() {
                 style="width: var(--setting-control-width)"
               />
               <span class="slider-value">{{ draft.temperature.toFixed(1) }}</span>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <label class="setting-label">{{ t("aiSection.reasoningEffort") }}</label>
+            <div class="setting-control setting-control--stack">
+              <el-select v-model="draft.reasoningEffort" size="default" style="width: var(--setting-control-width)">
+                <el-option :label="t('aiSection.reasoningEffortDefault')" value="" />
+                <el-option :label="t('aiSection.reasoningEffortLow')" value="low" :disabled="reasoningSupport !== 'supported'" />
+                <el-option :label="t('aiSection.reasoningEffortMedium')" value="medium" :disabled="reasoningSupport !== 'supported'" />
+                <el-option :label="t('aiSection.reasoningEffortHigh')" value="high" :disabled="reasoningSupport !== 'supported'" />
+              </el-select>
+              <span v-if="reasoningSupport === 'unsupported'" class="field-hint field-hint--warning">{{ t("aiSection.reasoningUnsupported") }}</span>
+              <span v-else-if="reasoningSupport === 'unknown'" class="field-hint">{{ t("aiSection.reasoningUnknown") }}</span>
+              <span v-else class="field-hint">{{ t("aiSection.reasoningSupported", { field: reasoningRequestField }) }}</span>
             </div>
           </div>
 

@@ -7,9 +7,16 @@ vi.mock("@/stores/app", () => ({
 import {
   assertNotExtensionContext,
   classifyExtensionContext,
+  extensionSecurityStore,
   getAiApiKeyForContext,
   isExtensionContext,
+  pendingApproval,
+  requestEnableExtension,
+  resetExtensionSecurityStore,
+  setExtensionSecurityBackend,
+  type ExtensionSecurityBackend,
   type ExtensionContextSignals,
+  type ExtensionSecurityInfo,
 } from "@/stores/extensionSecurity";
 
 const trustedSignals: ExtensionContextSignals = {
@@ -82,5 +89,44 @@ describe("extension resource isolation", () => {
     expect(() => assertNotExtensionContext("read-ai-key")).toThrow(
       /blocked in extension contexts/,
     );
+  });
+});
+
+describe("extension SHA-256 integrity gate", () => {
+  afterEach(() => {
+    resetExtensionSecurityStore();
+    setExtensionSecurityBackend(null);
+  });
+
+  it("fails closed when integrityChecked is false even if verified is true", async () => {
+    const info: ExtensionSecurityInfo = {
+      extensionId: "acme.unchecked",
+      level: "trusted",
+      permissions: [],
+      sha256: "expected-digest",
+      integrityChecked: false,
+      verified: true,
+      enabled: false,
+      blacklisted: false,
+      pendingReview: false,
+    };
+    const setExtensionEnabled = vi.fn().mockResolvedValue(undefined);
+    const backend: ExtensionSecurityBackend = {
+      classifyExtension: vi.fn(),
+      registerInstall: vi.fn(),
+      getSecurityInfo: vi.fn().mockResolvedValue(info),
+      setExtensionEnabled,
+      listSecurityInfo: vi.fn(),
+      isBlacklisted: vi.fn(),
+      addToBlacklist: vi.fn(),
+      canInstall: vi.fn(),
+    };
+    setExtensionSecurityBackend(backend);
+
+    await expect(requestEnableExtension(info.extensionId)).resolves.toBe(false);
+
+    expect(setExtensionEnabled).not.toHaveBeenCalled();
+    expect(pendingApproval.value).toBeNull();
+    expect(extensionSecurityStore.error).toContain("SHA-256 integrity check");
   });
 });

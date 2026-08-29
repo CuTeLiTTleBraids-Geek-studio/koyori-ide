@@ -15,6 +15,8 @@ export interface GitState {
   error: string | null;
   /** prompt-7 Task L: status list was capped for UI. */
   truncated: boolean;
+  /** P1-04: total status rows; `changes` is the visible window of it. */
+  totalChanges: number;
 }
 
 /** Cap Git status list in UI to avoid jank on huge dirty trees (prompt-7 Task L). */
@@ -29,6 +31,24 @@ function currentRepoPath(): string {
   return _lastRepoPath;
 }
 
+/** P1-04 截断续读：完整状态保留在此，`gitState.changes` 只是可见窗口。 */
+let _allChanges: GitFileChange[] = [];
+
+function applyVisibleGitChanges(): void {
+  gitState.changes = _allChanges.slice(0, MAX_GIT_UI_CHANGES);
+  gitState.truncated = _allChanges.length > gitState.changes.length;
+  gitState.totalChanges = _allChanges.length;
+}
+
+/** P1-04 续读：把可见窗口扩大一页，返回仍隐藏的行数（0 表示已全部可见）。 */
+export function loadMoreGitChanges(): number {
+  if (_allChanges.length <= gitState.changes.length) return 0;
+  const pages = Math.floor(gitState.changes.length / MAX_GIT_UI_CHANGES) + 1;
+  gitState.changes = _allChanges.slice(0, pages * MAX_GIT_UI_CHANGES);
+  gitState.truncated = _allChanges.length > gitState.changes.length;
+  return _allChanges.length - gitState.changes.length;
+}
+
 export const gitState = reactive<GitState>({
   changes: [],
   branchName: "",
@@ -37,6 +57,7 @@ export const gitState = reactive<GitState>({
   loading: false,
   error: null,
   truncated: false,
+  totalChanges: 0,
 });
 
 /**
@@ -93,13 +114,8 @@ export async function refreshGit(repoPath: string): Promise<void> {
       gitService.getStatus(repoPath),
       gitService.getBranchInfo(repoPath),
     ]);
-    if (changes.length > MAX_GIT_UI_CHANGES) {
-      gitState.changes = changes.slice(0, MAX_GIT_UI_CHANGES);
-      gitState.truncated = true;
-    } else {
-      gitState.changes = changes;
-      gitState.truncated = false;
-    }
+    _allChanges = changes;
+    applyVisibleGitChanges();
     gitState.branchName = info.name;
     gitState.ahead = info.ahead;
     gitState.behind = info.behind;
@@ -169,12 +185,15 @@ export async function commitChanges(repoPath: string, message: string): Promise<
 }
 
 export function clearGitState(): void {
+  _allChanges = [];
   gitState.changes = [];
   gitState.branchName = "";
   gitState.ahead = 0;
   gitState.behind = 0;
   gitState.loading = false;
   gitState.error = null;
+  gitState.truncated = false;
+  gitState.totalChanges = 0;
 }
 
 export async function loadBranches(repoPath: string) {
