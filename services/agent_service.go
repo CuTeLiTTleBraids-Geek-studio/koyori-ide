@@ -52,7 +52,7 @@ var dangerousPatterns = []denyPattern{
 	{"rm -rf (recursive force delete)", regexp.MustCompile(`(?i)\brm\s+(-\S*r\S*f\S*|-\S*f\S*r\S*)`)},
 	{"rm targeting root, home, or wildcard", regexp.MustCompile(`(?i)\brm\s+(-\S+\s+)*[/~*](\s|$)`)},
 	{"del /s /f /q (Windows destructive delete)", regexp.MustCompile(`(?i)\bdel\s+/(s|f|q)`)},
-	{"format (disk format)", regexp.MustCompile(`(?i)\bformat\b`)},
+	{"format (disk format)", regexp.MustCompile(`(?i)(^|[\n;&|]\s*|\bsudo\s+)format\s+\S`)},
 	{"mkfs (filesystem creation)", regexp.MustCompile(`(?i)\bmkfs\b`)},
 	{"fork bomb", regexp.MustCompile(`:\s*\(\)\s*\{`)},
 	{"shutdown / reboot / halt", regexp.MustCompile(`(?i)\b(shutdown|reboot|halt)\b`)},

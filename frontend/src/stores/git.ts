@@ -74,7 +74,7 @@ export const gitState = reactive<GitState>({
  * 会产生混合分隔符（"C:\repo/src/file.txt"）。将两部分都统一为正斜杠
  * 后再拼接，确保跨平台一致性。
  */
-function joinWorkspacePath(repoPath: string, file: string): string {
+export function joinWorkspacePath(repoPath: string, file: string): string {
   const normalizedRepo = repoPath.replace(/\\/g, "/");
   const normalizedFile = file.replace(/\\/g, "/");
   return `${normalizedRepo}/${normalizedFile}`;

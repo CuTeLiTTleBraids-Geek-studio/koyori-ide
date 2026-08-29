@@ -234,6 +234,22 @@ func TestCheckCommand_Elevated(t *testing.T) {
 	}
 }
 
+func TestCheckCommand_FormatDenylistDoesNotFlagFormatterCommands(t *testing.T) {
+	svc := NewAgentService()
+	// P19 P2: the disk-format pattern anchors on command position, so
+	// formatter tooling whose NAME contains "format" is no longer badged
+	// dangerous (the pattern is a UX hint, not a security boundary).
+	for _, cmd := range []string{
+		"clang-format -i main.go",
+		"git format-patch origin/main",
+	} {
+		check := svc.CheckCommand(cmd)
+		if check.RiskLevel == RiskDangerous || check.Blocked {
+			t.Errorf("formatter command %q must not hit the disk-format denylist: risk=%q blocked=%v", cmd, check.RiskLevel, check.Blocked)
+		}
+	}
+}
+
 func TestCheckCommand_Dangerous(t *testing.T) {
 	svc := NewAgentService()
 	cases := []string{
@@ -241,6 +257,8 @@ func TestCheckCommand_Dangerous(t *testing.T) {
 		"rm -fr /tmp",
 		"rm -rfv ~",
 		"format C:",
+		"format /dev/sda1",
+		"sudo format /dev/sdb",
 		"mkfs.ext4 /dev/sda1",
 		"shutdown -h now",
 		"reboot",

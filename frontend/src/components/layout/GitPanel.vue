@@ -57,6 +57,7 @@ import {
   bisectGood,
   bisectBad,
   bisectReset,
+  joinWorkspacePath,
 } from "@/stores/git";
 import { openFileFromPath } from "@/stores/editor";
 import { ArrowDown, Plus, Minus, Check, Top, Bottom, Aim, Close, Refresh } from "@element-plus/icons-vue";
@@ -385,7 +386,9 @@ async function handleAcceptTheirs(conflict: MergeConflict) {
 
 async function handleOpenEditor(conflict: MergeConflict) {
   if (!repoPath.value) return;
-  const fullPath = repoPath.value + "/" + conflict.file;
+  // P19 P2: reuse the store's separator-normalizing join (M-29) instead of
+  // bare "/" concatenation, which produces mixed separators on Windows roots.
+  const fullPath = joinWorkspacePath(repoPath.value, conflict.file);
   await openFileFromPath(fullPath);
 }
 

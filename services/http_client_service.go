@@ -316,7 +316,11 @@ func (s *HTTPClientService) SendRequest(input HTTPRequest, options HTTPRequestOp
 	if int64(len(body)) > maxResponseBytes {
 		err = fmt.Errorf("response body exceeds max size %d bytes", maxResponseBytes)
 		result.DurationMs = time.Since(started).Milliseconds()
-		_ = s.recordHistory(input, result, err, secretValues)
+		// P19 P2: keep the history-persist failure visible (the happy path
+		// wraps it too) without masking the primary size error.
+		if histErr := s.recordHistory(input, result, err, secretValues); histErr != nil {
+			err = fmt.Errorf("%w (persist HTTP history: %v)", err, histErr)
+		}
 		return result, err
 	}
 	result.Status = resp.StatusCode

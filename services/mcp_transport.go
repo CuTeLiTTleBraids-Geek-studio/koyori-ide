@@ -476,7 +476,14 @@ func (t *httpTransport) postRequest(ctx context.Context, req *jsonrpcOutboundMes
 		if resp.StatusCode < http.StatusBadRequest {
 			return nil, fmt.Errorf("MCP server redirect rejected with status %d: %w", resp.StatusCode, ErrNotAllowed)
 		}
-		return nil, fmt.Errorf("mcp server returned %d: %s", resp.StatusCode, string(body))
+		// P19 P2: bound the body embedded in the error message at 4096 bytes,
+		// matching the SSE-side cap; the 1MB read above exists for successful
+		// JSON/SSE payloads, not for error text.
+		snippet := body
+		if len(snippet) > 4096 {
+			snippet = snippet[:4096]
+		}
+		return nil, fmt.Errorf("mcp server returned %d: %s", resp.StatusCode, string(snippet))
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return &jsonrpcResponse{}, nil
@@ -584,6 +591,13 @@ type sseTransport struct {
 }
 
 func newSSETransport(cfg MCPServerConfig) *sseTransport {
+	// P19 P2: response headers must arrive promptly even though the SSE
+	// stream itself must never time out (Timeout: 0). Without
+	// ResponseHeaderTimeout a hung server stalls connect indefinitely.
+	// NewSSRFSafeTransport returns a fresh instance per call, so tuning this
+	// copy leaves every other SSRF-safe transport untouched.
+	ssrfTransport := NewSSRFSafeTransport()
+	ssrfTransport.ResponseHeaderTimeout = 30 * time.Second
 	return &sseTransport{
 		url:     cfg.URL,
 		headers: cfg.Headers,
@@ -591,7 +605,7 @@ func newSSETransport(cfg MCPServerConfig) *sseTransport {
 		client: &http.Client{
 			Timeout:       0,
 			CheckRedirect: noRedirectPolicy,
-			Transport:     NewSSRFSafeTransport(),
+			Transport:     ssrfTransport,
 		}, // no timeout for SSE
 		events:        make(chan jsonrpcResponse, 16),
 		done:          make(chan struct{}),
