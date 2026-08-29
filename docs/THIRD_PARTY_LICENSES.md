@@ -7,8 +7,8 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 ## Source Digests
 
 - `go.mod`: `d9228883172bdd6339d4ec2ac42fccd86d76433e53a9438c4dd6e80c1a94f57a`
-- `go.sum`: `9e8d88579ac642abe7605513a75e5c84c0db8e047df27046a0554184d7ea5bfb`
-- `frontend/package-lock.json`: `f1c0aed759a7a5dccd0c58a2bb685b0c8cc94248d0ed6e36106da00adc6ac55f`
+- `go.sum`: `8644bbdabb73346cba4701c9815f1c4b448146cd9211cc16885270c6d681f23c`
+- `frontend/package-lock.json`: `825ed074fa6264d6402c830120557c4a34121d444b8d5ad9eba1b769d037e6f0`
 
 ## Review Summary
 
@@ -592,7 +592,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | monaco-editor | 0.52.2 | MIT | package-lock.json |
 | ms | 2.1.3 | MIT | package-lock.json |
 | muggle-string | 0.4.1 | MIT | package-lock.json |
-| nanoid | 3.3.17 | MIT | manual package.json override |
+| nanoid | 3.3.18 | MIT | package-lock.json |
 | napi-postinstall | 0.3.4 | MIT | package-lock.json |
 | natural-compare | 1.4.0 | MIT | package-lock.json |
 | node-int64 | 0.4.0 | MIT | package-lock.json |
