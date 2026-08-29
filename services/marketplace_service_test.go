@@ -17,11 +17,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -145,8 +147,25 @@ func buildUpdateVSIX(t *testing.T, version string, activationEvents []string, ma
 	})
 }
 
+// allowLoopbackDownloadURLs 替换包级下载 URL 校验器，允许环回 httptest
+// 服务器充当 registry/下载源（P19 P1-04：生产校验器 ValidateNonPrivateURL
+// 会拒绝环回；本桩仅放宽私网检查，scheme/userinfo/https 规则仍生效）。
+// 生产校验由下方 P1-04 专项测试在保持包级默认时单独覆盖。
+func allowLoopbackDownloadURLs(t *testing.T) {
+	t.Helper()
+	original := validateDownloadURL
+	t.Cleanup(func() { validateDownloadURL = original })
+	validateDownloadURL = func(raw string) (*url.URL, error) {
+		if err := ValidateBaseURL(raw); err != nil {
+			return nil, err
+		}
+		return url.Parse(raw)
+	}
+}
+
 func configureUpdateRegistry(t *testing.T, svc *MarketplaceService, version string, vsix []byte, hash string) {
 	t.Helper()
+	allowLoopbackDownloadURLs(t)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -391,6 +410,7 @@ func TestMarketplaceInstall_FailureAfterStopInvalidatesLifecycle(t *testing.T) {
 // raw hash. This test verifies the URL is fetched and the hash extracted.
 func TestMarketplaceResolveSha256_FromUrl(t *testing.T) {
 	wantHash := "232aeafb01f069824fdd92d3e628c1c442bbcfa1d3cc945ff97076340bb2b4a6"
+	allowLoopbackDownloadURLs(t) // 环回 httptest 充当 sha256 文件源（P1-04 SSRF 门见专项测试）
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The .sha256 file format: "<hash>  <filename>\n"
 		fmt.Fprintf(w, "%s  ms-python.python-2026.4.0.vsix\n", wantHash)
@@ -1762,6 +1782,7 @@ func TestSetRegistryURLSSRF(t *testing.T) {
 // 3. 安装后临时文件可被调用方删除
 func TestInstallVSIXFromTempFile(t *testing.T) {
 	svc, _ := newTestMarketplaceService(t)
+	allowLoopbackDownloadURLs(t)
 	vsixData, wantHash := buildValidVSIX(t)
 
 	// 用 httptest.Server 提供 VSIX 下载
@@ -1999,5 +2020,117 @@ func TestManualRemoveWalkDirFunc_ClassifiesWithoutInfo(t *testing.T) {
 				t.Errorf("dirs = %v, want %v", dirs, tt.wantDirs)
 			}
 		})
+	}
+}
+
+// --- P19 P1-04: registry-supplied download/sha256 URL SSRF gate ---
+//
+// 以下测试保持包级默认校验器 ValidateNonPrivateURL（生产行为），验证
+// registry 响应中的 downloadUrl / sha256 URL 在发起任何请求前必须通过
+// 与 SetRegistryURL 相同的私网/环回/link-local 拒绝检查。
+
+func TestDownloadVSIXToTempFile_RejectsPrivateURLs(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	// 注意：刻意不调用 allowLoopbackDownloadURLs —— 本测试覆盖生产校验器。
+	cases := []struct{ name, rawURL string }{
+		{"loopback ipv4", "http://127.0.0.1:9/evil.vsix"},
+		{"loopback hostname", "http://localhost:9/evil.vsix"},
+		{"link-local metadata", "https://169.254.169.254/latest/meta-data/"},
+		{"rfc1918 private", "https://10.1.2.3/evil.vsix"},
+		{"non-http scheme", "file:///etc/passwd"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpPath, gotHash, err := svc.downloadVSIXToTempFile(tc.rawURL)
+			if err == nil {
+				os.Remove(tmpPath)
+				t.Fatalf("download URL %q must be rejected", tc.rawURL)
+			}
+			if tmpPath != "" {
+				os.Remove(tmpPath)
+				t.Errorf("no temp file must be created, got %q", tmpPath)
+			}
+			if gotHash != "" {
+				t.Errorf("no hash must be returned, got %q", gotHash)
+			}
+			if !strings.Contains(err.Error(), "rejected") {
+				t.Errorf("error should report the SSRF rejection, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveSha256_RejectsPrivateURL(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	_, err := svc.resolveSha256("http://127.0.0.1:9/evil.vsix.sha256")
+	if err == nil {
+		t.Fatal("private sha256 URL must be rejected before any fetch")
+	}
+	if !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("error should report the SSRF rejection, got: %v", err)
+	}
+}
+
+func TestDownloadVSIXToTempFile_DoesNotFollowRedirects(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	allowLoopbackDownloadURLs(t) // 环回 httptest 充当下载源
+	var privateHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			// 302 指向同服务器的 "私网目标"：若 client 跟随重定向，
+			// 计数器会递增。环回下载源本身已被桩校验器放行。
+			http.Redirect(w, r, "/private/target.vsix", http.StatusFound)
+		case "/private/target.vsix":
+			atomic.AddInt32(&privateHits, 1)
+			_, _ = w.Write([]byte("pwned"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmpPath, _, err := svc.downloadVSIXToTempFile(srv.URL)
+	if err == nil {
+		os.Remove(tmpPath)
+		t.Fatal("redirected download must be rejected")
+	}
+	if !strings.Contains(err.Error(), "302") {
+		t.Errorf("error should report the 3xx status, got: %v", err)
+	}
+	if atomic.LoadInt32(&privateHits) != 0 {
+		t.Error("redirect target must never be contacted")
+	}
+}
+
+func TestDownloadAndInstallExtension_RejectsPrivateDownloadURL(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	// registry 本身是环回 httptest（直接注入 registryURL，绕过
+	// SetRegistryURL 的环回拒绝），但它返回的 VSIX downloadUrl 指向私网
+	// —— 必须在下载前被生产校验器拒绝。sha256 为裸十六进制（不触发
+	// sha256 文件抓取），确保拒绝点位于 VSIX 下载门。
+	sum := sha256.Sum256([]byte("never downloaded"))
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ovsxExtension{
+			Name:      "hello",
+			Namespace: "acme",
+			Version:   "1.0.0",
+			Files: ovsxFileMap{
+				"download": "http://127.0.0.1:9/evil.vsix",
+				"sha256":   hex.EncodeToString(sum[:]),
+			},
+		})
+	}))
+	defer reg.Close()
+	svc.mu.Lock()
+	svc.registryURL = reg.URL + "/api"
+	svc.mu.Unlock()
+
+	err := svc.DownloadAndInstallExtension("acme", "hello", "1.0.0")
+	if err == nil {
+		t.Fatal("private download URL must be rejected before download")
+	}
+	if !strings.Contains(err.Error(), "download VSIX") || !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("error should report the download-gate rejection, got: %v", err)
 	}
 }

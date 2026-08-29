@@ -1083,6 +1083,14 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 	return nil
 }
 
+// validateDownloadURL guards registry-supplied download/sha256 URLs (P19
+// P1-04). Production uses ValidateNonPrivateURL — the same gate
+// SetRegistryURL applies to the registry base itself — so a compromised or
+// hostile registry response cannot aim marketplace fetches at
+// private/loopback/link-local targets. Tests may swap it to admit httptest
+// loopback servers (see allowLoopbackDownloadURLs in the test file).
+var validateDownloadURL = ValidateNonPrivateURL
+
 // downloadVSIXToTempFile (P2-4) 流式下载 VSIX 到临时文件，同时用 TeeReader
 // 计算 SHA-256。返回临时文件路径与计算出的哈希。调用方负责删除临时文件。
 //
@@ -1090,6 +1098,12 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 // 流式方案降低内存峰值：仅 io.Copy 默认 32KB 缓冲 + 哈希状态，与 VSIX 大小无关。
 // 落盘后用 zip.OpenReader 从磁盘读取（见 installFromVSIXFile），避免全量驻留内存。
 func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath, gotHash string, err error) {
+	// P19 P1-04: the download URL comes from the registry response, not from
+	// the user-validated registry base. Re-apply the SSRF gate before any
+	// byte is fetched.
+	if _, err := validateDownloadURL(downloadURL); err != nil {
+		return "", "", fmt.Errorf("download URL %q rejected: %w", downloadURL, err)
+	}
 	s.mu.Lock()
 	sharedClient := s.httpClient
 	s.mu.Unlock()
@@ -1101,6 +1115,10 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	// dedicated client that reuses the shared transport but has no overall
 	// Timeout, and enforce a longer deadline via context instead.
 	client := &http.Client{}
+	// P19 P1-04: never follow redirects — a 302 aimed at an internal target
+	// must not be chased; the 3xx response falls through to the status
+	// check below and is rejected.
+	client.CheckRedirect = noRedirectPolicy
 	if sharedClient.Transport != nil {
 		client.Transport = sharedClient.Transport
 	}
@@ -2155,7 +2173,11 @@ func (s *MarketplaceService) resolveSha256(raw string) (string, error) {
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		return strings.TrimSpace(raw), nil
 	}
-	// Fetch the .sha256 file content.
+	// Fetch the .sha256 file content. The URL is registry-controlled, so it
+	// passes the same SSRF gate as the VSIX download (P19 P1-04).
+	if _, err := validateDownloadURL(raw); err != nil {
+		return "", fmt.Errorf("sha256 URL %q rejected: %w", raw, err)
+	}
 	data, err := s.httpGetBytes(raw)
 	if err != nil {
 		return "", fmt.Errorf("fetch sha256 file: %w", err)
