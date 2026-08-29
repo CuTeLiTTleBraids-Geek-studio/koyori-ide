@@ -655,22 +655,34 @@ export function markMcpWorkspaceChanged(workspaceRoot: string): void {
 }
 
 /**
+ * P1-01 stale 守卫：每个 server 的刷新序号。快速重复刷新（或工作区切换
+ * 后的重连刷新）时，只有序号与当前一致的那次刷新允许回写上下文状态，
+ * 迟到的旧响应一律丢弃。
+ */
+const contextRefreshSeqs = new Map<string, number>();
+
+/**
  * 刷新一个 server 的发现状态：先取 capability 快照（后端校验 workspace/
  * lifecycle generation），resources/prompts 仅在后端声明 supported 时列出。
  * 每个家族独立区分 loaded/empty/unsupported/error，失败保留可诊断错误。
  */
 export async function refreshMcpServerContext(name: string): Promise<void> {
+  const seq = (contextRefreshSeqs.get(name) ?? 0) + 1;
+  contextRefreshSeqs.set(name, seq);
   const ctx = ensureServerContext(name);
   ctx.status = "loading";
   ctx.error = null;
   try {
     const capabilities = await getBackend().serverCapabilities(name);
+    if (contextRefreshSeqs.get(name) !== seq) return;
     ctx.capabilities = capabilities;
     ctx.lifecycleGeneration = capabilities.lifecycleGeneration;
-    await refreshContextFamily(name, ctx, "resources");
-    await refreshContextFamily(name, ctx, "prompts");
+    await refreshContextFamily(name, ctx, "resources", seq);
+    await refreshContextFamily(name, ctx, "prompts", seq);
+    if (contextRefreshSeqs.get(name) !== seq) return;
     ctx.status = "loaded";
   } catch (e: unknown) {
+    if (contextRefreshSeqs.get(name) !== seq) return;
     ctx.status = "error";
     ctx.error = errorMessage(e);
   }
@@ -680,6 +692,7 @@ async function refreshContextFamily(
   name: string,
   ctx: McpServerContextState,
   family: "resources" | "prompts",
+  seq: number,
 ): Promise<void> {
   const capability = ctx.capabilities?.capabilities[family];
   if (!capability || capability.state !== "supported") {
@@ -702,9 +715,12 @@ async function refreshContextFamily(
     ctx.resourcesStatus = "loading";
     ctx.resourcesError = null;
     try {
-      ctx.resources = await getBackend().listResources(name);
+      const resources = await getBackend().listResources(name);
+      if (contextRefreshSeqs.get(name) !== seq) return;
+      ctx.resources = resources;
       ctx.resourcesStatus = ctx.resources.length === 0 ? "empty" : "loaded";
     } catch (e: unknown) {
+      if (contextRefreshSeqs.get(name) !== seq) return;
       ctx.resourcesStatus = "error";
       ctx.resourcesError = errorMessage(e);
     }
@@ -712,9 +728,12 @@ async function refreshContextFamily(
     ctx.promptsStatus = "loading";
     ctx.promptsError = null;
     try {
-      ctx.prompts = await getBackend().listPrompts(name);
+      const prompts = await getBackend().listPrompts(name);
+      if (contextRefreshSeqs.get(name) !== seq) return;
+      ctx.prompts = prompts;
       ctx.promptsStatus = ctx.prompts.length === 0 ? "empty" : "loaded";
     } catch (e: unknown) {
+      if (contextRefreshSeqs.get(name) !== seq) return;
       ctx.promptsStatus = "error";
       ctx.promptsError = errorMessage(e);
     }
@@ -861,4 +880,5 @@ export function resetMcpStore(): void {
   backend = null;
   bindingsCache = null;
   contextSweeper = null;
+  contextRefreshSeqs.clear();
 }

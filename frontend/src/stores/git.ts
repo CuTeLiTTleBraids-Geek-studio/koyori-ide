@@ -26,6 +26,14 @@ export const MAX_GIT_UI_CHANGES = 1000;
  * 无需 repoPath 参数的操作在完成后刷新 git 状态使用。 */
 let _lastRepoPath = "";
 
+/** P1-01 stale 守卫：并发刷新/加载时只有最新一次调用允许回写状态，
+ * 快速切换仓库（或重复触发）后迟到的旧响应一律丢弃，不覆盖新数据。 */
+let _refreshGitGeneration = 0;
+let _conflictsGeneration = 0;
+let _stashGeneration = 0;
+let _tagGeneration = 0;
+let _submoduleGeneration = 0;
+
 /** currentRepoPath 返回最近一次 refreshGit 使用的仓库路径。 */
 function currentRepoPath(): string {
   return _lastRepoPath;
@@ -106,6 +114,7 @@ export const rebaseState = reactive<RebaseState>({
 });
 
 export async function refreshGit(repoPath: string): Promise<void> {
+  const generation = ++_refreshGitGeneration;
   gitState.loading = true;
   gitState.error = null;
   _lastRepoPath = repoPath;
@@ -114,15 +123,19 @@ export async function refreshGit(repoPath: string): Promise<void> {
       gitService.getStatus(repoPath),
       gitService.getBranchInfo(repoPath),
     ]);
+    if (generation !== _refreshGitGeneration) return;
     _allChanges = changes;
     applyVisibleGitChanges();
     gitState.branchName = info.name;
     gitState.ahead = info.ahead;
     gitState.behind = info.behind;
   } catch (e: unknown) {
+    if (generation !== _refreshGitGeneration) return;
     gitState.error = errorMessage(e);
   } finally {
-    gitState.loading = false;
+    if (generation === _refreshGitGeneration) {
+      gitState.loading = false;
+    }
   }
 }
 
@@ -255,14 +268,20 @@ export async function pullChanges(repoPath: string, remoteName = ""): Promise<vo
 // ---------------------------------------------------------------------------
 
 export async function loadConflicts(): Promise<void> {
+  const generation = ++_conflictsGeneration;
   conflictState.loading = true;
   conflictState.error = null;
   try {
-    conflictState.conflicts = await gitService.listMergeConflicts();
+    const conflicts = await gitService.listMergeConflicts();
+    if (generation !== _conflictsGeneration) return;
+    conflictState.conflicts = conflicts;
   } catch (e: unknown) {
+    if (generation !== _conflictsGeneration) return;
     conflictState.error = errorMessage(e);
   } finally {
-    conflictState.loading = false;
+    if (generation === _conflictsGeneration) {
+      conflictState.loading = false;
+    }
   }
 }
 
@@ -445,14 +464,20 @@ export const tagState = reactive<TagState>({
 
 /** 加载 stash 列表。 */
 export async function loadStashes(): Promise<void> {
+  const generation = ++_stashGeneration;
   stashState.loading = true;
   stashState.error = null;
   try {
-    stashState.stashes = await gitService.stashList(currentRepoPath());
+    const stashes = await gitService.stashList(currentRepoPath());
+    if (generation !== _stashGeneration) return;
+    stashState.stashes = stashes;
   } catch (e: unknown) {
+    if (generation !== _stashGeneration) return;
     stashState.error = errorMessage(e);
   } finally {
-    stashState.loading = false;
+    if (generation === _stashGeneration) {
+      stashState.loading = false;
+    }
   }
 }
 
@@ -509,14 +534,20 @@ export async function stashDrop(stashRef: string): Promise<void> {
 
 /** 加载 tag 列表。 */
 export async function loadTags(): Promise<void> {
+  const generation = ++_tagGeneration;
   tagState.loading = true;
   tagState.error = null;
   try {
-    tagState.tags = await gitService.listTags();
+    const tags = await gitService.listTags();
+    if (generation !== _tagGeneration) return;
+    tagState.tags = tags;
   } catch (e: unknown) {
+    if (generation !== _tagGeneration) return;
     tagState.error = errorMessage(e);
   } finally {
-    tagState.loading = false;
+    if (generation === _tagGeneration) {
+      tagState.loading = false;
+    }
   }
 }
 
@@ -612,14 +643,20 @@ export const bisectState = reactive<BisectState>({
 
 /** 加载子模块列表。 */
 export async function loadSubmodules(): Promise<void> {
+  const generation = ++_submoduleGeneration;
   submoduleState.loading = true;
   submoduleState.error = null;
   try {
-    submoduleState.submodules = await gitService.submoduleList();
+    const submodules = await gitService.submoduleList();
+    if (generation !== _submoduleGeneration) return;
+    submoduleState.submodules = submodules;
   } catch (e: unknown) {
+    if (generation !== _submoduleGeneration) return;
     submoduleState.error = errorMessage(e);
   } finally {
-    submoduleState.loading = false;
+    if (generation === _submoduleGeneration) {
+      submoduleState.loading = false;
+    }
   }
 }
 

@@ -32,18 +32,27 @@ const loading = ref(false);
 const monacoTheme = computed(() => getMonacoThemeName(appState.accentTheme));
 const language = computed(() => detectLanguage(props.filePath));
 
+// P1-01 stale 守卫：快速切换文件时只有最新一次加载允许回写 diff 内容，
+// 迟到的旧响应（慢速 getDiff）不得覆盖新文件的 diff。
+let loadSeq = 0;
+
 async function loadDiff() {
   if (!props.filePath || !props.repoPath) return;
+  const seq = ++loadSeq;
   loading.value = true;
   try {
     const diffText = props.staged === undefined
       ? await gitService.getDiff(props.repoPath, props.filePath)
       : await gitService.getDiffForSide(props.repoPath, props.filePath, props.staged);
+    if (seq !== loadSeq) return;
     diffContent.value = diffText;
   } catch (e) {
+    if (seq !== loadSeq) return;
     notifyError(t("diff.loadFailed", { error: e instanceof Error ? e.message : String(e) }));
   } finally {
-    loading.value = false;
+    if (seq === loadSeq) {
+      loading.value = false;
+    }
   }
 }
 

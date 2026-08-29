@@ -492,3 +492,59 @@ describe("MCP context injection", () => {
     expect(mcpState.serverContexts.kept).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// P1-01: refreshMcpServerContext stale 竞态守卫
+// ---------------------------------------------------------------------------
+
+describe("refreshMcpServerContext stale 守卫", () => {
+  beforeEach(() => {
+    resetMcpStore();
+    setMcpBackend(null);
+  });
+
+  it("重复刷新后迟到的旧 capability 快照不回写", async () => {
+    const backend = createBackend();
+    let resolveOld!: (v: MCPCapabilitySnapshot) => void;
+    (backend.serverCapabilities as any)
+      .mockImplementationOnce(
+        () => new Promise<MCPCapabilitySnapshot>((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce(fixtureCapabilities({ lifecycleGeneration: 9, run: 11 }));
+    setMcpBackend(backend);
+
+    const stale = refreshMcpServerContext("fs");
+    await refreshMcpServerContext("fs");
+    const ctx = mcpState.serverContexts.fs;
+    expect(ctx.status).toBe("loaded");
+    expect(ctx.lifecycleGeneration).toBe(9);
+
+    resolveOld(fixtureCapabilities({ lifecycleGeneration: 3, run: 7 }));
+    await stale;
+
+    expect(ctx.lifecycleGeneration).toBe(9);
+    expect(ctx.status).toBe("loaded");
+    expect(ctx.error).toBeNull();
+  });
+
+  it("迟到的旧刷新失败也不回写 error 状态", async () => {
+    const backend = createBackend();
+    let rejectOld!: (e: Error) => void;
+    (backend.serverCapabilities as any)
+      .mockImplementationOnce(
+        () => new Promise<MCPCapabilitySnapshot>((_, reject) => { rejectOld = reject; }),
+      )
+      .mockResolvedValue(fixtureCapabilities({ lifecycleGeneration: 9 }));
+    setMcpBackend(backend);
+
+    const stale = refreshMcpServerContext("fs");
+    await refreshMcpServerContext("fs");
+
+    rejectOld(new Error("old transport died"));
+    await stale;
+
+    const ctx = mcpState.serverContexts.fs;
+    expect(ctx.status).toBe("loaded");
+    expect(ctx.error).toBeNull();
+  });
+});
