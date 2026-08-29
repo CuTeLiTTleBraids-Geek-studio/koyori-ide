@@ -402,16 +402,16 @@ test("directory audit rejects missing, empty, stale, extra, FQN and forbidden ex
       assert.match(errors.join("\n"), new RegExp(`forbidden export ${method}`));
     }
 
+	// P19: the deny-only MCP surface ships ListPrompts/GetPrompt/ListResources/
+	// ReadResource as REQUIRED renderer exports (P16 prompts/resources panel),
+	// so only the raw tool-execution and lifecycle methods are forbidden.
 	const mcpRelative = "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/mcpservice.ts";
 	for (const method of [
 		"CallTool",
 		"Close",
 		"ExecuteApprovedTool",
-		"GetPrompt",
-		"ListPrompts",
-		"ListResources",
-		"ReadResource",
 		"RequestToolApproval",
+		"SetOnToolsChanged",
 	]) {
 		await writeGenerated(
 			directory,
@@ -421,6 +421,16 @@ test("directory audit rejects missing, empty, stale, extra, FQN and forbidden ex
 		const mcpManifest = await createBindingsManifest(directory, pin);
 		errors = await auditBindingsDirectory(directory, mcpManifest);
 		assert.match(errors.join("\n"), new RegExp(`forbidden export ${method}`));
+	}
+	for (const method of ["ListPrompts", "GetPrompt", "ListResources", "ReadResource"]) {
+		await writeGenerated(
+			directory,
+			mcpRelative,
+			`${generatedMarker}export function ${method}() { return $Call.ByID(6); }\n`,
+		);
+		const mcpManifest = await createBindingsManifest(directory, pin);
+		errors = await auditBindingsDirectory(directory, mcpManifest);
+		assert.doesNotMatch(errors.join("\n"), new RegExp(`forbidden export ${method}`));
 	}
 
 	const aiRelative = "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/aiservice.ts";

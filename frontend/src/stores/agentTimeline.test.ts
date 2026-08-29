@@ -191,7 +191,7 @@ describe("agent execution timeline", () => {
       MAX_PROVIDER_REASONING_SUMMARY_BYTES,
     );
     expect(detail.endsWith("\n…")).toBe(true);
-    expect(detail).not.toContain("�");
+    expect(detail).not.toContain("\uFFFD");
     const withoutSuffix = detail.slice(0, -2);
     expect(withoutSuffix.endsWith("🙂") || withoutSuffix.endsWith("好") || withoutSuffix.endsWith("你")).toBe(true);
   });
