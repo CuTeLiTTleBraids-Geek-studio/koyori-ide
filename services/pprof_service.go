@@ -33,6 +33,14 @@ import (
 type PProfService struct {
 	mu sync.Mutex
 
+	// rootMu 保护 workspaceRoot。与 mu 分离：输出路径的沙箱解析在
+	// 各输出方法已持有 mu 时也要进行。
+	rootMu sync.RWMutex
+	// workspaceRoot 是 profile 输出的沙箱根（P19 P1-02）。Profile 文件
+	// 包含源码路径与栈数据，写出必须约束在当前工作区内；未设置根时
+	// 一切输出 fail-closed。
+	workspaceRoot string
+
 	// CPU 采样状态
 	cpuProfiling  bool
 	cpuFile       *os.File
@@ -47,11 +55,44 @@ func NewPProfService() *PProfService {
 	return &PProfService{}
 }
 
+// setWorkspaceRoot 更新 profile 输出的沙箱根。签名对齐 ProjectService
+// workspace-root fan-out 的非错误 setter（同 AIService/LSPService）。
+func (s *PProfService) setWorkspaceRoot(root string) {
+	s.rootMu.Lock()
+	defer s.rootMu.Unlock()
+	s.workspaceRoot = root
+}
+
+// currentWorkspaceRoot 返回当前沙箱根（fan-out 契约的 getter）。
+func (s *PProfService) currentWorkspaceRoot() string {
+	s.rootMu.RLock()
+	defer s.rootMu.RUnlock()
+	return s.workspaceRoot
+}
+
+// resolveProfileOutputPath 把 renderer 传入的输出路径约束到工作区沙箱内
+// （P19 P1-02）。空根或越界（含符号链接逃逸与 ".." 回溯）一律 fail-closed。
+func (s *PProfService) resolveProfileOutputPath(outputPath string) (string, error) {
+	s.rootMu.RLock()
+	root := s.workspaceRoot
+	s.rootMu.RUnlock()
+	resolved, err := ValidateMutatingPathWithinRoot(root, outputPath)
+	if err != nil {
+		return "", fmt.Errorf("profile output %q rejected by workspace sandbox: %w", outputPath, err)
+	}
+	return resolved, nil
+}
+
 // StartCPUProfile 开始 runtime/pprof CPU 采样，输出写入 outputPath。
-// 若已在采样则返回错误。outputPath 的父目录需已存在。
+// 若已在采样则返回错误。outputPath 必须位于工作区沙箱内（P19 P1-02），
+// 其父目录需已存在。
 func (s *PProfService) StartCPUProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,9 +150,14 @@ func (s *PProfService) ActiveProfile() string {
 }
 
 // CaptureHeapProfile 使用 pprof.WriteHeapProfile 将当前堆 profile 写入 outputPath。
+// outputPath 必须位于工作区沙箱内（P19 P1-02）。
 func (s *PProfService) CaptureHeapProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	f, err := createProfileFile(outputPath)
 	if err != nil {
@@ -127,9 +173,14 @@ func (s *PProfService) CaptureHeapProfile(outputPath string) error {
 // CaptureGoroutineProfile 将 goroutine profile 写入 outputPath。
 // 使用 pprof.Lookup("goroutine").WriteTo。
 // debug 为 0 时输出二进制格式，>0 时输出可读文本（1=单行/栈，2=同 1 且带运行时元信息）。
+// outputPath 必须位于工作区沙箱内（P19 P1-02）。
 func (s *PProfService) CaptureGoroutineProfile(outputPath string, debug int) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	p := pprof.Lookup("goroutine")
 	if p == nil {
@@ -170,6 +221,10 @@ func (s *PProfService) StopBlockProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty; block profiling was stopped without saving")
 	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
+	}
 	return writeRuntimeProfile(outputPath, "block")
 }
 
@@ -198,13 +253,22 @@ func (s *PProfService) StopMutexProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty; mutex profiling was stopped without saving")
 	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
+	}
 	return writeRuntimeProfile(outputPath, "mutex")
 }
 
 // StartTrace starts a runtime trace session writing directly to outputPath.
+// outputPath 必须位于工作区沙箱内（P19 P1-02）。
 func (s *PProfService) StartTrace(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -517,6 +517,7 @@ func bindWorkspaceRoots(serviceSet *bootstrapServices, settings services.Setting
 		serviceSet.Coverage,
 		serviceSet.Eslint,
 		serviceSet.MCP,
+		serviceSet.PProf,
 	)
 	for section, config := range settings.LSPConfigs {
 		serviceSet.LSP.SetLSPConfig(section, config)

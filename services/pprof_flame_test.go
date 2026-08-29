@@ -129,9 +129,9 @@ func TestSummarizeDeduplicatesRecursiveAndInlineFrames(t *testing.T) {
 }
 
 func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
-	svc := NewPProfService()
+	svc := newTestPProfService(t)
 
-	blockPath := profilePath(t, "block.prof")
+	blockPath := profilePath(svc, "block.prof")
 	if err := svc.StartBlockProfile(); err != nil {
 		t.Fatalf("StartBlockProfile: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
 	}
 	assertNonEmptyFile(t, blockPath)
 
-	mutexPath := profilePath(t, "mutex.prof")
+	mutexPath := profilePath(svc, "mutex.prof")
 	if err := svc.StartMutexProfile(); err != nil {
 		t.Fatalf("StartMutexProfile: %v", err)
 	}
@@ -257,8 +257,8 @@ func TestAnalyzeTraceRejectsNonRegularInput(t *testing.T) {
 }
 
 func TestPProfServiceTraceCaptureAndSchedAnalysis(t *testing.T) {
-	svc := NewPProfService()
-	tracePath := profilePath(t, "runtime.trace")
+	svc := newTestPProfService(t)
+	tracePath := profilePath(svc, "runtime.trace")
 	if err := svc.StartTrace(tracePath); err != nil {
 		t.Fatalf("StartTrace: %v", err)
 	}

@@ -115,6 +115,7 @@ func WireWorkspaceServices(
 	coverage *CoverageService,
 	eslint *EslintService,
 	mcp *MCPService,
+	pprof *PProfService,
 ) {
 	project.setWorkspaceContext(workspace)
 	project.setGitService(git)
@@ -125,6 +126,9 @@ func WireWorkspaceServices(
 	project.setCoverageService(coverage)
 	project.setEslintService(eslint)
 	project.setMCPService(mcp)
+	if pprof != nil {
+		project.setPProfService(pprof)
+	}
 }
 
 func WireRecoveryGuards(

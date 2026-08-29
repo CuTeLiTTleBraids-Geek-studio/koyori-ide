@@ -84,6 +84,7 @@ type ProjectService struct {
 	eslintService         *EslintService
 	mcpService            MCPServiceRootSetter
 	recoveryService       *RecoveryService
+	pprofService          *PProfService
 	mcpWorkspaceRoot      string
 	app                   *application.App
 	activeProject         Project
@@ -134,6 +135,15 @@ func (p *ProjectService) setGitService(g *GitService) {
 //wails:ignore
 func (p *ProjectService) setSearchService(s *SearchService) {
 	p.searchService = s
+}
+
+// setPProfService links the PProfService so profile outputs are sandboxed to
+// the current workspace root (P19 P1-02). Called from main.go after
+// construction.
+//
+//wails:ignore
+func (p *ProjectService) setPProfService(s *PProfService) {
+	p.pprofService = s
 }
 
 // setLSPService links the LSPService so its workspace root is updated when
@@ -594,6 +604,13 @@ func (p *ProjectService) buildWorkspaceRootSetters(authorities ...*agentWorkspac
 		setters = append(setters, workspaceRootSetter{
 			set:     func(s string) error { sis.setWorkspaceRoot(s); return nil },
 			current: func() string { sis.mu.RLock(); defer sis.mu.RUnlock(); return sis.workspaceRoot },
+		})
+	}
+	if p.pprofService != nil {
+		ps := p.pprofService
+		setters = append(setters, workspaceRootSetter{
+			set:     func(root string) error { ps.setWorkspaceRoot(root); return nil },
+			current: ps.currentWorkspaceRoot,
 		})
 	}
 
