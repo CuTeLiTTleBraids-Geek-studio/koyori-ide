@@ -13,6 +13,23 @@ import type {
   AgentToolExecutionResult,
 } from "@/api/automation";
 
+// P19 CI 修复：@/api/automation 静态引入生成的 bindings（→ @wailsio/runtime
+// → drag.js 的 window.setInterval 轮询，最多 100 次）。本文件只有 4 个快速
+// 用例，轮询来不及自我清理就会在 jsdom 环境销毁后触发
+// "window is not defined"（Linux CI 可稳定复现并使 vitest 以 Unhandled
+// Error 退出 1）。mock 掉 automation 阻断这条模块加载链；被测行为由注入的
+// SkillsBackend/SkillAgentBackend 桩覆盖，不依赖真实 agentService。
+vi.mock("@/api/automation", () => ({
+  agentService: {
+    getToolCatalog: vi.fn(async () => ({ revision: 0, tools: [] })),
+    executeAgentTool: vi.fn(async () => {
+      throw new Error("not used: tests inject their own agent backend");
+    }),
+    createSession: vi.fn(async () => ""),
+    closeSession: vi.fn(async () => undefined),
+  },
+}));
+
 function installSkillsBackend(): void {
   const backend: SkillsBackend = {
     load: vi.fn(async () => undefined),

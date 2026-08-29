@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -118,10 +118,21 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
 
       - name: Download dependencies
         run: go mod download
+
+      # The root package embeds frontend/dist (go:embed in main.go). Go-only
+      # CI legs do not build the frontend, so a placeholder index.html is
+      # provided to satisfy the embed pattern — BOTH `go vet` (which loads
+      # the root package via `.`) and `go build`/`go test` resolve it. The
+      # real asset pipeline is exercised by the wails-build job.
+      - name: Provide placeholder frontend assets for go:embed
+        shell: bash
+        run: |
+          mkdir -p frontend/dist
+          printf '<!doctype html>\n' > frontend/dist/index.html
 
       # N-129: vet the root package, services, and the repository governance
       # tests (internal/repo). We avoid `./...` because it would also traverse
@@ -130,17 +141,6 @@ jobs:
       # our code to lint.
       - name: Vet
         run: go vet ./services/... . ./internal/repo/...
-
-      # The root package embeds frontend/dist (go:embed in main.go). Go-only
-      # CI legs do not build the frontend, so a placeholder index.html is
-      # provided to satisfy the embed pattern; the real asset pipeline is
-      # exercised by the wails-build job. main_test.go's CSP/VERSION tests
-      # use synthetic HTML and do not depend on real assets.
-      - name: Provide placeholder frontend assets for go:embed
-        shell: bash
-        run: |
-          mkdir -p frontend/dist
-          printf '<!doctype html>\n' > frontend/dist/index.html
 
       - name: Build
         run: go build .
@@ -170,12 +170,19 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
+      # golangci-lint type-checks the root package, whose go:embed needs
+      # frontend/dist to resolve on a fresh checkout.
+      - name: Provide placeholder frontend assets for go:embed
+        shell: bash
+        run: |
+          mkdir -p frontend/dist
+          printf '<!doctype html>\n' > frontend/dist/index.html
       - name: golangci-lint
         # P19 CI repair: the golangci-lint-action ships v1.62.0 built with
         # go1.23, which refuses a go.mod targeting 1.25 ("Go language version
         # used to build golangci-lint is lower than the targeted Go version").
-        # Installing the last v1-line release with the runner's own Go 1.25
+        # Installing the last v1-line release with the runner's own Go
         # satisfies that check without migrating .golangci.yml to the v2
         # schema.
         run: |
@@ -222,7 +229,7 @@ jobs:
       - name: Set up Go for pinned binding generation
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Node.js
@@ -288,7 +295,7 @@ jobs:
       - name: Set up Go for pinned binding generation
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Node.js
@@ -339,7 +346,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -360,6 +367,17 @@ jobs:
       # Match the wails v3 version pinned in go.mod (v3.0.0-alpha2.111).
       - name: Install wails3 CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+
+      # P19 CI repair: the alpha2.111 build pipeline's common:go:mod:verify
+      # task runs `go list .` BEFORE build:frontend produces the real assets,
+      # and `go list` resolves the root package's go:embed of frontend/dist.
+      # A placeholder index.html satisfies the pattern at that point; vite's
+      # emptyOutDir then replaces it wholesale during build:frontend.
+      - name: Provide placeholder frontend assets for go:embed
+        shell: bash
+        run: |
+          mkdir -p frontend/dist
+          printf '<!doctype html>\n' > frontend/dist/index.html
 
       - name: Wails build
         # P19 CI repair: alpha2.111's build Taskfile requires an explicit DEV
@@ -394,7 +412,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -445,7 +463,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
           cache: true
       # P19 CI repair: govulncheck type-checks the wails dependency tree,
       # whose Linux cgo files need gtk/webkit pkg-config ("could not import C
@@ -475,7 +493,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
           cache: true
       - name: Run benchmarks
         run: |
@@ -544,7 +562,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
       # P19 CI repair: `go test ./services/` compiles the wails dependency
       # tree, whose Linux cgo files need gtk/webkit pkg-config headers.
       - name: Install Linux GUI build deps

@@ -517,8 +517,11 @@ function evidenceTimestamp(value, field) {
 
 async function readRequiredEvidenceFile(filePath, label) {
   const info = await lstat(filePath);
-  assert(info.isFile(), `${label} is not a file`);
+  // P19 CI 修复：符号链接在 lstat 视图里本来就不是常规文件——先判符号链接，
+  // 让 symlinked-manifest 用例得到预期的 "must not be a symlink"（原先先
+  // 命中 "is not a file"，拒绝语义相同但与驱动源契约测试的期望不符）。
   assert(!info.isSymbolicLink(), `${label} must not be a symlink`);
+  assert(info.isFile(), `${label} is not a file`);
   assert(info.size > 0, `${label} is empty`);
   return decodeEvidenceText(await readFile(filePath));
 }
