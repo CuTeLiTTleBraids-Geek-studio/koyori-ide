@@ -107,7 +107,12 @@ func TestLanguagePackRealRustLSPToolchainAndDebug(t *testing.T) {
 		Language: "rust", FilePath: fileB, Content: string(contentB), Line: 1, Column: len("    let count: u"),
 	}
 	var hover string
-	hoverDeadline := time.Now().Add(45 * time.Second)
+	// rust-analyzer may need longer than the ordinary request timeout to index
+	// both roots when the complete services suite is running concurrently.
+	// Keep the real non-empty hover assertion, but give the process a bounded
+	// cold-start window rather than turning an empty response into a pass.
+	const rustLSPStartupDeadline = 90 * time.Second
+	hoverDeadline := time.Now().Add(rustLSPStartupDeadline)
 	for time.Now().Before(hoverDeadline) {
 		hover, err = lsp.GetHover(hoverRequest)
 		if err == nil && strings.TrimSpace(hover) != "" {
@@ -152,7 +157,7 @@ func TestLanguagePackRealRustLSPToolchainAndDebug(t *testing.T) {
 		TriggerKind: 1,
 	}
 	var completions []LSPCompletionItem
-	completionDeadline := time.Now().Add(45 * time.Second)
+	completionDeadline := time.Now().Add(rustLSPStartupDeadline)
 	for time.Now().Before(completionDeadline) {
 		completions, err = lsp.GetCompletions(completionRequest)
 		if err == nil && len(completions) > 0 {

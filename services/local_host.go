@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -69,7 +68,7 @@ func NewLocalWorkspaceHost(workspaceContext *WorkspaceContext, workspaceID, host
 }
 
 func localHostNoFollowBindingSupported() bool {
-	return runtime.GOOS == "linux"
+	return localHostNoFollowPlatformSupported()
 }
 
 // Close releases the host's internal root handle. It is not a Wails service.

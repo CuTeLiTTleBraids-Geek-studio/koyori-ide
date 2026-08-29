@@ -35,7 +35,7 @@ func TestAgentService_RequestWriteApproval_RejectsEmptyRoot(t *testing.T) {
 	svc.approveWrite = func(string, int64) bool { return true }
 
 	// When
-	_, err := svc.RequestWriteApproval("some/file.txt", "deadbeef", 10)
+	_, err := svc.requestWriteApprovalLegacy("some/file.txt", "deadbeef", 10)
 
 	// Then
 	if !errors.Is(err, ErrNotAllowed) {
@@ -50,7 +50,7 @@ func TestAgentService_RequestWriteApproval_RejectsOutsidePath(t *testing.T) {
 	svc := newAutoApproveWriteAgent(t, root)
 
 	// When
-	_, err := svc.RequestWriteApproval(outside, "deadbeef", 5)
+	_, err := svc.requestWriteApprovalLegacy(outside, "deadbeef", 5)
 
 	// Then
 	if err == nil {
@@ -69,7 +69,7 @@ func TestAgentService_RequestWriteApproval_RefusesWhenUserDeclines(t *testing.T)
 	svc.approveWrite = func(string, int64) bool { return false } // user declines
 
 	// When
-	_, err := svc.RequestWriteApproval(filepath.Join(root, "file.txt"), "deadbeef", 4)
+	_, err := svc.requestWriteApprovalLegacy(filepath.Join(root, "file.txt"), "deadbeef", 4)
 
 	// Then
 	if !errors.Is(err, ErrNotAllowed) {
@@ -83,7 +83,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsEmptyToken(t *testing.T) {
 	svc := newAutoApproveWriteAgent(t, root)
 
 	// When
-	err := svc.ExecuteApprovedWrite(filepath.Join(root, "f.txt"), "content", "")
+	err := svc.executeApprovedWriteLegacy(filepath.Join(root, "f.txt"), "content", "")
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {
@@ -97,7 +97,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsForgedToken(t *testing.T) {
 	svc := newAutoApproveWriteAgent(t, root)
 
 	// When – random token that was never issued
-	err := svc.ExecuteApprovedWrite(filepath.Join(root, "f.txt"), "content", "aaaaaaaaaaaaaaaa")
+	err := svc.executeApprovedWriteLegacy(filepath.Join(root, "f.txt"), "content", "aaaaaaaaaaaaaaaa")
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {
@@ -113,18 +113,18 @@ func TestAgentService_ExecuteApprovedWrite_RejectsReplayToken(t *testing.T) {
 
 	content := "hello replay"
 	h := contentHashString(content)
-	token, err := svc.RequestWriteApproval(target, h, int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(target, h, int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
 
 	// First use succeeds
-	if err := svc.ExecuteApprovedWrite(target, content, token); err != nil {
+	if err := svc.executeApprovedWriteLegacy(target, content, token); err != nil {
 		t.Fatalf("first ExecuteApprovedWrite: %v", err)
 	}
 
 	// When – replay
-	err = svc.ExecuteApprovedWrite(target, content, token)
+	err = svc.executeApprovedWriteLegacy(target, content, token)
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {
@@ -140,7 +140,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsCrossGenerationToken(t *testin
 
 	content := "stale-gen"
 	h := contentHashString(content)
-	token, err := svc.RequestWriteApproval(target, h, int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(target, h, int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsCrossGenerationToken(t *testin
 	}
 
 	// When – use old token with new generation
-	err = svc.ExecuteApprovedWrite(filepath.Join(newRoot, "stale.txt"), content, token)
+	err = svc.executeApprovedWriteLegacy(filepath.Join(newRoot, "stale.txt"), content, token)
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {
@@ -169,13 +169,13 @@ func TestAgentService_ExecuteApprovedWrite_RejectsChangedPath(t *testing.T) {
 
 	content := "path swap"
 	h := contentHashString(content)
-	token, err := svc.RequestWriteApproval(targetA, h, int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(targetA, h, int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
 
 	// When – execute against different path
-	err = svc.ExecuteApprovedWrite(targetB, content, token)
+	err = svc.executeApprovedWriteLegacy(targetB, content, token)
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {
@@ -191,13 +191,13 @@ func TestAgentService_ExecuteApprovedWrite_RejectsHashMismatch(t *testing.T) {
 
 	original := "original content"
 	h := contentHashString(original)
-	token, err := svc.RequestWriteApproval(target, h, int64(len(original)))
+	token, err := svc.requestWriteApprovalLegacy(target, h, int64(len(original)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
 
 	// When – execute with different content
-	err = svc.ExecuteApprovedWrite(target, "tampered content", token)
+	err = svc.executeApprovedWriteLegacy(target, "tampered content", token)
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {
@@ -211,13 +211,13 @@ func TestAgentService_ExecuteApprovedWrite_RejectsSizeMismatch(t *testing.T) {
 	target := filepath.Join(root, "size.txt")
 	svc := newAutoApproveWriteAgent(t, root)
 	content := "larger than approved"
-	token, err := svc.RequestWriteApproval(target, contentHashString(content), 1)
+	token, err := svc.requestWriteApprovalLegacy(target, contentHashString(content), 1)
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
 
 	// When
-	err = svc.ExecuteApprovedWrite(target, content, token)
+	err = svc.executeApprovedWriteLegacy(target, content, token)
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {
@@ -236,7 +236,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsExpiredToken(t *testing.T) {
 
 	content := "about to expire"
 	h := contentHashString(content)
-	token, err := svc.RequestWriteApproval(target, h, int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(target, h, int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsExpiredToken(t *testing.T) {
 	svc.writeApprovalMu.Unlock()
 
 	// When
-	err = svc.ExecuteApprovedWrite(target, content, token)
+	err = svc.executeApprovedWriteLegacy(target, content, token)
 
 	// Then
 	if !errors.Is(err, ErrInvalidInput) {

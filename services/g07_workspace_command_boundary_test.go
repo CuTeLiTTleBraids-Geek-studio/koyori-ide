@@ -60,7 +60,7 @@ func TestG07CommandEntrypointsRejectEmptySharedWorkspace(t *testing.T) {
 	agent := NewAgentServiceWithWorkspaceContext(ctx)
 	t.Cleanup(func() { _ = agent.Close() })
 	agent.approveCommand = func(string, string, RiskLevel) bool { return true }
-	if _, err := agent.RequestCommandApproval("go version", outside); err == nil {
+	if _, err := agent.requestCommandApprovalLegacy("go version", outside); err == nil {
 		t.Fatal("agent command approval accepted an empty shared workspace")
 	}
 }
@@ -104,7 +104,7 @@ func TestG07CommandEntrypointsRejectWorkspaceEscape(t *testing.T) {
 	agent := NewAgentServiceWithWorkspaceContext(ctx)
 	t.Cleanup(func() { _ = agent.Close() })
 	agent.approveCommand = func(string, string, RiskLevel) bool { return true }
-	if _, err := agent.RequestCommandApproval("go version", outside); err == nil {
+	if _, err := agent.requestCommandApprovalLegacy("go version", outside); err == nil {
 		t.Fatal("agent accepted a working directory outside the workspace")
 	}
 }
@@ -188,7 +188,7 @@ func TestG07CommandEntrypointsRejectWorkspaceGenerationChangeBeforeStart(t *test
 		svc := NewAgentServiceWithWorkspaceContext(ctx)
 		t.Cleanup(func() { _ = svc.Close() })
 		svc.approveCommand = func(string, string, RiskLevel) bool { return true }
-		token, err := svc.RequestCommandApproval("go version", rootA)
+		token, err := svc.requestCommandApprovalLegacy("go version", rootA)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,7 +196,7 @@ func TestG07CommandEntrypointsRejectWorkspaceGenerationChangeBeforeStart(t *test
 		svc.beforeWorkspaceCommandStart = func() {
 			once.Do(func() { setWorkspaceContextRoot(t, ctx, rootB) })
 		}
-		_, err = svc.ExecuteApprovedCommand("go version", rootA, token)
+		_, err = svc.executeApprovedCommandLegacy("go version", rootA, token)
 		assertNotAllowed(t, err)
 	})
 }
@@ -330,6 +330,6 @@ func TestG07AgentApprovalRejectsWorkspaceChangeDuringNativePrompt(t *testing.T) 
 		setWorkspaceContextRoot(t, ctx, rootB)
 		return true
 	}
-	_, err := svc.RequestCommandApproval("go version", rootA)
+	_, err := svc.requestCommandApprovalLegacy("go version", rootA)
 	assertNotAllowed(t, err)
 }

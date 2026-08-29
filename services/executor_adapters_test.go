@@ -19,7 +19,7 @@ func TestDefaultStepExecutor_RejectsInvalidCommandArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := executor.Execute("command", tt.args)
+			_, err := executor.Execute("plan-test", 0, "command", tt.args)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Fatalf("expected ErrInvalidInput, got %v", err)
 			}
@@ -89,7 +89,7 @@ func TestDefaultStepExecutor_RejectsUnsupportedTools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := executor.Execute(tt.tool, args)
+			_, err := executor.Execute("plan-test", 0, tt.tool, args)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Fatalf("expected ErrInvalidInput, got %v", err)
 			}
@@ -102,7 +102,7 @@ func TestDefaultStepExecutor_RejectsUnsupportedTools(t *testing.T) {
 
 func TestDefaultStepExecutor_BlocksShellSyntaxInCommand(t *testing.T) {
 	executor := &defaultStepExecutor{agent: &AgentService{}}
-	_, err := executor.Execute("command", `{"command":"go version | echo should-not-run"}`)
+	_, err := executor.Execute("plan-test", 0, "command", `{"command":"go version | echo should-not-run"}`)
 	if err == nil || !strings.Contains(err.Error(), "unsupported shell syntax") {
 		t.Fatalf("expected shell syntax to be blocked, got %v", err)
 	}

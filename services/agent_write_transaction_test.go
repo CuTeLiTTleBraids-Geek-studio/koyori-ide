@@ -15,7 +15,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsDiskChangeAfterApproval(t *tes
 	}
 	svc := newAutoApproveWriteAgent(t, root)
 	content := "agent replacement"
-	token, err := svc.RequestWriteApproval(target, contentHashString(content), int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(target, contentHashString(content), int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsDiskChangeAfterApproval(t *tes
 		t.Fatalf("write external update: %v", err)
 	}
 
-	err = svc.ExecuteApprovedWrite(target, content, token)
+	err = svc.executeApprovedWriteLegacy(target, content, token)
 
 	if err == nil {
 		t.Fatal("approved write overwrote a disk change made after approval")
@@ -39,7 +39,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsEmptyFileCreatedAfterApproval(
 	target := filepath.Join(root, "created-empty.txt")
 	svc := newAutoApproveWriteAgent(t, root)
 	content := "agent replacement"
-	token, err := svc.RequestWriteApproval(target, contentHashString(content), int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(target, contentHashString(content), int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsEmptyFileCreatedAfterApproval(
 		t.Fatalf("create empty target: %v", err)
 	}
 
-	err = svc.ExecuteApprovedWrite(target, content, token)
+	err = svc.executeApprovedWriteLegacy(target, content, token)
 
 	if err == nil {
 		t.Fatal("approved new-file write overwrote a file created after approval")
@@ -66,7 +66,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsEmptyFileDeletedAfterApproval(
 	}
 	svc := newAutoApproveWriteAgent(t, root)
 	content := "agent replacement"
-	token, err := svc.RequestWriteApproval(target, contentHashString(content), int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(target, contentHashString(content), int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsEmptyFileDeletedAfterApproval(
 		t.Fatalf("delete approved target: %v", err)
 	}
 
-	err = svc.ExecuteApprovedWrite(target, content, token)
+	err = svc.executeApprovedWriteLegacy(target, content, token)
 
 	if err == nil {
 		t.Fatal("approved existing-file write recreated a file deleted after approval")
@@ -89,12 +89,12 @@ func TestAgentService_ExecuteApprovedWrite_HappyPath_WritesFile(t *testing.T) {
 	target := filepath.Join(root, "hello.txt")
 	svc := newAutoApproveWriteAgent(t, root)
 	content := "hello world"
-	token, err := svc.RequestWriteApproval(target, contentHashString(content), int64(len(content)))
+	token, err := svc.requestWriteApprovalLegacy(target, contentHashString(content), int64(len(content)))
 	if err != nil {
 		t.Fatalf("RequestWriteApproval: %v", err)
 	}
 
-	if err := svc.ExecuteApprovedWrite(target, content, token); err != nil {
+	if err := svc.executeApprovedWriteLegacy(target, content, token); err != nil {
 		t.Fatalf("ExecuteApprovedWrite: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestAgentService_ExecuteApprovedWrite_RejectsOutsidePath(t *testing.T) {
 	}
 	svc.writeApprovalMu.Unlock()
 
-	err := svc.ExecuteApprovedWrite(outside, content, "bypass-token")
+	err := svc.executeApprovedWriteLegacy(outside, content, "bypass-token")
 
 	if err == nil {
 		t.Fatal("ExecuteApprovedWrite with path outside workspace root should fail")

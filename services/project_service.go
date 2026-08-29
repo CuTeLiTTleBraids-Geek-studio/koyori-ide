@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -86,6 +88,13 @@ type ProjectService struct {
 	app                   *application.App
 	activeProject         Project
 	workspaceSnapshotSink func(WorkspaceSnapshot)
+	// beforeSave is an unexported deterministic fault hook for package tests.
+	// Production leaves it nil.
+	beforeSave func([]Project) error
+	// beforeWorkspaceSetters is an unexported deterministic ordering hook used
+	// by package tests immediately before the first workspace setter. Production
+	// leaves it nil.
+	beforeWorkspaceSetters func()
 	// GOAL-P0-02: 共享 workspace identity。参与 OpenProject 的两阶段提交，
 	// 因此所有持有它的服务（Plan/Goal/Diff/executor）与 FileService 等
 	// 一起原子切换，不会出现 A / B 混合状态。
@@ -215,6 +224,11 @@ func (p *ProjectService) load() ([]Project, error) {
 }
 
 func (p *ProjectService) save(projects []Project) error {
+	if p.beforeSave != nil {
+		if err := p.beforeSave(projects); err != nil {
+			return err
+		}
+	}
 	// M-5: atomic write (temp+rename+0600) prevents half-written state.
 	return atomicWriteJSON(p.configPath, projects, 0600)
 }
@@ -281,10 +295,19 @@ func (p *ProjectService) rejectRemoteProjectPath(path string) error {
 // if loading/saving the project list fails), all previously-applied
 // workspace roots are restored to their previous values, preventing
 // partial state across services.
+func (p *ProjectService) beginAgentWorkspaceAuthority() *agentWorkspaceAuthorityGuard {
+	if p == nil || p.agentService == nil {
+		return nil
+	}
+	return p.agentService.beginProjectWorkspaceAuthority()
+}
+
 func (p *ProjectService) AddProject(path string) (Project, error) {
 	p.workspaceMu.Lock()
 	defer p.workspaceMu.Unlock()
-	project, err := p.addProject(path)
+	authority := p.beginAgentWorkspaceAuthority()
+	defer authority.release()
+	project, err := p.addProject(path, authority)
 	if err != nil {
 		return Project{}, err
 	}
@@ -293,7 +316,7 @@ func (p *ProjectService) AddProject(path string) (Project, error) {
 	return project, nil
 }
 
-func (p *ProjectService) addProject(path string) (Project, error) {
+func (p *ProjectService) addProject(path string, authority *agentWorkspaceAuthorityGuard) (Project, error) {
 	if path == "" {
 		return Project{}, fmt.Errorf("workspace root is required: %w", ErrInvalidInput)
 	}
@@ -316,42 +339,71 @@ func (p *ProjectService) addProject(path string) (Project, error) {
 		return Project{}, err
 	}
 
-	setters := p.buildWorkspaceRootSetters()
+	setters := p.buildWorkspaceRootSetters(authority)
+	if p.beforeWorkspaceSetters != nil {
+		p.beforeWorkspaceSetters()
+	}
 
 	// Phase 1: apply workspace root to all services with rollback on failure.
 	prevRoots := make([]string, len(setters))
+	changes := make([]workspaceRootChange, len(setters))
+	rollback := func(count int) error {
+		var rollbackErrs []error
+		if count > len(changes) {
+			count = len(changes)
+		}
+		for index := count - 1; index >= 0; index-- {
+			if changes[index] == nil {
+				continue
+			}
+			if err := changes[index].rollback(); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback workspace setter %d: %w", index, err))
+			}
+		}
+		return p.poisonAgentWorkspaceRollback(errors.Join(rollbackErrs...))
+	}
 	for i, s := range setters {
 		prevRoots[i] = s.current()
-		if err := s.set(path); err != nil {
-			// Rollback all services already applied.
-			for j := 0; j < i; j++ {
-				_ = restoreWorkspaceRootSetter(setters[j], prevRoots[j])
-			}
-			return Project{}, err
+		change, err := s.apply(path, prevRoots[i])
+		changes[i] = change
+		if err != nil {
+			// Include the setter that returned the error: several adapters can
+			// mutate first and report a post-publication failure.
+			return Project{}, errors.Join(err, rollback(i+1))
 		}
+	}
+	// Dynamic Agent tools depend on the roots owned by both Agent/Skills and
+	// MCP. Their mutation callbacks are deferred while the authority guard is
+	// held; flush once every setter agrees on the candidate so a refresh failure
+	// can still roll the whole workspace transaction back.
+	if err := authority.flushCatalog(); err != nil {
+		return Project{}, errors.Join(fmt.Errorf("refresh Agent catalog: %w", err), rollback(len(changes)))
 	}
 
 	// Phase 2: load, update, and save the project list. If this fails,
 	// rollback all workspace roots to their previous values.
-	rollback := func() {
-		for i, s := range setters {
-			_ = restoreWorkspaceRootSetter(s, prevRoots[i])
+	rollbackAll := func() error { return rollback(len(changes)) }
+	commitAll := func() {
+		for index := range changes {
+			if changes[index] == nil {
+				continue
+			}
+			changes[index].commit()
 		}
 	}
 
 	projects, err := p.load()
 	if err != nil {
-		rollback()
-		return Project{}, err
+		return Project{}, errors.Join(err, rollbackAll())
 	}
 	now := time.Now().UnixMilli()
 	for i, proj := range projects {
 		if proj.Path == path {
 			projects[i].LastOpened = now
 			if err := p.save(projects); err != nil {
-				rollback()
-				return Project{}, err
+				return Project{}, errors.Join(err, rollbackAll())
 			}
+			commitAll()
 			return projects[i], nil
 		}
 	}
@@ -364,9 +416,9 @@ func (p *ProjectService) addProject(path string) (Project, error) {
 	}
 	projects = append(projects, proj)
 	if err := p.save(projects); err != nil {
-		rollback()
-		return Project{}, err
+		return Project{}, errors.Join(err, rollbackAll())
 	}
+	commitAll()
 	return proj, nil
 }
 
@@ -377,6 +429,41 @@ type workspaceRootSetter struct {
 	set     func(string) error
 	current func() string
 	restore func(string) error
+	begin   func(string) (workspaceRootChange, error)
+}
+
+type workspaceRootChangeFuncs struct {
+	commitFn   func()
+	rollbackFn func() error
+}
+
+func (c *workspaceRootChangeFuncs) commit() {
+	if c == nil || c.commitFn == nil {
+		return
+	}
+	c.commitFn()
+}
+
+func (c *workspaceRootChangeFuncs) rollback() error {
+	if c == nil || c.rollbackFn == nil {
+		return nil
+	}
+	return c.rollbackFn()
+}
+
+func (s workspaceRootSetter) apply(root, previous string) (workspaceRootChange, error) {
+	if s.begin != nil {
+		return s.begin(root)
+	}
+	if s.set == nil {
+		return nil, fmt.Errorf("workspace root setter is unavailable: %w", ErrNotAllowed)
+	}
+	err := s.set(root)
+	// A setter is allowed to report an error after mutating. The compensating
+	// closure therefore exists even when apply returned an error.
+	return &workspaceRootChangeFuncs{rollbackFn: func() error {
+		return restoreWorkspaceRootSetter(s, previous)
+	}}, err
 }
 
 func restoreWorkspaceRootSetter(setter workspaceRootSetter, root string) error {
@@ -391,7 +478,11 @@ func restoreWorkspaceRootSetter(setter workspaceRootSetter, root string) error {
 // first so that a validation failure aborts before non-error services
 // are touched. Non-error services (AIService, LSPService,
 // SymbolIndexService) are wrapped to always return nil.
-func (p *ProjectService) buildWorkspaceRootSetters() []workspaceRootSetter {
+func (p *ProjectService) buildWorkspaceRootSetters(authorities ...*agentWorkspaceAuthorityGuard) []workspaceRootSetter {
+	var authority *agentWorkspaceAuthorityGuard
+	if len(authorities) > 0 {
+		authority = authorities[0]
+	}
 	var setters []workspaceRootSetter
 
 	// GOAL-P0-02: the shared workspace context goes first. It canonicalizes the
@@ -435,6 +526,9 @@ func (p *ProjectService) buildWorkspaceRootSetters() []workspaceRootSetter {
 			set:     as.setWorkspaceRoot,
 			current: as.currentWorkspaceRoot,
 			restore: as.restoreWorkspaceRoot,
+			begin: func(root string) (workspaceRootChange, error) {
+				return as.beginWorkspaceRootTransitionWithinAuthority(root, authority)
+			},
 		})
 	}
 	if p.gitService != nil {
@@ -563,11 +657,13 @@ func isValidProjectID(id string) bool {
 func (p *ProjectService) RemoveProject(id string) error {
 	p.workspaceMu.Lock()
 	defer p.workspaceMu.Unlock()
+	authority := p.beginAgentWorkspaceAuthority()
+	defer authority.release()
 	before := WorkspaceSnapshot{}
 	if p.wsCtx != nil {
 		before = p.wsCtx.State()
 	}
-	if err := p.removeProject(id); err != nil {
+	if err := p.removeProject(id, authority); err != nil {
 		return err
 	}
 	after := WorkspaceSnapshot{}
@@ -581,7 +677,7 @@ func (p *ProjectService) RemoveProject(id string) error {
 	return nil
 }
 
-func (p *ProjectService) removeProject(id string) error {
+func (p *ProjectService) removeProject(id string, authority *agentWorkspaceAuthorityGuard) error {
 	if !isValidProjectID(id) {
 		return fmt.Errorf("invalid project ID: %s", id)
 	}
@@ -597,24 +693,34 @@ func (p *ProjectService) removeProject(id string) error {
 					return err
 				}
 			}
-			originalProjects := append([]Project(nil), projects...)
 			projects = append(projects[:i], projects[i+1:]...)
-			if err := p.save(projects); err != nil {
-				return err
-			}
 			// GOAL-P0-02: if the removed project is the active workspace, drop
 			// the shared context. Leaving it pointed at a removed path would let
 			// Plan / Goal / Diff keep creating snapshots for a workspace the user
 			// just deleted. Clearing bumps the generation, so capabilities and
 			// executors bound to it stop being accepted; the consumers are
 			// fail-closed on an empty root, so this does not widen access.
+			var clearTransition *workspaceClearTransition
 			if activeWorkspace {
-				if err := p.clearWorkspaceRoots(); err != nil {
+				clearTransition, err = p.beginWorkspaceRootClearWithinAuthority(authority)
+				if err != nil {
+					return fmt.Errorf("clear active workspace roots: %w", err)
+				}
+				if err := authority.flushCatalog(); err != nil {
 					return errors.Join(
-						fmt.Errorf("clear active workspace roots: %w", err),
-						p.save(originalProjects),
+						fmt.Errorf("refresh Agent catalog after workspace clear: %w", err),
+						clearTransition.rollback(),
 					)
 				}
+			}
+			if err := p.save(projects); err != nil {
+				if clearTransition != nil {
+					return errors.Join(err, clearTransition.rollback())
+				}
+				return err
+			}
+			if clearTransition != nil {
+				clearTransition.commit()
 			}
 			// Emit project:removed so the frontend cleans up (closes open
 			// files under this path, clears currentProject if it matches).
@@ -991,7 +1097,11 @@ func ParseCodeWorkspaceFile(filePath string) ([]string, error) {
 		// 优先使用 path 字段；若缺失则尝试 URI 字段（部分工具使用 uri 而非 path）。
 		raw := f.Path
 		if raw == "" && f.URI != "" {
-			raw = uriToLocalPath(f.URI)
+			var uriErr error
+			raw, uriErr = uriToLocalPath(f.URI)
+			if uriErr != nil {
+				return nil, fmt.Errorf("code-workspace folder[%d] URI %q: %w", i, f.URI, uriErr)
+			}
 		}
 		if raw == "" {
 			return nil, fmt.Errorf("code-workspace folder[%d]: missing path/uri", i)
@@ -1000,10 +1110,11 @@ func ParseCodeWorkspaceFile(filePath string) ([]string, error) {
 		if rerr != nil {
 			return nil, fmt.Errorf("code-workspace folder[%d] path %q: %w", i, raw, rerr)
 		}
-		if seen[abs] {
+		identity := workspacePathIdentity(abs)
+		if seen[identity] {
 			continue
 		}
-		seen[abs] = true
+		seen[identity] = true
 		out = append(out, abs)
 	}
 	return out, nil
@@ -1014,8 +1125,24 @@ func ParseCodeWorkspaceFile(filePath string) ([]string, error) {
 //   - 相对路径：以 baseDir 为基准解析。
 //   - file:// URI：剥离协议前缀后转为本地路径。
 func resolveCodeWorkspaceFolder(path, baseDir string) (string, error) {
-	if strings.HasPrefix(path, "file://") {
-		path = uriToLocalPath(path)
+	if strings.HasPrefix(strings.ToLower(path), "file://") {
+		var err error
+		path, err = uriToLocalPath(path)
+		if err != nil {
+			return "", err
+		}
+	}
+	if isWindowsDeviceWorkspacePath(path) {
+		return "", fmt.Errorf("Windows device namespace is not a workspace path")
+	}
+	if isIncompleteUNCWorkspacePath(path) {
+		return "", fmt.Errorf("incomplete UNC workspace path: %s", path)
+	}
+	if isDriveRelativeWorkspacePath(path) {
+		return "", fmt.Errorf("unsupported drive-relative workspace path: %s", path)
+	}
+	if isWindowsAbsoluteWorkspacePath(path) && runtime.GOOS != "windows" {
+		return "", fmt.Errorf("Windows absolute workspace path is incompatible with this host: %s", path)
 	}
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(baseDir, path)
@@ -1024,21 +1151,136 @@ func resolveCodeWorkspaceFolder(path, baseDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return abs, nil
+	return filepath.Clean(abs), nil
 }
 
 // uriToLocalPath 将 file:// URI 转换为本地文件路径。
 // 跨平台兼容：file:///C:/... → C:/...（Windows）。
-func uriToLocalPath(uri string) string {
-	if !strings.HasPrefix(uri, "file://") {
-		return uri
+func uriToLocalPath(uri string) (string, error) {
+	if !strings.HasPrefix(strings.ToLower(uri), "file://") {
+		return uri, nil
 	}
-	p := strings.TrimPrefix(uri, "file://")
-	// file:///C:/... → C:/...
-	if len(p) >= 3 && p[0] == '/' && ((p[1] >= 'A' && p[1] <= 'Z') || (p[1] >= 'a' && p[1] <= 'z')) && p[2] == ':' {
-		p = p[1:]
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", fmt.Errorf("invalid file URI: %w", err)
 	}
-	return filepath.FromSlash(p)
+	if u.Scheme == "" || !strings.EqualFold(u.Scheme, "file") {
+		return "", fmt.Errorf("unsupported URI scheme %q", u.Scheme)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("file URI must not contain userinfo, query, or fragment")
+	}
+
+	// Decode each URI path segment independently. Encoded separators and NUL
+	// would change the path structure after authorization, so reject them.
+	escapedPath := u.EscapedPath()
+	pathParts := make([]string, 0)
+	for _, escapedPart := range strings.Split(escapedPath, "/") {
+		part, unescapeErr := url.PathUnescape(escapedPart)
+		if unescapeErr != nil {
+			return "", fmt.Errorf("invalid file URI path escape: %w", unescapeErr)
+		}
+		if strings.ContainsAny(part, "/\\\x00") {
+			return "", fmt.Errorf("file URI contains an encoded path separator or NUL")
+		}
+		pathParts = append(pathParts, part)
+	}
+	path := strings.Join(pathParts, "/")
+
+	authority := u.Host
+	if authority != "" && !strings.EqualFold(authority, "localhost") {
+		if strings.ContainsAny(authority, "/\\\x00") {
+			return "", fmt.Errorf("invalid file URI authority")
+		}
+		// A file URI authority is a UNC server name, not a URI host with
+		// ports, userinfo, or device aliases. Requiring a real server and
+		// share prevents file://server and file://./GLOBALROOT from being
+		// reinterpreted as local/device paths later.
+		if authority == "." || authority == ".." {
+			return "", fmt.Errorf("invalid file URI authority")
+		}
+		if len(authority) == 2 && authority[1] == ':' && isASCIIAlpha(authority[0]) {
+			return filepath.FromSlash(authority + ensureLeadingSlash(path)), nil
+		}
+		if strings.Contains(authority, ":") {
+			return "", fmt.Errorf("invalid file URI authority")
+		}
+		shareParts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+		// The authority supplies the server; the first URI path segment is the
+		// UNC share. A child folder is optional, so file://server/share is a
+		// valid root while file://server and file://server/ remain incomplete.
+		if len(shareParts) < 1 || shareParts[0] == "" {
+			return "", fmt.Errorf("file URI UNC authority requires a server and share")
+		}
+		return filepath.FromSlash("//" + authority + ensureLeadingSlash(path)), nil
+	}
+	// file:///C:/... and file://localhost/C:/... → C:/...
+	if len(path) >= 3 && path[0] == '/' && isASCIIAlpha(path[1]) && path[2] == ':' {
+		path = path[1:]
+	}
+	if path == "" {
+		path = "/"
+	}
+	return filepath.FromSlash(path), nil
+}
+
+func ensureLeadingSlash(path string) string {
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	return "/" + path
+}
+
+func isASCIIAlpha(value byte) bool {
+	return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
+}
+
+func isDriveRelativeWorkspacePath(path string) bool {
+	if len(path) >= 2 && isASCIIAlpha(path[0]) && path[1] == ':' {
+		return len(path) == 2 || (len(path) > 2 && path[2] != '\\' && path[2] != '/')
+	}
+	return len(path) > 0 && path[0] == '\\' && (len(path) == 1 || path[1] != '\\')
+}
+
+// isWindowsDeviceWorkspacePath rejects Windows device/extended namespaces.
+// They are not ordinary workspace folders and must never be accepted through
+// a URI or a host with different path semantics.
+func isWindowsDeviceWorkspacePath(path string) bool {
+	normalized := strings.ReplaceAll(path, "\\", "/")
+	return strings.HasPrefix(normalized, "//?/") ||
+		strings.HasPrefix(normalized, "//./")
+}
+
+// isWindowsAbsoluteWorkspacePath recognizes Windows absolute syntax even when
+// filepath.IsAbs is evaluating it on a non-Windows host. This prevents a
+// foreign absolute path from being silently joined to the local workspace.
+func isWindowsAbsoluteWorkspacePath(path string) bool {
+	normalized := strings.ReplaceAll(path, "\\", "/")
+	if len(normalized) >= 3 && isASCIIAlpha(normalized[0]) && normalized[1] == ':' && normalized[2] == '/' {
+		return true
+	}
+	if strings.HasPrefix(normalized, "//") {
+		parts := strings.Split(strings.TrimPrefix(normalized, "//"), "/")
+		return len(parts) >= 2 && parts[0] != "" && parts[1] != ""
+	}
+	return false
+}
+
+func isIncompleteUNCWorkspacePath(path string) bool {
+	normalized := strings.ReplaceAll(path, "\\", "/")
+	if !strings.HasPrefix(normalized, "//") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(normalized, "//"), "/")
+	return len(parts) < 2 || parts[0] == "" || parts[1] == ""
+}
+
+func workspacePathIdentity(path string) string {
+	clean := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(clean)
+	}
+	return clean
 }
 
 // AddMultiRootProject 添加一个多根工作区项目（Priority 4）。
@@ -1056,7 +1298,9 @@ func uriToLocalPath(uri string) string {
 func (p *ProjectService) AddMultiRootProject(roots []string, workspacePath string) (Project, error) {
 	p.workspaceMu.Lock()
 	defer p.workspaceMu.Unlock()
-	project, err := p.addMultiRootProject(roots, workspacePath)
+	authority := p.beginAgentWorkspaceAuthority()
+	defer authority.release()
+	project, err := p.addMultiRootProject(roots, workspacePath, authority)
 	if err != nil {
 		return Project{}, err
 	}
@@ -1065,7 +1309,7 @@ func (p *ProjectService) AddMultiRootProject(roots []string, workspacePath strin
 	return project, nil
 }
 
-func (p *ProjectService) addMultiRootProject(roots []string, workspacePath string) (Project, error) {
+func (p *ProjectService) addMultiRootProject(roots []string, workspacePath string, authority *agentWorkspaceAuthorityGuard) (Project, error) {
 	// A workspace file is the authority for its roots. Renderer-supplied roots
 	// are accepted only when they exactly match the parsed file; an empty list
 	// asks the backend to parse it directly.
@@ -1105,36 +1349,31 @@ func (p *ProjectService) addMultiRootProject(roots []string, workspacePath strin
 			return Project{}, err
 		}
 	}
-	if len(cleaned) == 1 && workspacePath == "" {
-		// 单根：复用现有 AddProject 行为以保留现有回滚/事件语义。
-		proj, err := p.addProject(cleaned[0])
-		if err != nil {
-			return Project{}, err
-		}
-		// 补齐多根字段。
-		proj.Roots = []string{cleaned[0]}
-		proj.IsWorkspace = workspacePath != ""
-		// 持久化补丁：把新字段写回存储。
-		if err := p.patchProjectRoots(proj.ID, proj.Roots, proj.IsWorkspace); err != nil {
-			return Project{}, err
-		}
-		return proj, nil
-	}
-
 	// Phase 1：把多根传播给已链接服务（带回滚）。
-	prevRoots, err := p.applyMultiRoots(cleaned)
+	if p.beforeWorkspaceSetters != nil {
+		p.beforeWorkspaceSetters()
+	}
+	prevRoots, err := p.applyMultiRoots(cleaned, authority)
 	if err != nil {
 		return Project{}, err
 	}
-	rollback := func() {
-		p.rollbackMultiRoots(prevRoots)
+	rollback := func() error { return p.rollbackMultiRoots(prevRoots) }
+	if err := authority.flushCatalog(); err != nil {
+		return Project{}, errors.Join(fmt.Errorf("refresh Agent catalog: %w", err), rollback())
+	}
+	commit := func() {
+		for index := range prevRoots {
+			if prevRoots[index].change == nil {
+				continue
+			}
+			prevRoots[index].change.commit()
+		}
 	}
 
 	// Phase 2：加载、更新、保存项目列表。
 	projects, err := p.load()
 	if err != nil {
-		rollback()
-		return Project{}, err
+		return Project{}, errors.Join(err, rollback())
 	}
 	now := time.Now().UnixMilli()
 	// 若 .code-workspace 路径已存在则更新；否则按 roots[0] 作为查重键。
@@ -1151,9 +1390,9 @@ func (p *ProjectService) addMultiRootProject(roots []string, workspacePath strin
 				projects[i].Path = workspacePath
 			}
 			if err := p.save(projects); err != nil {
-				rollback()
-				return Project{}, err
+				return Project{}, errors.Join(err, rollback())
 			}
+			commit()
 			return projects[i], nil
 		}
 	}
@@ -1175,9 +1414,9 @@ func (p *ProjectService) addMultiRootProject(roots []string, workspacePath strin
 	}
 	projects = append(projects, proj)
 	if err := p.save(projects); err != nil {
-		rollback()
-		return Project{}, err
+		return Project{}, errors.Join(err, rollback())
 	}
+	commit()
 	return proj, nil
 }
 
@@ -1191,6 +1430,11 @@ type multiRootSnapshot struct {
 	multiRoots []string
 	// setterRoots 用于回滚（单根）。
 	setSingle func(string) error
+	// beginSingle is the transactional form used by AgentService. When present,
+	// it keeps lifecycle authority reversible until the project transaction
+	// commits.
+	beginSingle func(string) (workspaceRootChange, error)
+	change      workspaceRootChange
 	// restoreSingle restores state when rollback requires an internal-only path.
 	restoreSingle func(string) error
 	// setterRoots 用于回滚（多根）。
@@ -1199,7 +1443,7 @@ type multiRootSnapshot struct {
 
 // applyMultiRoots 把 roots 应用到所有已链接服务（带快照供回滚）。
 // 返回每个服务的快照；调用方在失败时调用 rollbackMultiRoots。
-func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, error) {
+func (p *ProjectService) applyMultiRoots(roots []string, authority *agentWorkspaceAuthorityGuard) ([]multiRootSnapshot, error) {
 	var snaps []multiRootSnapshot
 	// The shared context remains a primary-root identity, but participates in
 	// the same rollback as every multi-root service. Its exact generation is
@@ -1220,8 +1464,7 @@ func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, e
 		}
 		snaps = append(snaps, snap)
 		if err := ctx.SetRoots(roots); err != nil {
-			p.rollbackMultiRoots(snaps)
-			return nil, err
+			return nil, errors.Join(err, p.rollbackMultiRoots(snaps))
 		}
 	}
 
@@ -1235,8 +1478,7 @@ func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, e
 			setMulti:   fs.setWorkspaceRoots,
 		})
 		if err := fs.setWorkspaceRoots(roots); err != nil {
-			p.rollbackMultiRoots(snaps)
-			return nil, err
+			return nil, errors.Join(err, p.rollbackMultiRoots(snaps))
 		}
 	}
 	// LSPService：支持多根。
@@ -1263,8 +1505,7 @@ func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, e
 			setMulti:   ss.setWorkspaceRoots,
 		})
 		if err := ss.setWorkspaceRoots(roots); err != nil {
-			p.rollbackMultiRoots(snaps)
-			return nil, err
+			return nil, errors.Join(err, p.rollbackMultiRoots(snaps))
 		}
 	}
 	// GitService: repository operations may target any configured root.
@@ -1284,8 +1525,7 @@ func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, e
 			setMulti:   gs.setWorkspaceRoots,
 		})
 		if err := gs.setWorkspaceRoots(roots); err != nil {
-			p.rollbackMultiRoots(snaps)
-			return nil, err
+			return nil, errors.Join(err, p.rollbackMultiRoots(snaps))
 		}
 	}
 	if p.symbolIndexService != nil {
@@ -1297,12 +1537,11 @@ func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, e
 			setMulti:   sis.setWorkspaceRoots,
 		})
 		if err := sis.setWorkspaceRoots(roots); err != nil {
-			p.rollbackMultiRoots(snaps)
-			return nil, err
+			return nil, errors.Join(err, p.rollbackMultiRoots(snaps))
 		}
 	}
 	// 不支持多根的服务：用 roots[0] 作为单根回退。
-	singleSetters, err := p.buildSingleRootSetters(roots[0], snaps)
+	singleSetters, err := p.buildSingleRootSetters(roots[0], snaps, authority)
 	if err != nil {
 		return nil, err
 	}
@@ -1314,13 +1553,32 @@ func (p *ProjectService) applyMultiRoots(roots []string) ([]multiRootSnapshot, e
 
 // buildSingleRootSetters 为不支持多根的服务构造单根快照并应用 roots[0]。
 // 已应用的 snaps 用于跳过 FileService / LSPService（这两者已用多根设置）。
-func (p *ProjectService) buildSingleRootSetters(primary string, applied []multiRootSnapshot) ([]multiRootSnapshot, error) {
+func (p *ProjectService) buildSingleRootSetters(primary string, applied []multiRootSnapshot, authority *agentWorkspaceAuthorityGuard) ([]multiRootSnapshot, error) {
 	var snaps []multiRootSnapshot
 	apply := func(snap multiRootSnapshot) error {
 		snaps = append(snaps, snap)
-		if err := snap.setSingle(primary); err != nil {
-			p.rollbackMultiRoots(append(applied, snaps...))
-			return err
+		if snap.beginSingle != nil {
+			change, err := snap.beginSingle(primary)
+			snaps[len(snaps)-1].change = change
+			if err != nil {
+				// The Agent transactional begin contract restores its own state on
+				// failure. Re-running restoreSingle here would recursively acquire
+				// the Project-owned workspace write guard and deadlock. Roll back
+				// only adapters that completed before this transaction.
+				rollbackTargets := make([]multiRootSnapshot, 0, len(applied)+len(snaps)-1)
+				rollbackTargets = append(rollbackTargets, applied...)
+				rollbackTargets = append(rollbackTargets, snaps[:len(snaps)-1]...)
+				return errors.Join(err, p.rollbackMultiRoots(rollbackTargets))
+			}
+			return nil
+		}
+		if snap.setSingle != nil {
+			if err := snap.setSingle(primary); err != nil {
+				rollbackTargets := make([]multiRootSnapshot, 0, len(applied)+len(snaps))
+				rollbackTargets = append(rollbackTargets, applied...)
+				rollbackTargets = append(rollbackTargets, snaps...)
+				return errors.Join(err, p.rollbackMultiRoots(rollbackTargets))
+			}
 		}
 		return nil
 	}
@@ -1344,6 +1602,9 @@ func (p *ProjectService) buildSingleRootSetters(primary string, applied []multiR
 			singleRoot:    as.currentWorkspaceRoot(),
 			setSingle:     as.setWorkspaceRoot,
 			restoreSingle: as.restoreWorkspaceRoot,
+			beginSingle: func(root string) (workspaceRootChange, error) {
+				return as.beginWorkspaceRootTransitionWithinAuthority(root, authority)
+			},
 		}); err != nil {
 			return nil, err
 		}
@@ -1391,38 +1652,43 @@ func (p *ProjectService) buildSingleRootSetters(primary string, applied []multiR
 	return snaps, nil
 }
 
-// rollbackMultiRoots 把所有服务恢复到应用多根前的状态。
-func (p *ProjectService) rollbackMultiRoots(snaps []multiRootSnapshot) {
+// rollbackMultiRoots 把所有服务恢复到应用多根前的状态，并暴露任何
+// compensating failure。静默吞掉恢复错误会把服务留在混合 workspace。
+func (p *ProjectService) rollbackMultiRoots(snaps []multiRootSnapshot) error {
+	var rollbackErrs []error
 	for i := len(snaps) - 1; i >= 0; i-- {
 		s := snaps[i]
+		if s.change != nil {
+			if err := s.change.rollback(); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback %s workspace root: %w", s.kind, err))
+			}
+			continue
+		}
 		switch s.kind {
 		case "multi":
 			if s.setMulti != nil {
-				_ = s.setMulti(s.multiRoots)
+				if err := s.setMulti(s.multiRoots); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback multi workspace roots: %w", err))
+				}
 			}
 		default:
 			if s.restoreSingle != nil {
-				_ = s.restoreSingle(s.singleRoot)
+				if err := s.restoreSingle(s.singleRoot); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback single workspace root: %w", err))
+				}
 			} else if s.setSingle != nil {
-				_ = s.setSingle(s.singleRoot)
+				if err := s.setSingle(s.singleRoot); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("rollback single workspace root: %w", err))
+				}
 			}
 		}
 	}
+	return p.poisonAgentWorkspaceRollback(errors.Join(rollbackErrs...))
 }
 
-// patchProjectRoots 在持久化项目列表中更新指定项目的 Roots/IsWorkspace 字段
-// （用于单根退化路径补齐多根字段）。
-func (p *ProjectService) patchProjectRoots(id string, roots []string, isWorkspace bool) error {
-	projects, err := p.load()
-	if err != nil {
-		return err
+func (p *ProjectService) poisonAgentWorkspaceRollback(rollbackErr error) error {
+	if rollbackErr == nil || p == nil || p.agentService == nil {
+		return rollbackErr
 	}
-	for i := range projects {
-		if projects[i].ID == id {
-			projects[i].Roots = roots
-			projects[i].IsWorkspace = isWorkspace
-			return p.save(projects)
-		}
-	}
-	return fmt.Errorf("project not found: %s", id)
+	return p.agentService.poisonWorkspaceAuthorityAfterRollback(rollbackErr)
 }

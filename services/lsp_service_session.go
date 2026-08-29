@@ -7,9 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -37,15 +34,27 @@ func (p *pendingDocumentChange) complete(err error) {
 type lspProcess struct {
 	cmd               *exec.Cmd
 	done              chan struct{}
+	tree              lspProcessTree
 	mu                sync.Mutex
 	waitErr           error
 	triggerCharacters []string
 }
 
-func newLSPProcess(cmd *exec.Cmd) *lspProcess {
-	process := &lspProcess{cmd: cmd, done: make(chan struct{})}
+type lspProcessTree interface {
+	terminateAndWait(time.Duration) error
+}
+
+func newLSPProcess(cmd *exec.Cmd, trees ...lspProcessTree) *lspProcess {
+	var tree lspProcessTree
+	if len(trees) > 0 {
+		tree = trees[0]
+	}
+	process := &lspProcess{cmd: cmd, done: make(chan struct{}), tree: tree}
 	go func() {
 		err := cmd.Wait()
+		if tree != nil {
+			err = errors.Join(err, tree.terminateAndWait(lspProcessStopTimeout))
+		}
 		process.mu.Lock()
 		process.waitErr = err
 		process.mu.Unlock()
@@ -82,20 +91,17 @@ func (p *lspProcess) stop(timeout time.Duration) error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
 	}
+	if timeout <= 0 {
+		timeout = lspProcessStopTimeout
+	}
 	select {
 	case <-p.done:
 		return nil
 	default:
 	}
 	var killErr error
-	if runtime.GOOS == "windows" {
-		output, err := exec.Command("taskkill.exe", "/PID", strconv.Itoa(p.cmd.Process.Pid), "/T", "/F").CombinedOutput()
-		if err != nil {
-			killErr = fmt.Errorf("kill LSP process tree: %w", err)
-			if detail := strings.TrimSpace(string(output)); detail != "" {
-				killErr = fmt.Errorf("%w: %s", killErr, detail)
-			}
-		}
+	if p.tree != nil {
+		killErr = p.tree.terminateAndWait(timeout)
 	} else if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		select {
 		case <-p.done:
@@ -104,13 +110,14 @@ func (p *lspProcess) stop(timeout time.Duration) error {
 			return fmt.Errorf("kill LSP process: %w", err)
 		}
 	}
-	if timeout <= 0 {
-		timeout = lspProcessStopTimeout
-	}
+	return waitForLSPProcessExit(p.done, timeout, killErr)
+}
+
+func waitForLSPProcessExit(done <-chan struct{}, timeout time.Duration, killErr error) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case <-p.done:
+	case <-done:
 		return killErr
 	case <-timer.C:
 		waitErr := fmt.Errorf("timed out waiting for LSP process to exit")

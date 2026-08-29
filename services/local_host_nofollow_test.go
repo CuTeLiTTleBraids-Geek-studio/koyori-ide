@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build js || plan9
 
 package services
 

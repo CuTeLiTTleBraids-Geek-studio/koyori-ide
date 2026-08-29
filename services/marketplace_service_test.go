@@ -46,7 +46,7 @@ func (d *marketplaceWalkTestDirEntry) Info() (fs.FileInfo, error) {
 // service without hitting the network. They build mock VSIX (zip) files in
 // memory and drive installFromVSIXData directly, covering:
 //   - VSIX path traversal protection (G-SEC-12: malicious "../../" entries)
-//   - SHA-256 verification (G-SEC-12 req. 3: mismatched hash rejected)
+//   - SHA-256 integrity checks (G-SEC-12 req. 3: mismatched hash rejected)
 //   - Default-disabled on install (G-SEC-12 req. 2 / G-VSC-03 req. 2)
 //   - ListInstalledExtensions
 //   - UninstallExtension
@@ -315,7 +315,7 @@ func TestMarketplaceLifecycleDefaultsToSuccessfulNoopWithoutRequester(t *testing
 	}
 }
 
-// --- SHA-256 verification (G-SEC-12 req. 3) ---
+// --- SHA-256 integrity checks (G-SEC-12 req. 3) ---
 
 // TestMarketplaceInstall_Sha256MismatchRejected verifies that a VSIX whose
 // computed SHA-256 does not match the registry-provided hash is rejected
@@ -329,8 +329,11 @@ func TestMarketplaceInstall_Sha256MismatchRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected SHA-256 mismatch error, got nil")
 	}
-	if !strings.Contains(err.Error(), "SHA-256 verification failed") {
-		t.Fatalf("expected SHA-256 verification error, got: %v", err)
+	if !strings.Contains(err.Error(), "SHA-256 integrity check failed") {
+		t.Fatalf("expected SHA-256 integrity error, got: %v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "signature") {
+		t.Fatalf("SHA-256 integrity error must not claim signature verification: %v", err)
 	}
 	// No extension directory should have been created on rejection.
 	dir := filepath.Join(svc.configDir, extensionsSubdir, "acme.hello")
@@ -1233,6 +1236,12 @@ func TestMarketplaceInstall_CRIT02_RegistersWithSecurityService(t *testing.T) {
 	if !info.PendingReview {
 		t.Errorf("registered extension should be PendingReview=true (CRIT-02 pending review); got false")
 	}
+	if !info.IntegrityChecked {
+		t.Error("registered extension should be IntegrityChecked=true after a matching SHA-256 digest")
+	}
+	if info.Verified != info.IntegrityChecked {
+		t.Error("deprecated verified compatibility field must mirror IntegrityChecked")
+	}
 }
 
 func TestMarketplaceInstall_RegistersDeclaredPermissions(t *testing.T) {
@@ -1260,16 +1269,51 @@ func TestMarketplaceInstall_RegistersDeclaredPermissions(t *testing.T) {
 	}
 }
 
-func TestMarketplaceInstall_RejectsExecutableWithoutPermissionDeclaration(t *testing.T) {
-	svc, _ := newTestMarketplaceService(t)
-	pkg := `{"name":"runner","publisher":"acme","version":"1.0.0","main":"dist/main.js"}`
-	vsix, hash := buildVSIX(t, []zipEntry{{Name: "extension/package.json", Data: []byte(pkg)}})
-	err := svc.installFromVSIXData(vsix, hash, "acme", "runner", "1.0.0")
-	if err == nil || !strings.Contains(err.Error(), "must declare koyoriIde.permissions") {
-		t.Fatalf("expected missing permission declaration error, got %v", err)
+func TestMarketplaceInstall_InfersPermissionsWhenKoyoriDeclarationMissing(t *testing.T) {
+	svc, dir := newTestMarketplaceService(t)
+	ss := NewExtensionSecurityService(dir)
+	svc.setSecurityService(ss)
+	pkg := `{"name":"hello","publisher":"acme","version":"1.0.0","main":"dist/main.js","activationEvents":["onCommand:acme.hello"],"contributes":{"commands":[{"command":"acme.hello","title":"Hello"}]}}`
+	vsix, hash := buildVSIX(t, []zipEntry{
+		{Name: "extension/package.json", Data: []byte(pkg)},
+		{Name: "extension/dist/main.js", Data: []byte("vscode.commands.registerCommand('acme.hello', () => vscode.window.showInformationMessage('hi'));")},
+	})
+	if err := svc.installFromVSIXData(vsix, hash, "acme", "hello", "1.0.0"); err != nil {
+		t.Fatalf("command-only VSIX without koyoriIde.permissions must install: %v", err)
 	}
-	if _, statErr := os.Stat(svc.extensionDir("acme", "runner")); !os.IsNotExist(statErr) {
-		t.Fatalf("rejected extension should not be installed: %v", statErr)
+	info, err := ss.GetSecurityInfo("acme.hello")
+	if err != nil {
+		t.Fatalf("security info: %v", err)
+	}
+	if info.Level != SecurityTrusted && info.Level != SecurityReviewed {
+		t.Fatalf("command-only inferred level = %q, want Trusted or Reviewed", info.Level)
+	}
+	if info.Enabled {
+		t.Fatal("new installs remain disabled until the user enables them")
+	}
+}
+
+func TestMarketplaceInstall_InfersRestrictedForShellOrNetworkAndKeepsDisabled(t *testing.T) {
+	svc, dir := newTestMarketplaceService(t)
+	ss := NewExtensionSecurityService(dir)
+	svc.setSecurityService(ss)
+	pkg := `{"name":"net","publisher":"acme","version":"1.0.0","main":"dist/main.js"}`
+	vsix, hash := buildVSIX(t, []zipEntry{
+		{Name: "extension/package.json", Data: []byte(pkg)},
+		{Name: "extension/dist/main.js", Data: []byte("fetch('https://example.com'); require('child_process').spawn('echo');")},
+	})
+	if err := svc.installFromVSIXData(vsix, hash, "acme", "net", "1.0.0"); err != nil {
+		t.Fatalf("network/shell VSIX without koyoriIde.permissions must still install: %v", err)
+	}
+	info, err := ss.GetSecurityInfo("acme.net")
+	if err != nil {
+		t.Fatalf("security info: %v", err)
+	}
+	if info.Level != SecurityRestricted {
+		t.Fatalf("shell/network inferred level = %q, want restricted", info.Level)
+	}
+	if info.Enabled {
+		t.Fatal("Restricted inferred extensions must stay disabled by default")
 	}
 }
 
@@ -1909,8 +1953,8 @@ func TestMarketplaceInstall_LargeVSIXStreamsThroughSecurityRegistration(t *testi
 	if err != nil {
 		t.Fatalf("get security info: %v", err)
 	}
-	if !info.Verified || !strings.EqualFold(info.SHA256, wantHash) {
-		t.Fatalf("security info verification = %v hash = %q, want verified hash %q", info.Verified, info.SHA256, wantHash)
+	if !info.IntegrityChecked || !info.Verified || !strings.EqualFold(info.SHA256, wantHash) {
+		t.Fatalf("security info integrityChecked = %v compatibilityVerified = %v hash = %q, want integrity-checked hash %q", info.IntegrityChecked, info.Verified, info.SHA256, wantHash)
 	}
 	if info.Enabled || !info.PendingReview {
 		t.Fatalf("large VSIX security state = enabled:%v pending:%v, want disabled and pending review", info.Enabled, info.PendingReview)

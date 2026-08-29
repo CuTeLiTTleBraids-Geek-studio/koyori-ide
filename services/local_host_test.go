@@ -20,6 +20,11 @@ func newTestLocalWorkspaceHost(t *testing.T) (*LocalWorkspaceHost, *WorkspaceCon
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := host.Close(); err != nil {
+			t.Errorf("close local workspace host: %v", err)
+		}
+	})
 	ref, err := host.WorkspaceRef()
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +97,7 @@ func TestLocalWorkspaceHostReadWriteListStat(t *testing.T) {
 
 func TestLocalWorkspaceHostListsSpecialFilenamesWithoutPathLeak(t *testing.T) {
 	host, ctx, scope := newTestLocalWorkspaceHost(t)
-	for _, name := range []string{"hello world.txt", "中文#百分号%.txt", "name (copy).txt"} {
+	for _, name := range []string{"hello world.txt", "中文#百分号%.txt", "name (copy).txt", "  leading.txt"} {
 		if err := host.WriteFile(localTestURI(t, name), scope, []byte(name)); err != nil {
 			t.Fatalf("WriteFile(%q): %v", name, err)
 		}
@@ -101,7 +106,7 @@ func TestLocalWorkspaceHostListsSpecialFilenamesWithoutPathLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 3 {
+	if len(entries) != 4 {
 		t.Fatalf("entries = %#v", entries)
 	}
 	for _, entry := range entries {

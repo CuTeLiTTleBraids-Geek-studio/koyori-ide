@@ -130,7 +130,7 @@ func TestAgentService_approval_fails_when_workspace_root_is_empty(t *testing.T) 
 	t.Cleanup(func() { _ = service.Close() })
 
 	// When
-	_, err := service.RequestCommandApproval("go version", t.TempDir())
+	_, err := service.requestCommandApprovalLegacy("go version", t.TempDir())
 
 	// Then
 	if err == nil {

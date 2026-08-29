@@ -17,6 +17,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,10 +97,86 @@ func (s *Skill) Matches(message string) bool {
 
 // SkillsService 发现、加载、匹配技能。
 type SkillsService struct {
-	mu         sync.RWMutex
-	skills     []Skill
-	projectDir string
-	userDir    string
+	mu               sync.RWMutex
+	skills           []Skill
+	projectDir       string
+	userDir          string
+	onMutationChange func() error
+}
+
+// skillsWorkspaceState is an in-process policy snapshot owned by the trusted
+// ProjectService workspace transaction. Project approvals are restored only
+// when the definition loaded from the original root has the same fingerprint.
+type skillsWorkspaceState struct {
+	projectDir           string
+	approvedFingerprints map[string]string
+}
+
+func (s *SkillsService) captureWorkspaceState() (skillsWorkspaceState, error) {
+	if s == nil {
+		return skillsWorkspaceState{}, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state := skillsWorkspaceState{
+		projectDir:           s.projectDir,
+		approvedFingerprints: make(map[string]string),
+	}
+	for _, skill := range s.skills {
+		if !skill.IsProjectScoped() || !skill.approvedByUser {
+			continue
+		}
+		fingerprint, err := skillFingerprint(skill)
+		if err != nil {
+			return skillsWorkspaceState{}, fmt.Errorf("fingerprint approved skill %q: %w", skill.ID, err)
+		}
+		state.approvedFingerprints[skill.ID] = fingerprint
+	}
+	return state, nil
+}
+
+func (s *SkillsService) restoreWorkspaceState(state skillsWorkspaceState) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	s.projectDir = state.projectDir
+	s.skills = nil
+	s.mu.Unlock()
+	if err := s.notifyMutationChange(); err != nil {
+		return fmt.Errorf("clear candidate skill source: %w", err)
+	}
+	if err := s.Load(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	approvedIndexes := make([]int, 0, len(state.approvedFingerprints))
+	matched := make(map[string]struct{}, len(state.approvedFingerprints))
+	for index := range s.skills {
+		skill := s.skills[index]
+		expected, approved := state.approvedFingerprints[skill.ID]
+		if !approved {
+			continue
+		}
+		fingerprint, err := skillFingerprint(skill)
+		if err != nil {
+			return fmt.Errorf("fingerprint restored skill %q: %w", skill.ID, err)
+		}
+		if !skill.IsProjectScoped() || fingerprint != expected {
+			return fmt.Errorf("restored project skill %q changed identity: %w", skill.ID, ErrNotAllowed)
+		}
+		approvedIndexes = append(approvedIndexes, index)
+		matched[skill.ID] = struct{}{}
+	}
+	if len(matched) != len(state.approvedFingerprints) {
+		return fmt.Errorf("one or more approved project skills are unavailable after rollback: %w", ErrNotAllowed)
+	}
+	for _, index := range approvedIndexes {
+		s.skills[index].approvedByUser = true
+	}
+	return nil
 }
 
 // NewSkillsService 创建服务。projectDir 为 workspace root（可空），
@@ -111,37 +188,70 @@ func NewSkillsService(configDir string) *SkillsService {
 	return svc
 }
 
+// setOnMutationChange installs the trusted backend callback used to refresh
+// the Agent ToolDef source whenever the loaded skill set changes. Renderer
+// code cannot replace this callback.
+//
+//wails:ignore
+func (s *SkillsService) setOnMutationChange(callback func() error) {
+	s.mu.Lock()
+	s.onMutationChange = callback
+	s.mu.Unlock()
+}
+
+func (s *SkillsService) notifyMutationChange() error {
+	s.mu.RLock()
+	callback := s.onMutationChange
+	s.mu.RUnlock()
+	if callback == nil {
+		return nil
+	}
+	if err := callback(); err != nil {
+		return fmt.Errorf("refresh skill agent tools: %w", err)
+	}
+	return nil
+}
+
 // setWorkspaceRoot 设置项目目录，项目级 skills 从 <root>/.koyori-ide/skills/ 加载。
 //
 //wails:ignore
-func (s *SkillsService) setWorkspaceRoot(root string) {
+func (s *SkillsService) setWorkspaceRoot(root string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if root == "" {
 		s.projectDir = ""
-		return
+	} else {
+		s.projectDir = filepath.Join(root, ".koyori-ide", "skills")
 	}
-	s.projectDir = filepath.Join(root, ".koyori-ide", "skills")
+	// A workspace switch revokes every loaded project skill and its approval
+	// state before the new source is read. Keeping the old slice here would let
+	// the mutation callback republish it under the new workspace generation.
+	s.skills = nil
+	s.mu.Unlock()
+	// Workspace changes alter the source of project skills immediately. The
+	// callback therefore burns old capabilities before the subsequent Load.
+	return s.notifyMutationChange()
 }
 
 // Load 扫描项目级与用户级目录，加载所有 *.yaml 技能（Step 2）。
 // 项目级 Skill 标记 Scope=project（G-SEC-03），用户级标记 user。
 func (s *SkillsService) Load() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	userDir := s.userDir
+	projectDir := s.projectDir
+	s.mu.RUnlock()
 	var loaded []Skill
 	// 用户级优先级低于项目级（同 ID 时项目级覆盖）。
-	if s.userDir != "" {
-		userSkills, err := loadSkillsFromDir(s.userDir, SkillScopeUser)
+	if userDir != "" {
+		userSkills, err := loadSkillsFromDir(userDir, SkillScopeUser)
 		if err != nil {
-			return fmt.Errorf("load user skills: %w", err)
+			return s.failClosedLoad(userDir, projectDir, fmt.Errorf("load user skills: %w", err))
 		}
 		loaded = append(loaded, userSkills...)
 	}
-	if s.projectDir != "" {
-		projSkills, err := loadSkillsFromDir(s.projectDir, SkillScopeProject)
+	if projectDir != "" {
+		projSkills, err := loadSkillsFromDir(projectDir, SkillScopeProject)
 		if err != nil {
-			return fmt.Errorf("load project skills: %w", err)
+			return s.failClosedLoad(userDir, projectDir, fmt.Errorf("load project skills: %w", err))
 		}
 		loaded = append(loaded, projSkills...)
 	}
@@ -165,8 +275,33 @@ func (s *SkillsService) Load() error {
 			deduped = append(deduped, sk)
 		}
 	}
+
+	// Do not let a slow load for an old workspace overwrite a newer source.
+	s.mu.Lock()
+	if s.userDir != userDir || s.projectDir != projectDir {
+		s.mu.Unlock()
+		return fmt.Errorf("skill source changed while loading: %w", ErrNotAllowed)
+	}
 	s.skills = deduped
-	return nil
+	s.mu.Unlock()
+	return s.notifyMutationChange()
+}
+
+// failClosedLoad removes the previously published source when a staged load
+// fails. The source identity check prevents an older concurrent load from
+// clearing skills that have already been loaded for a newer workspace.
+func (s *SkillsService) failClosedLoad(userDir, projectDir string, loadErr error) error {
+	s.mu.Lock()
+	if s.userDir != userDir || s.projectDir != projectDir {
+		s.mu.Unlock()
+		return loadErr
+	}
+	s.skills = nil
+	s.mu.Unlock()
+	if refreshErr := s.notifyMutationChange(); refreshErr != nil {
+		return errors.Join(loadErr, refreshErr)
+	}
+	return loadErr
 }
 
 // loadSkillsFromDir 扫描目录加载所有 *.yaml。
@@ -244,15 +379,41 @@ func (s *SkillsService) MatchTriggers(_ context.Context, message string) []Skill
 	return matched
 }
 
-// ActivateSkill 标记项目级技能已获用户确认（G-SEC-03）。用户级/全局无需确认。
+// ActivateSkill is kept at the binding surface as a deny-only compatibility
+// stub. Project skill activation must traverse the unified Agent capability
+// pipeline so renderer state cannot manufacture approval.
 func (s *SkillsService) ActivateSkill(id string) error {
+	return fmt.Errorf("activate skill %q through the Agent skill ToolDef: %w", id, ErrNotAllowed)
+}
+
+func (s *SkillsService) activateSkillTrusted(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for i := range s.skills {
 		if s.skills[i].ID == id {
 			s.skills[i].approvedByUser = true
+			s.mu.Unlock()
+			// Approval is session policy state, not a catalog definition. Do
+			// not advance the global revision for an activation that leaves
+			// ToolDef metadata unchanged.
 			return nil
 		}
+	}
+	s.mu.Unlock()
+	return fmt.Errorf("skill %q: %w", id, ErrNotFound)
+}
+
+func (s *SkillsService) restoreSkillApprovalTrusted(id string, approved bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.skills {
+		if s.skills[i].ID != id {
+			continue
+		}
+		if !s.skills[i].IsProjectScoped() && !approved {
+			return nil
+		}
+		s.skills[i].approvedByUser = approved
+		return nil
 	}
 	return fmt.Errorf("skill %q: %w", id, ErrNotFound)
 }

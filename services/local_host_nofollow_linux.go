@@ -28,6 +28,8 @@ type localHostNoFollowRoot struct {
 	valid bool
 }
 
+func localHostNoFollowPlatformSupported() bool { return true }
+
 func localHostNoFollowBindRoot(path string) localHostNoFollowRoot {
 	var before unix.Stat_t
 	if err := unix.Lstat(path, &before); err != nil || before.Mode&unix.S_IFMT != unix.S_IFDIR {

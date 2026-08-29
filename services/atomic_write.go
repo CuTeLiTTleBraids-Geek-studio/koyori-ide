@@ -1,6 +1,8 @@
 package services
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -93,6 +95,74 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	}
 	if err := replaceFileAtomically(tmpName, path); err != nil {
 		return fmt.Errorf("rename temp to target: %w", err)
+	}
+	return nil
+}
+
+func atomicWriteFileWithinRoot(
+	capability fileCapability,
+	data []byte,
+	perm os.FileMode,
+	beforeCommit func() error,
+) error {
+	if perm == 0 {
+		perm = 0o600
+	}
+	parent := filepath.ToSlash(filepath.Dir(filepath.FromSlash(capability.relative)))
+	if parent == "" {
+		parent = "."
+	}
+	if err := capability.root.root.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create atomic write parent: %w", err)
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return fmt.Errorf("create atomic temp name: %w", err)
+	}
+	temp := filepath.ToSlash(filepath.Join(filepath.FromSlash(parent), ".gugacode-save-"+hex.EncodeToString(random[:])+
+		".tmp"))
+	file, err := capability.root.root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create atomic temp file: %w", err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+		_ = capability.root.root.Remove(temp)
+	}()
+	tempIdentity, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("identify atomic temp file: %w", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("write atomic temp file: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync atomic temp file: %w", err)
+	}
+	if err := file.Chmod(perm); err != nil {
+		return fmt.Errorf("chmod atomic temp file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close atomic temp file: %w", err)
+	}
+	closed = true
+	publishedIdentity, err := capability.root.root.Lstat(temp)
+	if err != nil {
+		return fmt.Errorf("verify atomic temp file: %w", err)
+	}
+	if !os.SameFile(tempIdentity, publishedIdentity) {
+		return fmt.Errorf("atomic temp file identity changed: %w", ErrNotAllowed)
+	}
+	if beforeCommit != nil {
+		if err := beforeCommit(); err != nil {
+			return err
+		}
+	}
+	if err := capability.root.root.Rename(temp, capability.relative); err != nil {
+		return fmt.Errorf("rename atomic temp file: %w", err)
 	}
 	return nil
 }

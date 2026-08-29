@@ -109,6 +109,27 @@ func isContextError(err error) bool {
 //     message. Previously the body was closed before the final return, causing
 //     parseAIError to fail with "read on closed body".
 func doWithRetry(do func() (*http.Response, error)) (*http.Response, error) {
+	return doWithRetryContext(context.Background(), do)
+}
+
+func waitForAIRetry(ctx context.Context, delay time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func doWithRetryContext(ctx context.Context, do func() (*http.Response, error)) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		resp, err := do()
 
@@ -154,7 +175,9 @@ func doWithRetry(do func() (*http.Response, error)) (*http.Response, error) {
 			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
-			time.Sleep(backoff)
+			if err := waitForAIRetry(ctx, backoff); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
@@ -171,7 +194,9 @@ func doWithRetry(do func() (*http.Response, error)) (*http.Response, error) {
 			if attempt == maxRetries {
 				return nil, err
 			}
-			time.Sleep(backoffDuration(attempt))
+			if err := waitForAIRetry(ctx, backoffDuration(attempt)); err != nil {
+				return nil, err
+			}
 			continue
 		}
 	}

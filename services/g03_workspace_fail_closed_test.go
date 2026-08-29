@@ -17,7 +17,8 @@ import (
 
 const g03MCPHelperMarkerEnv = "KOYORI_IDE_G03_MCP_HELPER_MARKER"
 
-// TestG03MCPHelperProcess is launched by TestG03MCPConnectRejectsEmptyWorkspaceBeforeProcessStart.
+// TestG03MCPHelperProcess is launched by the empty- and nil-workspace MCP
+// rejection tests below.
 // It writes a marker immediately so the parent can distinguish a fail-closed
 // rejection from a subprocess that started and only failed later during the
 // MCP initialize handshake.
@@ -61,7 +62,7 @@ func TestG03MCPProtocolHelperProcess(t *testing.T) {
 		case "initialize":
 			result = map[string]interface{}{
 				"protocolVersion": "2024-11-05",
-				"capabilities":    map[string]interface{}{},
+				"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 				"serverInfo":      map[string]string{"name": "g03-helper", "version": "1"},
 			}
 		case "tools/list":
@@ -118,6 +119,34 @@ func TestG03MCPConnectRejectsEmptyWorkspaceBeforeProcessStart(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("MCP subprocess started before empty-workspace rejection; marker stat error = %v", statErr)
+	}
+}
+
+func TestG03MCPConnectRejectsNilWorkspaceBeforeProcessStart(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "mcp-started")
+	service := newTestMCPService(t)
+	// Keep both workspaceContext and rootDir unset. This is the unwired service
+	// state that must not acquire an implicit unscoped execution lease.
+	server := MCPServerConfig{
+		Name:      "nil-workspace-probe",
+		Transport: "stdio",
+		Command:   os.Args[0],
+		Args:      []string{"-test.run=^TestG03MCPHelperProcess$"},
+		Env:       map[string]string{g03MCPHelperMarkerEnv: marker},
+	}
+	if err := service.SaveServer(server); err != nil {
+		t.Fatalf("SaveServer nil-workspace helper: %v", err)
+	}
+	if err := service.SetServerEnabled(server.Name, true); err != nil {
+		t.Fatalf("SetServerEnabled nil-workspace helper: %v", err)
+	}
+
+	err := service.ConnectServer(context.Background(), "nil-workspace-probe")
+	if !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("ConnectServer without a workspace context error = %v, want ErrNotAllowed", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("MCP subprocess started before nil-workspace rejection; marker stat error = %v", statErr)
 	}
 }
 
@@ -380,14 +409,19 @@ func TestG03MCPRealSubprocessBindsAndRevokesWorkspaceGeneration(t *testing.T) {
 	if err := service.applyWorkspaceRoot(rootA); err != nil {
 		t.Fatalf("set MCP root A: %v", err)
 	}
-	service.config.Servers = []MCPServerConfig{{
+	server := MCPServerConfig{
 		Name:      "g03-real",
 		Transport: "stdio",
 		Command:   helper,
 		Args:      []string{"-test.run=^TestG03MCPProtocolHelperProcess$"},
 		Env:       map[string]string{g03MCPHelperMarkerEnv: marker},
-		Enabled:   true,
-	}}
+	}
+	if err := service.SaveServer(server); err != nil {
+		t.Fatalf("SaveServer real helper: %v", err)
+	}
+	if err := service.SetServerEnabled(server.Name, true); err != nil {
+		t.Fatalf("SetServerEnabled real helper: %v", err)
+	}
 	// Windows may scan the copied test executable before CreateProcess returns;
 	// keep enough budget for the real child handshake without weakening the
 	// workspace-generation assertions below.
@@ -498,7 +532,7 @@ func TestG03MCPApprovalLeaseCannotSelectSameNamedClientAfterSwitch(t *testing.T)
 	if err := service.applyWorkspaceRoot(rootA); err != nil {
 		t.Fatalf("apply MCP workspace A: %v", err)
 	}
-	oldTransport := newScriptedMCPTransport(func(req *jsonrpcRequest, _ int) *jsonrpcResponse {
+	oldTransport := newScriptedMCPTransport(func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
 		return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":[{"type":"text","text":"old"}]}`)}
 	})
 	oldClient := newScriptedMCPClient("same-name", oldTransport)
@@ -515,7 +549,7 @@ func TestG03MCPApprovalLeaseCannotSelectSameNamedClientAfterSwitch(t *testing.T)
 	if err := service.applyWorkspaceRoot(rootB); err != nil {
 		t.Fatalf("apply MCP workspace B: %v", err)
 	}
-	newTransport := newScriptedMCPTransport(func(req *jsonrpcRequest, _ int) *jsonrpcResponse {
+	newTransport := newScriptedMCPTransport(func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
 		return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":[{"type":"text","text":"new"}]}`)}
 	})
 	newClient := newScriptedMCPClient("same-name", newTransport)

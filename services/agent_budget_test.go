@@ -58,12 +58,12 @@ func TestRequestCommandApprovalRefusesPastBudget(t *testing.T) {
 	svc.StartNewToolBudgetEpoch(3)
 
 	for i := 0; i < 3; i++ {
-		if _, err := svc.RequestCommandApproval("go version", ""); err != nil {
+		if _, err := svc.requestCommandApprovalLegacy("go version", ""); err != nil {
 			t.Fatalf("approval %d within budget failed: %v", i+1, err)
 		}
 	}
 
-	_, err := svc.RequestCommandApproval("go version", "")
+	_, err := svc.requestCommandApprovalLegacy("go version", "")
 	if !errors.Is(err, ErrAgentBudgetExhausted) {
 		t.Fatalf("approval past budget error = %v, want ErrAgentBudgetExhausted", err)
 	}
@@ -78,7 +78,7 @@ func TestRequestCommandApprovalRefusesPastBudget(t *testing.T) {
 	// AC 2: the refusal is terminal, not a queue. Repeating it must keep failing
 	// rather than eventually letting one through.
 	for i := 0; i < 5; i++ {
-		if _, err := svc.RequestCommandApproval("go version", ""); !errors.Is(err, ErrAgentBudgetExhausted) {
+		if _, err := svc.requestCommandApprovalLegacy("go version", ""); !errors.Is(err, ErrAgentBudgetExhausted) {
 			t.Fatalf("retry %d after exhaustion error = %v, want ErrAgentBudgetExhausted", i+1, err)
 		}
 	}
@@ -108,7 +108,7 @@ func TestRequestCommandApprovalIsAtomicUnderConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start // maximize contention on the budget mutex
-			_, err := svc.RequestCommandApproval("go version", "")
+			_, err := svc.requestCommandApprovalLegacy("go version", "")
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -143,10 +143,10 @@ func TestStartNewToolBudgetEpochIsTheOnlyWayPastExhaustion(t *testing.T) {
 	svc := newBudgetTestService(t)
 	svc.StartNewToolBudgetEpoch(1)
 
-	if _, err := svc.RequestCommandApproval("go version", ""); err != nil {
+	if _, err := svc.requestCommandApprovalLegacy("go version", ""); err != nil {
 		t.Fatalf("first approval failed: %v", err)
 	}
-	if _, err := svc.RequestCommandApproval("go version", ""); !errors.Is(err, ErrAgentBudgetExhausted) {
+	if _, err := svc.requestCommandApprovalLegacy("go version", ""); !errors.Is(err, ErrAgentBudgetExhausted) {
 		t.Fatal("expected exhaustion before the reset")
 	}
 
@@ -162,7 +162,7 @@ func TestStartNewToolBudgetEpochIsTheOnlyWayPastExhaustion(t *testing.T) {
 	if after.Limit != 2 {
 		t.Fatalf("Limit after reset = %d, want 2", after.Limit)
 	}
-	if _, err := svc.RequestCommandApproval("go version", ""); err != nil {
+	if _, err := svc.requestCommandApprovalLegacy("go version", ""); err != nil {
 		t.Fatalf("approval after explicit reset failed: %v", err)
 	}
 }
@@ -174,7 +174,7 @@ func TestCapabilityFromPreviousEpochIsRejected(t *testing.T) {
 	svc := newBudgetTestService(t)
 	svc.StartNewToolBudgetEpoch(5)
 
-	token, err := svc.RequestCommandApproval("go version", "")
+	token, err := svc.requestCommandApprovalLegacy("go version", "")
 	if err != nil {
 		t.Fatalf("request approval: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestCapabilityWithinSameEpochStillRedeems(t *testing.T) {
 	svc := newBudgetTestService(t)
 	svc.StartNewToolBudgetEpoch(5)
 
-	token, err := svc.RequestCommandApproval("go version", "")
+	token, err := svc.requestCommandApprovalLegacy("go version", "")
 	if err != nil {
 		t.Fatalf("request approval: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestDeclinedApprovalDoesNotSpendBudget(t *testing.T) {
 	svc.StartNewToolBudgetEpoch(4)
 	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return false }
 
-	if _, err := svc.RequestCommandApproval("go version", ""); err == nil {
+	if _, err := svc.requestCommandApprovalLegacy("go version", ""); err == nil {
 		t.Fatal("expected a declined approval to fail")
 	}
 	if spent := svc.GetToolBudget().Spent; spent != 0 {
@@ -224,7 +224,7 @@ func TestBlockedCommandDoesNotSpendBudget(t *testing.T) {
 	svc.StartNewToolBudgetEpoch(4)
 
 	// Shell syntax is rejected by CheckCommand before the budget is touched.
-	if _, err := svc.RequestCommandApproval("go version && rm -rf /", ""); err == nil {
+	if _, err := svc.requestCommandApprovalLegacy("go version && rm -rf /", ""); err == nil {
 		t.Fatal("expected a blocked command to fail")
 	}
 	if spent := svc.GetToolBudget().Spent; spent != 0 {
@@ -239,13 +239,46 @@ func TestAbandonedCapabilityStillSpendsBudget(t *testing.T) {
 	svc.StartNewToolBudgetEpoch(3)
 
 	for i := 0; i < 3; i++ {
-		if _, err := svc.RequestCommandApproval("go version", ""); err != nil {
+		if _, err := svc.requestCommandApprovalLegacy("go version", ""); err != nil {
 			t.Fatalf("approval %d failed: %v", i+1, err)
 		}
 		// Deliberately never redeemed.
 	}
-	if _, err := svc.RequestCommandApproval("go version", ""); !errors.Is(err, ErrAgentBudgetExhausted) {
+	if _, err := svc.requestCommandApprovalLegacy("go version", ""); !errors.Is(err, ErrAgentBudgetExhausted) {
 		t.Fatal("abandoning capabilities refunded budget; retry becomes a free bypass")
+	}
+}
+
+func TestToolBudgetReleaseReservationIsEpochBound(t *testing.T) {
+	budget := newToolBudget()
+	budget.mu.Lock()
+	budget.limit = 1
+	budget.mu.Unlock()
+
+	epoch, err := budget.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := budget.ReleaseReservation(epoch); err != nil {
+		t.Fatalf("ReleaseReservation: %v", err)
+	}
+	if status := budget.status(); status.Spent != 0 || status.Remaining != 1 {
+		t.Fatalf("status after release = spent %d remaining %d, want 0/1", status.Spent, status.Remaining)
+	}
+	if err := budget.ReleaseReservation(epoch); err == nil {
+		t.Fatal("duplicate ReleaseReservation unexpectedly succeeded")
+	}
+
+	oldEpoch, err := budget.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve after release: %v", err)
+	}
+	budget.newEpoch(1)
+	if err := budget.ReleaseReservation(oldEpoch); err != nil {
+		t.Fatalf("stale ReleaseReservation: %v", err)
+	}
+	if status := budget.status(); status.Spent != 0 || status.Epoch != oldEpoch+1 {
+		t.Fatalf("status after stale release = epoch %d spent %d, want %d/0", status.Epoch, status.Spent, oldEpoch+1)
 	}
 }
 
@@ -260,7 +293,7 @@ func TestToolBudgetWindowExpiryRefusesIssuance(t *testing.T) {
 	budget.startedAt = time.Now().Add(-time.Second) // already past the window
 	budget.mu.Unlock()
 
-	_, err := svc.RequestCommandApproval("go version", "")
+	_, err := svc.requestCommandApprovalLegacy("go version", "")
 	if !errors.Is(err, ErrAgentBudgetExhausted) {
 		t.Fatalf("expired-window error = %v, want ErrAgentBudgetExhausted", err)
 	}
@@ -277,7 +310,7 @@ func TestToolBudgetStatusIsSelfConsistent(t *testing.T) {
 	svc.StartNewToolBudgetEpoch(5)
 
 	for i := 0; i < 2; i++ {
-		if _, err := svc.RequestCommandApproval("go version", ""); err != nil {
+		if _, err := svc.requestCommandApprovalLegacy("go version", ""); err != nil {
 			t.Fatalf("approval %d failed: %v", i+1, err)
 		}
 	}

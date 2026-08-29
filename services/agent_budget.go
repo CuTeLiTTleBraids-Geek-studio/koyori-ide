@@ -82,13 +82,11 @@ func newToolBudget() *toolBudget {
 	}
 }
 
-// reserve consumes one unit of budget and returns the epoch it was charged to.
-//
-// Retry/cancel semantics (GOAL-P1-02 execution point 4): a reservation is
-// charged when the capability is issued and is never refunded. A failed or
-// cancelled execution still consumed a reservation. Refunding would make retry
-// a free operation and turn the ceiling into a suggestion — a caller could loop
-// "request, fail, retry" without bound.
+// reserve provisionally consumes one unit of budget and returns the epoch it
+// was charged to. Runtime commits the reservation only after the capability
+// issued audit record is accepted. Once committed, an abandoned or failed
+// execution still consumes the unit; only a pre-issuance failure may call
+// ReleaseReservation.
 func (b *toolBudget) reserve() (uint64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -140,6 +138,34 @@ func (b *toolBudget) currentEpoch() uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.epoch
+}
+
+// Reserve, ReleaseReservation, and CurrentEpoch implement agentcore.Budget.
+// Keeping the adapter on the existing budget object means legacy command
+// capabilities and the unified runtime share one authoritative epoch and call
+// ceiling.
+func (b *toolBudget) Reserve() (uint64, error) {
+	return b.reserve()
+}
+
+// ReleaseReservation returns a provisional reservation when no capability was
+// issued. A reservation from an older epoch is already invalidated by the
+// explicit epoch reset and must not alter the new epoch's spend.
+func (b *toolBudget) ReleaseReservation(epoch uint64) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if epoch != b.epoch {
+		return nil
+	}
+	if b.spent <= 0 {
+		return fmt.Errorf("agent tool budget reservation is not active")
+	}
+	b.spent--
+	return nil
+}
+
+func (b *toolBudget) CurrentEpoch() uint64 {
+	return b.currentEpoch()
 }
 
 // status snapshots the budget for display.
@@ -232,6 +258,8 @@ func (s *AgentService) StartNewToolBudgetEpoch(limit int) ToolBudgetStatus {
 // otherwise the default logger, so an unopenable log file never silently
 // discards the record.
 func (s *AgentService) auditEvent(msg string, keyvals ...any) {
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 	if s.auditLogger != nil {
 		s.auditLogger.Info(msg, keyvals...)
 		return

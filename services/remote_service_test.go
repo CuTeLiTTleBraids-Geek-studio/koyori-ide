@@ -687,14 +687,14 @@ func TestRemoteService_HostIdentityConnectAndReconnectScope(t *testing.T) {
 	if err := svc.Connect("same-renderer-name", config); err != nil {
 		t.Fatal(err)
 	}
-	info, err := svc.HostInfo("same-renderer-name")
+	info, err := svc.hostInfo("same-renderer-name")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.HostID != remoteHostID(signer.PublicKey()) {
 		t.Fatalf("verified HostID = %q, want %q", info.HostID, remoteHostID(signer.PublicKey()))
 	}
-	scope, err := svc.Scope("same-renderer-name")
+	scope, err := svc.scope("same-renderer-name")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -711,7 +711,7 @@ func TestRemoteService_HostIdentityConnectAndReconnectScope(t *testing.T) {
 	if err := svc.Connect("same-renderer-name", config); err != nil {
 		t.Fatal(err)
 	}
-	newInfo, err := svc.HostInfo("same-renderer-name")
+	newInfo, err := svc.hostInfo("same-renderer-name")
 	if err != nil {
 		t.Fatal(err)
 	}

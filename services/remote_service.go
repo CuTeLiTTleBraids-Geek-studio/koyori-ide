@@ -899,9 +899,7 @@ func (s *SSHSession) remoteScope() RemoteScope {
 }
 
 // HostInfo returns a read-only snapshot and is not a Wails API.
-//
-//wails:ignore
-func (r *RemoteService) HostInfo(name string) (RemoteHostInfo, error) {
+func (r *RemoteService) hostInfo(name string) (RemoteHostInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	session, ok := r.sessions[name]
@@ -912,9 +910,7 @@ func (r *RemoteService) HostInfo(name string) (RemoteHostInfo, error) {
 }
 
 // Scope returns a read-only authorization scope and is not a Wails API.
-//
-//wails:ignore
-func (r *RemoteService) Scope(name string) (RemoteScope, error) {
+func (r *RemoteService) scope(name string) (RemoteScope, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	session, ok := r.sessions[name]

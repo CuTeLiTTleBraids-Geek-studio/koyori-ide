@@ -6,6 +6,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,43 @@ func newTestSkillsService(t *testing.T) *SkillsService {
 	svc := NewSkillsService(dir)
 	svc.setWorkspaceRoot(t.TempDir())
 	return svc
+}
+
+func TestSkillsWorkspaceStateRejectsChangedApprovedDefinition(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	skillDir := filepath.Join(rootA, ".koyori-ide", "skills")
+	path := filepath.Join(skillDir, "review.yaml")
+	writeSkillYAML(t, skillDir, "review.yaml", "id: review\nname: Review\ndescription: Before\ntrigger:\n  manual: true\nsystemPrompt: Inspect.\n")
+	service := NewSkillsService(t.TempDir())
+	if err := service.setWorkspaceRoot(rootA); err != nil {
+		t.Fatalf("set workspace A: %v", err)
+	}
+	if err := service.Load(); err != nil {
+		t.Fatalf("load workspace A: %v", err)
+	}
+	if err := service.activateSkillTrusted("review"); err != nil {
+		t.Fatalf("approve workspace A skill: %v", err)
+	}
+	snapshot, err := service.captureWorkspaceState()
+	if err != nil {
+		t.Fatalf("capture workspace skill state: %v", err)
+	}
+	if err := service.setWorkspaceRoot(rootB); err != nil {
+		t.Fatalf("set workspace B: %v", err)
+	}
+	if err := service.Load(); err != nil {
+		t.Fatalf("load workspace B: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("id: review\nname: Review\ndescription: After\ntrigger:\n  manual: true\nsystemPrompt: Changed.\n"), 0o600); err != nil {
+		t.Fatalf("change workspace A skill: %v", err)
+	}
+	if err := service.restoreWorkspaceState(snapshot); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("restore changed approved skill = %v, want ErrNotAllowed", err)
+	}
+	if service.IsApproved("review") {
+		t.Fatal("changed project skill inherited the old approval")
+	}
 }
 
 func TestSkill_Matches_Keywords(t *testing.T) {
@@ -184,7 +222,7 @@ func TestSkillsService_GSEC03_ProjectApproval(t *testing.T) {
 		t.Error("user skill should be auto-approved")
 	}
 	// 批准后。
-	if err := svc.ActivateSkill("proj"); err != nil {
+	if err := svc.activateSkillTrusted("proj"); err != nil {
 		t.Fatal(err)
 	}
 	if !svc.IsApproved("proj") {
@@ -255,7 +293,7 @@ func TestSkillsService_GetSkill_NotFound(t *testing.T) {
 
 func TestSkillsService_ActivateSkill_NotFound(t *testing.T) {
 	svc := newTestSkillsService(t)
-	if err := svc.ActivateSkill("nope"); err == nil {
+	if err := svc.activateSkillTrusted("nope"); err == nil {
 		t.Error("expected error for activating nonexistent skill")
 	}
 }

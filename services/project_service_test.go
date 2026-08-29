@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -664,6 +665,121 @@ func TestProjectService_P4_CodeWorkspaceFile_URI(t *testing.T) {
 	}
 	if roots[1] != otherDir {
 		t.Errorf("roots[1] = %q, want %q", roots[1], otherDir)
+	}
+}
+
+func TestProjectService_P4_CodeWorkspaceFile_UNCURIWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("UNC filesystem path semantics require Windows")
+	}
+	workspaceDir := t.TempDir()
+	wsPath := filepath.Join(workspaceDir, "unc.code-workspace")
+	wsContent, err := json.Marshal(map[string]any{
+		"folders": []map[string]string{
+			{"path": `\\SERVER\SHARE\Repo`},
+			{"uri": "FILE://server/share/Repo%20With%20Space"},
+			{"uri": "file://localhost/C:/Users/example"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal workspace: %v", err)
+	}
+	if err := os.WriteFile(wsPath, wsContent, 0600); err != nil {
+		t.Fatalf("write workspace: %v", err)
+	}
+	roots, err := ParseCodeWorkspaceFile(wsPath)
+	if err != nil {
+		t.Fatalf("ParseCodeWorkspaceFile failed: %v", err)
+	}
+	want := []string{`\\SERVER\SHARE\Repo`, `\\server\share\Repo With Space`, `C:\Users\example`}
+	if len(roots) != len(want) {
+		t.Fatalf("roots = %v, want %v", roots, want)
+	}
+	for i := range want {
+		if !strings.EqualFold(roots[i], want[i]) {
+			t.Errorf("roots[%d] = %q, want %q", i, roots[i], want[i])
+		}
+	}
+}
+
+func TestProjectService_P4_CodeWorkspaceFile_RejectsEncodedSeparators(t *testing.T) {
+	workspaceDir := t.TempDir()
+	wsPath := filepath.Join(workspaceDir, "bad-uri.code-workspace")
+	for _, uri := range []string{"file:///tmp/a%2Fb", "file:///tmp/a%5Cb", "file:///tmp/a%00b", "file:///tmp/a%ZZ"} {
+		wsContent, err := json.Marshal(map[string]any{"folders": []map[string]string{{"uri": uri}}})
+		if err != nil {
+			t.Fatalf("marshal workspace: %v", err)
+		}
+		if err := os.WriteFile(wsPath, wsContent, 0600); err != nil {
+			t.Fatalf("write workspace: %v", err)
+		}
+		if _, err := ParseCodeWorkspaceFile(wsPath); err == nil {
+			t.Errorf("ParseCodeWorkspaceFile(%q) accepted an unsafe URI", uri)
+		}
+	}
+}
+
+func TestProjectService_P4_CodeWorkspaceFile_RejectsIncompleteUNCAndDevicePaths(t *testing.T) {
+	workspaceDir := t.TempDir()
+	wsPath := filepath.Join(workspaceDir, "unsafe-paths.code-workspace")
+	for _, folder := range []map[string]string{
+		{"path": `\\server`},
+		{"path": `\\server\`},
+		{"path": `\\?\C:\repo`},
+		{"path": `\\.\GLOBALROOT\Device`},
+		{"uri": "file://server"},
+		{"uri": "file://server/"},
+		{"uri": "file://./GLOBALROOT/Device"},
+	} {
+		wsContent, err := json.Marshal(map[string]any{"folders": []map[string]string{folder}})
+		if err != nil {
+			t.Fatalf("marshal workspace: %v", err)
+		}
+		if err := os.WriteFile(wsPath, wsContent, 0600); err != nil {
+			t.Fatalf("write workspace: %v", err)
+		}
+		if _, err := ParseCodeWorkspaceFile(wsPath); err == nil {
+			t.Errorf("ParseCodeWorkspaceFile accepted unsafe folder %#v", folder)
+		}
+	}
+}
+
+func TestProjectService_P4_CodeWorkspaceFile_AcceptsUNCShareURI(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("UNC URI path semantics are Windows-only")
+	}
+	workspaceDir := t.TempDir()
+	wsPath := filepath.Join(workspaceDir, "valid-unc.code-workspace")
+	content := `{"folders":[{"uri":"file://server/share"}]}`
+	if err := os.WriteFile(wsPath, []byte(content), 0600); err != nil {
+		t.Fatalf("write workspace: %v", err)
+	}
+	roots, err := ParseCodeWorkspaceFile(wsPath)
+	if err != nil {
+		t.Fatalf("ParseCodeWorkspaceFile: %v", err)
+	}
+	if len(roots) != 1 || !strings.EqualFold(roots[0], `\\server\share`) {
+		t.Fatalf("roots = %v, want [\\\\server\\share]", roots)
+	}
+}
+
+func TestProjectService_P4_CodeWorkspaceFile_RejectsForeignWindowsAbsoluteOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("foreign Windows path semantics only apply on non-Windows hosts")
+	}
+	workspaceDir := t.TempDir()
+	wsPath := filepath.Join(workspaceDir, "foreign-windows.code-workspace")
+	for _, path := range []string{`C:\repo`, `\\server\share\repo`} {
+		wsContent, err := json.Marshal(map[string]any{"folders": []map[string]string{{"path": path}}})
+		if err != nil {
+			t.Fatalf("marshal workspace: %v", err)
+		}
+		if err := os.WriteFile(wsPath, wsContent, 0600); err != nil {
+			t.Fatalf("write workspace: %v", err)
+		}
+		if _, err := ParseCodeWorkspaceFile(wsPath); err == nil {
+			t.Errorf("ParseCodeWorkspaceFile accepted foreign Windows path %q", path)
+		}
 	}
 }
 

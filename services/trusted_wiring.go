@@ -1,6 +1,8 @@
 package services
 
 import (
+	"context"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -43,8 +45,26 @@ func WireEditorServices(
 
 func WireAgentServices(agent *AgentService, mcp *MCPService, skills *SkillsService) {
 	agent.setMCPService(mcp)
-	mcp.setOnToolsChanged(agent.InvalidateMCPCache)
+	mcp.setOnToolsChanged(func() {
+		agent.InvalidateMCPCache()
+		if err := agent.refreshDynamicAgentTools(context.Background()); err != nil {
+			slog.Warn("refresh agent MCP catalog", "error", err)
+		}
+	})
 	agent.setSkillsService(skills)
+}
+
+// SetAgentSettingsService binds SettingsService to AgentService through the
+// trusted Go-only bootstrap path. Session permission intent is read here at
+// creation time and persisted into the durable lifecycle row.
+func SetAgentSettingsService(agent *AgentService, settings *SettingsService) {
+	if agent == nil {
+		return
+	}
+	deps := executionDependenciesFor(agent)
+	deps.mu.Lock()
+	deps.settings = settings
+	deps.mu.Unlock()
 }
 
 // SetMCPWorkspaceContext binds MCP transport authorization to the same

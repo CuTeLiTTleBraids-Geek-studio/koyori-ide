@@ -4,6 +4,7 @@ package services
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -14,7 +15,7 @@ type mockStepExecutor struct {
 	err    error
 }
 
-func (m *mockStepExecutor) Execute(tool, args string) (string, error) {
+func (m *mockStepExecutor) Execute(_ string, _ int, _ string, _ string) (string, error) {
 	if m.err != nil {
 		return "", m.err
 	}
@@ -24,6 +25,31 @@ func (m *mockStepExecutor) Execute(tool, args string) (string, error) {
 func newTestPlanService(t *testing.T) *AIPlanService {
 	t.Helper()
 	return NewAIPlanService()
+}
+
+func TestAIPlanServiceHeaderDoesNotClaimPlanTool(t *testing.T) {
+	src, err := os.ReadFile("ai_plan_service.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := string(src)
+	if idx := strings.Index(header, "import ("); idx >= 0 {
+		header = header[:idx]
+	}
+	if strings.Contains(header, "没有接线") {
+		t.Fatal("ai_plan_service.go header still claims plan is unwired after G35")
+	}
+}
+
+func TestAIPlanService_CreatePlanAllowsEmptySteps(t *testing.T) {
+	svc := newTestPlanService(t)
+	p, err := svc.CreatePlan("empty", "document the gap", nil)
+	if err != nil {
+		t.Fatalf("empty plan must be allowed: %v", err)
+	}
+	if len(p.Steps) != 0 {
+		t.Fatalf("empty plan fabricated %d steps", len(p.Steps))
+	}
 }
 
 func TestAIPlanService_CreatePlan(t *testing.T) {

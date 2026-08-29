@@ -264,6 +264,82 @@ func TestValidateNonPrivateURL_C1(t *testing.T) {
 // addresses even when handed them directly (defeats DNS rebinding where the
 // resolver returns an internal IP at connect time). IP-literal addresses are
 // validated without touching the network, so this test is offline-safe.
+func TestAISSRFSafeTransport_RefusesMetadataAllowsLoopback(t *testing.T) {
+	tr := NewAISSRFSafeTransport()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, addr := range []string{
+		"169.254.169.254:80",
+		"10.0.0.1:443",
+		"192.168.1.1:443",
+		"[fe80::1]:80",
+	} {
+		conn, err := tr.DialContext(ctx, "tcp", addr)
+		if err == nil {
+			if conn != nil {
+				conn.Close()
+			}
+			t.Errorf("AI DialContext(%q) succeeded; expected SSRF refusal", addr)
+			continue
+		}
+		if !strings.Contains(err.Error(), "ssrf guard") {
+			t.Errorf("AI DialContext(%q) error %q missing 'ssrf guard' marker", addr, err)
+		}
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen loopback: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr == nil {
+			_ = conn.Close()
+		}
+	}()
+	loopAddr := ln.Addr().String()
+	conn, err := tr.DialContext(ctx, "tcp", loopAddr)
+	if err != nil {
+		t.Fatalf("AI DialContext loopback %q should be allowed: %v", loopAddr, err)
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+	localhostAddr := "localhost" + loopAddr[strings.LastIndex(loopAddr, ":"):]
+	conn, err = tr.DialContext(ctx, "tcp", localhostAddr)
+	if err != nil {
+		t.Fatalf("AI DialContext localhost %q should be allowed: %v", localhostAddr, err)
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func TestAIHTTPClientsUseAISSRFSafeTransport(t *testing.T) {
+	if aiHTTPClient.Transport != aiTransport {
+		t.Fatal("aiHTTPClient must share aiTransport")
+	}
+	if aiStreamHTTPClient.Transport != aiTransport {
+		t.Fatal("aiStreamHTTPClient must share aiTransport")
+	}
+	if aiTransport == nil || aiTransport.DialContext == nil {
+		t.Fatal("aiTransport must install a DialContext SSRF guard")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := aiTransport.DialContext(ctx, "tcp", "169.254.169.254:80")
+	if err == nil {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatal("aiTransport dialed metadata; SSRF bypass")
+	}
+	if !strings.Contains(err.Error(), "ssrf guard") {
+		t.Fatalf("aiTransport metadata error %q missing ssrf guard", err)
+	}
+}
+
 func TestSSRFSafeTransport_DialRefusesPrivate_C1(t *testing.T) {
 	tr := NewSSRFSafeTransport()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

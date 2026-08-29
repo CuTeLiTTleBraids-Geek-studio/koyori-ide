@@ -90,8 +90,149 @@ func newTestMCPService(t *testing.T) *MCPService {
 	s := &MCPService{
 		cfgPath: filepath.Join(dir, "mcp-servers.json"),
 		clients: make(map[string]*MCPClient),
+		// Tests model the native consent boundary explicitly. Production
+		// construction installs the real dialog callback; a zero-value service
+		// must remain fail-closed.
+		approveServer: func(MCPServerConfig) bool { return true },
 	}
 	return s
+}
+
+func TestMCPService_SetServerEnabled_RequiresNativeApproval(t *testing.T) {
+	s := newTestMCPService(t)
+	if err := s.SaveServer(MCPServerConfig{Name: "srv", Transport: "stdio", Command: os.Args[0]}); err != nil {
+		t.Fatalf("SaveServer: %v", err)
+	}
+	s.approveServer = nil
+	if err := s.SetServerEnabled("srv", true); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("SetServerEnabled without native approval = %v, want ErrNotAllowed", err)
+	}
+	got, err := s.GetServer("srv")
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if got.Enabled {
+		t.Fatal("server became enabled without native approval")
+	}
+}
+
+func TestMCPService_SetServerEnabled_DeniedNativeApprovalDoesNotPersist(t *testing.T) {
+	s := newTestMCPService(t)
+	if err := s.SaveServer(MCPServerConfig{Name: "srv", Transport: "stdio", Command: os.Args[0]}); err != nil {
+		t.Fatalf("SaveServer: %v", err)
+	}
+	var approved MCPServerConfig
+	s.approveServer = func(cfg MCPServerConfig) bool {
+		approved = cfg
+		return false
+	}
+	if err := s.SetServerEnabled("srv", true); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("SetServerEnabled denied = %v, want ErrNotAllowed", err)
+	}
+	if approved.Name != "srv" || !filepath.IsAbs(approved.Command) || !sameWorkspaceIdentityPath(approved.Command, os.Args[0]) {
+		t.Fatalf("native approval saw wrong identity: %+v", approved)
+	}
+	got, err := s.GetServer("srv")
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if got.Enabled {
+		t.Fatal("denied server became enabled")
+	}
+}
+
+func TestMCPService_ConnectServerRejectsNilWorkspaceContextBeforeStdioLaunch(t *testing.T) {
+	service := newTestMCPService(t)
+	if err := service.SaveServer(MCPServerConfig{
+		Name: "path-bypass", Transport: "stdio", Command: os.Args[0],
+	}); err != nil {
+		t.Fatalf("SaveServer: %v", err)
+	}
+	service.approveServer = func(MCPServerConfig) bool { return true }
+	if err := service.SetServerEnabled("path-bypass", true); err != nil {
+		t.Fatalf("SetServerEnabled: %v", err)
+	}
+
+	// The zero-value fixture has neither a shared workspace context nor a
+	// fallback root. A renderer-visible MCP call must fail closed instead of
+	// resolving the command through PATH.
+	if _, _, err := service.acquireWorkspaceLease(); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("acquireWorkspaceLease without workspace context = %v, want ErrNotAllowed", err)
+	}
+	if err := service.ConnectServer(context.Background(), "path-bypass"); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("ConnectServer without workspace context = %v, want ErrNotAllowed", err)
+	}
+	service.mu.RLock()
+	connected := len(service.clients)
+	service.mu.RUnlock()
+	if connected != 0 {
+		t.Fatalf("clients after nil-context rejection = %d, want 0", connected)
+	}
+}
+
+func TestMCPService_LoadDoesNotRevivePersistedNativeApproval(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "mcp-servers.json")
+	service := &MCPService{
+		cfgPath:       cfgPath,
+		clients:       make(map[string]*MCPClient),
+		approveServer: func(MCPServerConfig) bool { return true },
+	}
+	if err := service.SaveServer(MCPServerConfig{Name: "srv", Transport: "stdio", Command: os.Args[0]}); err != nil {
+		t.Fatalf("SaveServer: %v", err)
+	}
+	if err := service.SetServerEnabled("srv", true); err != nil {
+		t.Fatalf("SetServerEnabled: %v", err)
+	}
+	disk, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	var persisted MCPConfig
+	if err := json.Unmarshal(disk, &persisted); err != nil {
+		t.Fatalf("decode persisted config: %v", err)
+	}
+	if len(persisted.Servers) != 1 || persisted.Servers[0].Enabled {
+		t.Fatalf("disk persisted native authority: %+v", persisted.Servers)
+	}
+
+	reloaded := &MCPService{
+		cfgPath: cfgPath,
+		clients: make(map[string]*MCPClient),
+	}
+	if err := reloaded.load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got, err := reloaded.GetServer("srv")
+	if err != nil {
+		t.Fatalf("GetServer after reload: %v", err)
+	}
+	if got.Enabled {
+		t.Fatal("persisted native approval revived after reload")
+	}
+	if err := reloaded.ConnectServer(context.Background(), "srv"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ConnectServer after reload = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestMCPService_WorkspaceSwitchRevokesNativeApproval(t *testing.T) {
+	s := newTestMCPService(t)
+	if err := s.SaveServer(MCPServerConfig{Name: "srv", Transport: "stdio", Command: os.Args[0]}); err != nil {
+		t.Fatalf("SaveServer: %v", err)
+	}
+	if err := s.SetServerEnabled("srv", true); err != nil {
+		t.Fatalf("SetServerEnabled: %v", err)
+	}
+	if err := s.setWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatalf("setWorkspaceRoot: %v", err)
+	}
+	got, err := s.GetServer("srv")
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if got.Enabled {
+		t.Fatal("workspace switch retained native activation")
+	}
 }
 
 func TestMCPAuditEscapesUntrustedFields(t *testing.T) {
@@ -328,7 +469,79 @@ func TestMCPService_SaveServer_EmptyName(t *testing.T) {
 	}
 }
 
-func TestMCPService_SaveServer_UpdatePreservesEnabled(t *testing.T) {
+func TestMCPService_SaveServer_RejectsUnsafeConfigFields(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  MCPServerConfig
+	}{
+		{name: "empty stdio command", cfg: MCPServerConfig{Name: "empty-command", Transport: "stdio"}},
+		{
+			name: "NUL environment value",
+			cfg: MCPServerConfig{
+				Name: "nul-env", Transport: "stdio", Command: "helper",
+				Env: map[string]string{"SAFE": "bad\x00value"},
+			},
+		},
+		{
+			name: "invalid header name",
+			cfg: MCPServerConfig{
+				Name: "bad-header", Transport: "http", URL: "https://203.0.113.1",
+				Headers: map[string]string{"Bad Header": "value"},
+			},
+		},
+		{
+			name: "NUL header value",
+			cfg: MCPServerConfig{
+				Name: "nul-header", Transport: "http", URL: "https://203.0.113.1",
+				Headers: map[string]string{"X-Test": "bad\x00value"},
+			},
+		},
+		{name: "control character in name", cfg: MCPServerConfig{Name: "bad\nname", Transport: "stdio", Command: "helper"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := newTestMCPService(t).SaveServer(test.cfg); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("SaveServer error = %v, want ErrInvalidInput", err)
+			}
+		})
+	}
+}
+
+func TestMCPService_LoadRejectsUnsafeConfigFields(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "mcp-servers.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"servers":[{"name":"bad","transport":"stdio","command":""}]}`), 0o600); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+	service := &MCPService{cfgPath: cfgPath, clients: make(map[string]*MCPClient)}
+	if err := service.load(); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("load error = %v, want ErrInvalidInput", err)
+	}
+	if got := service.ListServers(); len(got) != 0 {
+		t.Fatalf("invalid config was installed: %#v", got)
+	}
+}
+
+func TestMCPTransportRejectsRedirectFollowing(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		transport *http.Client
+	}{
+		{name: "http", transport: newHTTPTransport(MCPServerConfig{Transport: "http", URL: "https://203.0.113.1"}).client},
+		{name: "sse", transport: newSSETransport(MCPServerConfig{Transport: "sse", URL: "https://203.0.113.1"}).client},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.transport.CheckRedirect == nil {
+				t.Fatal("MCP HTTP client follows redirects by default")
+			}
+			if err := test.transport.CheckRedirect(&http.Request{}, nil); !errors.Is(err, http.ErrUseLastResponse) {
+				t.Fatalf("CheckRedirect error = %v, want http.ErrUseLastResponse", err)
+			}
+		})
+	}
+}
+
+func TestMCPService_SaveServer_UpdateRevokesEnabledForNewConnectionIdentity(t *testing.T) {
 	s := newTestMCPService(t)
 	// Create a new server (defaults to disabled).
 	if err := s.SaveServer(MCPServerConfig{
@@ -340,19 +553,40 @@ func TestMCPService_SaveServer_UpdatePreservesEnabled(t *testing.T) {
 	s.mu.Lock()
 	s.config.Servers[0].Enabled = true
 	s.mu.Unlock()
-	// Update the server without setting Enabled — should preserve the
-	// existing Enabled=true.
+	// Changing connection arguments creates a new endpoint identity and must
+	// revoke the existing approval.
 	if err := s.SaveServer(MCPServerConfig{
 		Name: "srv", Transport: "stdio", Command: "echo", Args: []string{"hi"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetServer("srv")
-	if !got.Enabled {
-		t.Error("update should preserve Enabled=true")
+	if got.Enabled {
+		t.Error("connection config update should revoke Enabled")
 	}
 	if len(got.Args) != 1 || got.Args[0] != "hi" {
 		t.Errorf("update should set Args, got %v", got.Args)
+	}
+}
+
+func TestMCPService_SaveServer_EquivalentRoundTripPreservesEnabled(t *testing.T) {
+	s := newTestMCPService(t)
+	server := MCPServerConfig{Name: "srv", Transport: "stdio", Command: os.Args[0]}
+	if err := s.SaveServer(server); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetServerEnabled(server.Name, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveServer(server); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetServer(server.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled {
+		t.Error("equivalent config round-trip revoked Enabled")
 	}
 }
 
@@ -385,7 +619,7 @@ type trackingCloseMCPTransport struct {
 	closeCount int
 }
 
-func (t *trackingCloseMCPTransport) Send(context.Context, *jsonrpcRequest) error {
+func (t *trackingCloseMCPTransport) Send(context.Context, *jsonrpcOutboundMessage) error {
 	return nil
 }
 
@@ -448,7 +682,7 @@ func assertMCPRuntimeSnapshot(t *testing.T, service *MCPService, want mcpRuntime
 func newMCPPersistenceFailureFixture(t *testing.T) (*MCPService, *trackingCloseMCPTransport) {
 	t.Helper()
 	service := newTestMCPService(t)
-	if err := service.SaveServer(MCPServerConfig{Name: "srv", Transport: "stdio", Command: "echo"}); err != nil {
+	if err := service.SaveServer(MCPServerConfig{Name: "srv", Transport: "stdio", Command: os.Args[0]}); err != nil {
 		t.Fatalf("SaveServer: %v", err)
 	}
 	if err := service.SetServerEnabled("srv", true); err != nil {
@@ -651,7 +885,7 @@ func TestMCPServiceUnchangedSecretReusesPersistedKeyringMarker(t *testing.T) {
 	server := MCPServerConfig{
 		Name:      "srv",
 		Transport: "stdio",
-		Command:   "echo",
+		Command:   os.Args[0],
 		Headers:   map[string]string{"token": "secret"},
 	}
 	service.config = MCPConfig{Servers: []MCPServerConfig{server}}
@@ -726,8 +960,8 @@ func TestMCPServiceSaveServerCommitsOnlyAfterPersistence(t *testing.T) {
 	if after.lifecycleGeneration != before.lifecycleGeneration+1 {
 		t.Fatalf("lifecycle generation = %d, want %d", after.lifecycleGeneration, before.lifecycleGeneration+1)
 	}
-	if !reflect.DeepEqual(after.clients, before.clients) {
-		t.Fatalf("SaveServer changed clients: got %v, want %v", after.clients, before.clients)
+	if len(after.clients) != 0 {
+		t.Fatalf("SaveServer kept a client after connection config changed: %v", after.clients)
 	}
 }
 
@@ -1039,7 +1273,7 @@ func TestMCPService_LoadConfig_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestMCPService_LoadConfigDropsLegacyAutoApprove(t *testing.T) {
+func TestMCPService_LoadConfigIgnoresLegacyAutoApprove(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "mcp-servers.json")
 	if err := os.WriteFile(cfgPath, []byte(`{"servers":[{"name":"legacy","transport":"stdio","command":"echo","autoApprove":["dangerous_tool"]}]}`), 0o600); err != nil {
@@ -1054,17 +1288,45 @@ func TestMCPService_LoadConfigDropsLegacyAutoApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get legacy server: %v", err)
 	}
-	if len(internal.AutoApprove) != 0 {
-		t.Fatalf("legacy AutoApprove survived config load: %v", internal.AutoApprove)
+	if internal.Enabled {
+		t.Fatal("legacy config revived enabled state")
 	}
 	visible, err := service.GetServer("legacy")
 	if err != nil {
 		t.Fatalf("GetServer: %v", err)
 	}
-	if len(visible.AutoApprove) != 0 {
-		t.Fatalf("renderer-visible AutoApprove = %v, want empty", visible.AutoApprove)
+	visibleJSON, err := json.Marshal(visible)
+	if err != nil {
+		t.Fatalf("marshal visible server: %v", err)
+	}
+	var visibleFields map[string]json.RawMessage
+	if err := json.Unmarshal(visibleJSON, &visibleFields); err != nil {
+		t.Fatalf("decode visible server: %v", err)
+	}
+	if _, ok := visibleFields["autoApprove"]; ok {
+		t.Fatal("renderer-visible DTO exposes legacy autoApprove")
+	}
+	if err := service.SaveServer(visible); err != nil {
+		t.Fatalf("re-save legacy server: %v", err)
+	}
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read re-saved config: %v", err)
+	}
+	var savedFields struct {
+		Servers []map[string]json.RawMessage `json:"servers"`
+	}
+	if err := json.Unmarshal(saved, &savedFields); err != nil {
+		t.Fatalf("decode re-saved config: %v", err)
+	}
+	if len(savedFields.Servers) != 1 {
+		t.Fatalf("expected one re-saved server, got %d", len(savedFields.Servers))
+	}
+	if _, ok := savedFields.Servers[0]["autoApprove"]; ok {
+		t.Fatal("re-saved config retained legacy autoApprove")
 	}
 }
+
 
 // TestMCPService_SecretsEncryptedOnDisk verifies G-SEC-07: Header/Env
 // secrets are encrypted on disk (not stored as plaintext).
@@ -1127,7 +1389,11 @@ func TestAgentService_CheckCommand_MCPNamespace_InvalidFormat(t *testing.T) {
 
 func TestAgentService_CheckCommand_MCPNamespace_UnknownTool(t *testing.T) {
 	agent := NewAgentService()
-	agent.setMCPService(newTestMCPService(t))
+	service := newTestMCPService(t)
+	if err := service.setWorkspaceRoot(filepath.Dir(os.Args[0])); err != nil {
+		t.Fatalf("setWorkspaceRoot: %v", err)
+	}
+	agent.setMCPService(service)
 	// No servers connected → tool not found → blocked.
 	check := agent.CheckCommand("mcp.unknownsrv.unknowntool")
 	if !check.Blocked {
@@ -1201,17 +1467,6 @@ func TestMCPService_SaveServer_AllTransports(t *testing.T) {
 	}
 }
 
-func TestMCPServerConfig_AutoApprove_DefaultsEmpty(t *testing.T) {
-	s := newTestMCPService(t)
-	s.SaveServer(MCPServerConfig{
-		Name: "srv", Transport: "stdio", Command: "echo",
-	})
-	got, _ := s.GetServer("srv")
-	if len(got.AutoApprove) != 0 {
-		// G-SEC-02: AutoApprove defaults to empty (no auto-approve).
-		t.Errorf("AutoApprove should default to empty, got %v", got.AutoApprove)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // ConnectServer requires Enabled=true (G-SEC-12)
@@ -1268,6 +1523,9 @@ func TestStdioTransport_ConnectAndDisconnect(t *testing.T) {
 	defer slog.SetDefault(previousLogger)
 
 	service := newTestMCPService(t)
+	if err := service.setWorkspaceRoot(filepath.Dir(os.Args[0])); err != nil {
+		t.Fatalf("setWorkspaceRoot: %v", err)
+	}
 	cfg := MCPServerConfig{
 		Name:      "stdio-lifecycle",
 		Transport: "stdio",
@@ -1276,9 +1534,13 @@ func TestStdioTransport_ConnectAndDisconnect(t *testing.T) {
 		Env: map[string]string{
 			"KOYORI_IDE_FAKE_MCP": "1",
 		},
-		Enabled: true,
 	}
-	service.config.Servers = []MCPServerConfig{cfg}
+	if err := service.SaveServer(cfg); err != nil {
+		t.Fatalf("save stdio MCP client: %v", err)
+	}
+	if err := service.SetServerEnabled(cfg.Name, true); err != nil {
+		t.Fatalf("enable stdio MCP client: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := service.ConnectServer(ctx, cfg.Name); err != nil {
@@ -1336,7 +1598,7 @@ func TestStdioTransport_SendConcurrentWithClose(t *testing.T) {
 	transport := &stdioTransport{stdin: writer}
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- transport.Send(context.Background(), &jsonrpcRequest{
+		sendDone <- transport.Send(context.Background(), &jsonrpcOutboundMessage{
 			JSONRPC: "2.0",
 			ID:      1,
 			Method:  "tools/list",
@@ -1370,14 +1632,14 @@ func TestStdioTransport_SendConcurrentWithClose(t *testing.T) {
 
 type scriptedMCPTransport struct {
 	mu        sync.Mutex
-	handler   func(*jsonrpcRequest, int) *jsonrpcResponse
+	handler   func(*jsonrpcOutboundMessage, int) *jsonrpcResponse
 	responses chan *jsonrpcResponse
 	closed    chan struct{}
 	closeOnce sync.Once
 	sendCount int
 }
 
-func newScriptedMCPTransport(handler func(*jsonrpcRequest, int) *jsonrpcResponse) *scriptedMCPTransport {
+func newScriptedMCPTransport(handler func(*jsonrpcOutboundMessage, int) *jsonrpcResponse) *scriptedMCPTransport {
 	return &scriptedMCPTransport{
 		handler:   handler,
 		responses: make(chan *jsonrpcResponse, 16),
@@ -1385,7 +1647,7 @@ func newScriptedMCPTransport(handler func(*jsonrpcRequest, int) *jsonrpcResponse
 	}
 }
 
-func (t *scriptedMCPTransport) Send(ctx context.Context, req *jsonrpcRequest) error {
+func (t *scriptedMCPTransport) Send(ctx context.Context, req *jsonrpcOutboundMessage) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -1447,7 +1709,7 @@ func newScriptedMCPClient(name string, transport mcpTransport) *MCPClient {
 
 func TestMCPClient_HTTPInitializeSendsNotification(t *testing.T) {
 	var mu sync.Mutex
-	var requests []jsonrpcRequest
+	var requests []jsonrpcOutboundMessage
 	transport := &httpTransport{
 		url: "https://mcp.example/rpc",
 		client: &http.Client{Transport: mcpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -1455,7 +1717,7 @@ func TestMCPClient_HTTPInitializeSendsNotification(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			var rpcReq jsonrpcRequest
+			var rpcReq jsonrpcOutboundMessage
 			if err := json.Unmarshal(body, &rpcReq); err != nil {
 				return nil, err
 			}
@@ -1472,7 +1734,7 @@ func TestMCPClient_HTTPInitializeSendsNotification(t *testing.T) {
 			responseBody, err := json.Marshal(jsonrpcResponse{
 				JSONRPC: "2.0",
 				ID:      rpcReq.ID,
-				Result:  json.RawMessage(`{"capabilities":{}}`),
+				Result:  json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"http","version":"1.0"}}`),
 			})
 			if err != nil {
 				return nil, err
@@ -1502,6 +1764,34 @@ func TestMCPClient_HTTPInitializeSendsNotification(t *testing.T) {
 	}
 	if requests[1].Method != "notifications/initialized" || requests[1].ID != nil {
 		t.Fatalf("second HTTP request = %+v, want initialized notification", requests[1])
+	}
+	params, ok := requests[0].Params.(map[string]interface{})
+	if !ok {
+		t.Fatalf("initialize params = %#v, want an object", requests[0].Params)
+	}
+	if params["protocolVersion"] != "2024-11-05" {
+		t.Fatalf("initialize protocolVersion = %v, want 2024-11-05", params["protocolVersion"])
+	}
+	// The client implements exactly one server-to-client capability — the
+	// controlled roots/list handler — so the initialize request declares
+	// exactly {"roots":{}} and nothing else.
+	capabilities, ok := params["capabilities"].(map[string]interface{})
+	if !ok || len(capabilities) != 1 {
+		t.Fatalf("initialize capabilities = %#v, want exactly {roots:{}}", params["capabilities"])
+	}
+	if _, ok := capabilities["roots"]; !ok {
+		t.Fatalf("initialize capabilities missing roots: %#v", capabilities)
+	}
+	clientInfo, ok := params["clientInfo"].(map[string]interface{})
+	if !ok || clientInfo["name"] != "koyori-ide" || clientInfo["version"] != "1.0" {
+		t.Fatalf("initialize clientInfo = %#v, want koyori-ide 1.0", params["clientInfo"])
+	}
+	snapshot, snapshotErr := client.capabilitySnapshotCopy()
+	if snapshotErr != nil {
+		t.Fatalf("capability snapshot after initialize: %v", snapshotErr)
+	}
+	if snapshot.Capabilities.Tools.State != MCPCapabilitySupported || snapshot.ServerInfo.Name != "http" {
+		t.Fatalf("capability snapshot = %+v, want supported tools from server http", snapshot)
 	}
 }
 
@@ -1537,7 +1827,7 @@ func TestSSETransport_StandardEndpointWaitsAndResolvesRelativeURL(t *testing.T) 
 	defer cancel()
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- transport.Send(ctx, &jsonrpcRequest{JSONRPC: "2.0", Method: "notifications/initialized"})
+		sendDone <- transport.Send(ctx, &jsonrpcOutboundMessage{JSONRPC: "2.0", Method: "notifications/initialized"})
 	}()
 	select {
 	case err := <-sendDone:
@@ -1568,15 +1858,13 @@ func TestSSETransport_StandardEndpointWaitsAndResolvesRelativeURL(t *testing.T) 
 }
 
 func TestMCPClient_CallTool_Success(t *testing.T) {
-	transport := newScriptedMCPTransport(func(req *jsonrpcRequest, _ int) *jsonrpcResponse {
+	client, _ := startInitializedScriptedMCPClient(t, "success", mcpTestToolsCapability, func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
 		return &jsonrpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result:  json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
 		}
 	})
-	client := newScriptedMCPClient("success", transport)
-	t.Cleanup(func() { _ = client.StopServer() })
 
 	result, err := client.CallTool(context.Background(), "echo", map[string]interface{}{"value": "secret-input"})
 	if err != nil {
@@ -1588,15 +1876,13 @@ func TestMCPClient_CallTool_Success(t *testing.T) {
 }
 
 func TestMCPClient_CallTool_RPCFailure(t *testing.T) {
-	transport := newScriptedMCPTransport(func(req *jsonrpcRequest, _ int) *jsonrpcResponse {
+	client, _ := startInitializedScriptedMCPClient(t, "failure", mcpTestToolsCapability, func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
 		return &jsonrpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Error:   &jsonrpcError{Code: -32000, Message: "tool failed"},
 		}
 	})
-	client := newScriptedMCPClient("failure", transport)
-	t.Cleanup(func() { _ = client.StopServer() })
 
 	_, err := client.CallTool(context.Background(), "fail", nil)
 	if err == nil || !strings.Contains(err.Error(), "rpc error -32000: tool failed") {
@@ -1610,8 +1896,13 @@ func TestMCPService_CallToolStructuredLogsRedactArguments(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer slog.SetDefault(previousLogger)
 
-	transport := newScriptedMCPTransport(func(req *jsonrpcRequest, sendNumber int) *jsonrpcResponse {
-		if sendNumber == 1 {
+	toolCalls := 0
+	transport := newScriptedMCPTransport(scriptedMCPInitializeHandler(mcpTestToolsCapability, func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
+		if req.Method != "tools/call" {
+			return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID}
+		}
+		toolCalls++
+		if toolCalls == 1 {
 			return &jsonrpcResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
@@ -1623,10 +1914,14 @@ func TestMCPService_CallToolStructuredLogsRedactArguments(t *testing.T) {
 			ID:      req.ID,
 			Error:   &jsonrpcError{Code: -32000, Message: "tool failed for secret-input"},
 		}
-	})
+	}))
 	client := newScriptedMCPClient("logged-server", transport)
+	initializeScriptedMCPClient(t, client)
 	t.Cleanup(func() { _ = client.StopServer() })
 	service := newTestMCPService(t)
+	if err := service.setWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatalf("set workspace root: %v", err)
+	}
 	service.mu.Lock()
 	service.clients["logged-server"] = client
 	service.mu.Unlock()
@@ -1634,8 +1929,12 @@ func TestMCPService_CallToolStructuredLogsRedactArguments(t *testing.T) {
 	if _, err := service.callTool(context.Background(), "logged-server", "success", map[string]interface{}{"token": "secret-success"}); err != nil {
 		t.Fatalf("successful CallTool: %v", err)
 	}
-	if _, err := service.callTool(context.Background(), "logged-server", "failure", map[string]interface{}{"token": "secret-input"}); err == nil {
+	_, callErr := service.callTool(context.Background(), "logged-server", "failure", map[string]interface{}{"token": "secret-input"})
+	if callErr == nil {
 		t.Fatal("failed CallTool unexpectedly succeeded")
+	}
+	if strings.Contains(callErr.Error(), "secret-input") || !strings.Contains(callErr.Error(), "[REDACTED]") {
+		t.Fatalf("failed CallTool returned an unredacted error: %v", callErr)
 	}
 
 	rawLogs := logs.String()
@@ -1682,31 +1981,47 @@ func TestMCPService_CallToolRequiresBackendApproval(t *testing.T) {
 	}
 }
 
+func TestMCPService_LegacyRendererApprovalShimsAreDenyOnly(t *testing.T) {
+	service := newTestMCPService(t)
+	ctx := context.Background()
+
+	if token, err := service.RequestToolApproval(ctx, "server", "tool", nil); err == nil || token != "" {
+		t.Fatalf("RequestToolApproval = (%q, %v), want empty deny-only result", token, err)
+	}
+	if result, err := service.ExecuteApprovedTool(ctx, "server", "tool", nil, "forged"); err == nil || result != nil {
+		t.Fatalf("ExecuteApprovedTool = (%v, %v), want nil deny-only result", result, err)
+	}
+}
+
 func TestMCPService_ApprovedToolTokenIsArgumentBoundAndSingleUse(t *testing.T) {
-	transport := newScriptedMCPTransport(func(req *jsonrpcRequest, _ int) *jsonrpcResponse {
+	client, _ := startInitializedScriptedMCPClient(t, "approved-server", mcpTestToolsCapability, func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
 		return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}
 	})
-	client := newScriptedMCPClient("approved-server", transport)
-	t.Cleanup(func() { _ = client.StopServer() })
+	_ = client
 	service := newTestMCPService(t)
+	if err := service.setWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatalf("set workspace root: %v", err)
+	}
 	service.mu.Lock()
 	service.clients["approved-server"] = client
+	rootGeneration := service.rootGeneration
+	lifecycleGeneration := service.lifecycleGeneration
 	service.mu.Unlock()
 
 	args := map[string]interface{}{"value": "approved"}
 	argsJSON, _ := json.Marshal(args)
 	service.approvals = map[string]mcpToolApproval{
-		"mismatch": {server: "approved-server", tool: "echo", argsJSON: string(argsJSON), expiresAt: time.Now().Add(time.Minute)},
-		"valid":    {server: "approved-server", tool: "echo", argsJSON: string(argsJSON), expiresAt: time.Now().Add(time.Minute)},
+		"mismatch": {server: "approved-server", tool: "echo", argsJSON: string(argsJSON), rootGeneration: rootGeneration, lifecycleGeneration: lifecycleGeneration, expiresAt: time.Now().Add(time.Minute)},
+		"valid":    {server: "approved-server", tool: "echo", argsJSON: string(argsJSON), rootGeneration: rootGeneration, lifecycleGeneration: lifecycleGeneration, expiresAt: time.Now().Add(time.Minute)},
 	}
-	if _, err := service.ExecuteApprovedTool(context.Background(), "approved-server", "echo", map[string]interface{}{"value": "changed"}, "mismatch"); err == nil {
+	if _, err := service.executeApprovedToolLegacy(context.Background(), "approved-server", "echo", map[string]interface{}{"value": "changed"}, "mismatch"); err == nil {
 		t.Fatal("mismatched arguments unexpectedly accepted")
 	}
-	result, err := service.ExecuteApprovedTool(context.Background(), "approved-server", "echo", args, "valid")
+	result, err := service.executeApprovedToolLegacy(context.Background(), "approved-server", "echo", args, "valid")
 	if err != nil || result == nil || len(result.Content) != 1 || result.Content[0].Text != "ok" {
 		t.Fatalf("approved tool call = (%+v, %v), want success", result, err)
 	}
-	if _, err := service.ExecuteApprovedTool(context.Background(), "approved-server", "echo", args, "valid"); err == nil {
+	if _, err := service.executeApprovedToolLegacy(context.Background(), "approved-server", "echo", args, "valid"); err == nil {
 		t.Fatal("approval token replay unexpectedly accepted")
 	}
 }
@@ -1722,7 +2037,7 @@ func TestMCPService_ExpiredApprovedToolTokenIsRejected(t *testing.T) {
 		},
 	}
 
-	if _, err := service.ExecuteApprovedTool(context.Background(), "approved-server", "echo", args, "expired"); err == nil {
+	if _, err := service.executeApprovedToolLegacy(context.Background(), "approved-server", "echo", args, "expired"); err == nil {
 		t.Fatal("expired approval token unexpectedly accepted")
 	}
 }
@@ -1732,7 +2047,7 @@ func TestMCPService_WorkspaceRootChangeDisconnectsAndInvalidatesApproval(t *test
 	if err := service.setWorkspaceRoot(t.TempDir()); err != nil {
 		t.Fatalf("set initial workspace root: %v", err)
 	}
-	client := newScriptedMCPClient("approved-server", newScriptedMCPTransport(func(req *jsonrpcRequest, _ int) *jsonrpcResponse {
+	client := newScriptedMCPClient("approved-server", newScriptedMCPTransport(func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
 		return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}
 	}))
 	service.mu.Lock()
@@ -1765,13 +2080,30 @@ func TestMCPService_WorkspaceRootChangeDisconnectsAndInvalidatesApproval(t *test
 	if !closed {
 		t.Fatal("workspace root change did not stop the connected MCP client")
 	}
-	if _, err := service.ExecuteApprovedTool(context.Background(), "approved-server", "echo", args, "old-root"); err == nil {
+	if _, err := service.executeApprovedToolLegacy(context.Background(), "approved-server", "echo", args, "old-root"); err == nil {
 		t.Fatal("approval issued for the previous workspace generation unexpectedly accepted")
 	}
 }
 
+func TestMCPService_ListAgentMCPToolsPropagatesContextCancellation(t *testing.T) {
+	service := newTestMCPService(t)
+	if err := service.setWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatalf("set workspace root: %v", err)
+	}
+	client, _ := startInitializedScriptedMCPClient(t, "blocked", mcpTestToolsCapability, nil)
+	service.mu.Lock()
+	service.clients["blocked"] = client
+	service.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := service.ListAgentMCPTools(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListAgentMCPTools error = %v, want context.Canceled", err)
+	}
+}
+
 func TestMCPService_ApprovedToolTokenIsLifecycleBound(t *testing.T) {
-	transport := newScriptedMCPTransport(func(req *jsonrpcRequest, _ int) *jsonrpcResponse {
+	transport := newScriptedMCPTransport(func(req *jsonrpcOutboundMessage, _ int) *jsonrpcResponse {
 		return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}
 	})
 	client := newScriptedMCPClient("approved-server", transport)
@@ -1794,15 +2126,13 @@ func TestMCPService_ApprovedToolTokenIsLifecycleBound(t *testing.T) {
 	if err := service.DisconnectServer("approved-server"); err != nil {
 		t.Fatalf("DisconnectServer: %v", err)
 	}
-	if _, err := service.ExecuteApprovedTool(context.Background(), "approved-server", "echo", args, "before-disconnect"); err == nil {
+	if _, err := service.executeApprovedToolLegacy(context.Background(), "approved-server", "echo", args, "before-disconnect"); err == nil {
 		t.Fatal("approval issued before disconnect unexpectedly accepted")
 	}
 }
 
 func TestMCPClient_CallTool_Timeout(t *testing.T) {
-	transport := newScriptedMCPTransport(func(*jsonrpcRequest, int) *jsonrpcResponse { return nil })
-	client := newScriptedMCPClient("timeout", transport)
-	t.Cleanup(func() { _ = client.StopServer() })
+	client, _ := startInitializedScriptedMCPClient(t, "timeout", mcpTestToolsCapability, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
@@ -1818,11 +2148,19 @@ func TestMCPClient_ListToolsCacheTTL(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	defer slog.SetDefault(previousLogger)
 
-	transport := newScriptedMCPTransport(func(req *jsonrpcRequest, sendNumber int) *jsonrpcResponse {
-		result := fmt.Sprintf(`{"tools":[{"name":"tool-%d","inputSchema":{"type":"object"}}]}`, sendNumber)
+	// Name tool responses by their tools/list ordinal so the handshake's
+	// initialize request and initialized notification do not shift them.
+	toolsListed := 0
+	transport := newScriptedMCPTransport(scriptedMCPInitializeHandler(mcpTestToolsCapability, func(req *jsonrpcOutboundMessage, sendNumber int) *jsonrpcResponse {
+		if req.Method != "tools/list" {
+			return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID}
+		}
+		toolsListed++
+		result := fmt.Sprintf(`{"tools":[{"name":"tool-%d","inputSchema":{"type":"object"}}]}`, toolsListed)
 		return &jsonrpcResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(result)}
-	})
+	}))
 	client := newScriptedMCPClient("cache", transport)
+	initializeScriptedMCPClient(t, client)
 	t.Cleanup(func() { _ = client.StopServer() })
 
 	first, err := client.ListTools(context.Background())
@@ -1834,8 +2172,8 @@ func TestMCPClient_ListToolsCacheTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cached ListTools: %v", err)
 	}
-	if got := transport.sends(); got != 1 {
-		t.Fatalf("transport sends after cache hit = %d, want 1", got)
+	if got := transport.sends(); got != 3 {
+		t.Fatalf("transport sends after cache hit = %d, want initialize + initialized + tools/list", got)
 	}
 	if second[0].Name != "tool-1" || second[0].InputSchema["type"] != "object" {
 		t.Fatalf("cached tools were not isolated from caller mutation: %+v", second)
@@ -1848,8 +2186,8 @@ func TestMCPClient_ListToolsCacheTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expired ListTools: %v", err)
 	}
-	if got := transport.sends(); got != 2 {
-		t.Fatalf("transport sends after TTL expiry = %d, want 2", got)
+	if got := transport.sends(); got != 4 {
+		t.Fatalf("transport sends after TTL expiry = %d, want handshake + two tools/list", got)
 	}
 	if third[0].Name != "tool-2" {
 		t.Fatalf("refreshed tool = %q, want tool-2", third[0].Name)
@@ -1908,7 +2246,7 @@ func TestSSETransport_ReceivesMultipleFrames(t *testing.T) {
 
 type b1DispatchTransport struct {
 	mu        sync.Mutex
-	requests  []*jsonrpcRequest
+	requests  []*jsonrpcOutboundMessage
 	responses chan *jsonrpcResponse
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -1921,7 +2259,7 @@ func newB1DispatchTransport() *b1DispatchTransport {
 	}
 }
 
-func (t *b1DispatchTransport) Send(ctx context.Context, req *jsonrpcRequest) error {
+func (t *b1DispatchTransport) Send(ctx context.Context, req *jsonrpcOutboundMessage) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -2045,7 +2383,7 @@ func newB1BlockingTransport() *b1BlockingTransport {
 	}
 }
 
-func (t *b1BlockingTransport) Send(ctx context.Context, _ *jsonrpcRequest) error {
+func (t *b1BlockingTransport) Send(ctx context.Context, _ *jsonrpcOutboundMessage) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -2150,7 +2488,7 @@ func newB1BlockedSendTransport() *b1BlockedSendTransport {
 	}
 }
 
-func (t *b1BlockedSendTransport) Send(_ context.Context, req *jsonrpcRequest) error {
+func (t *b1BlockedSendTransport) Send(_ context.Context, req *jsonrpcOutboundMessage) error {
 	t.mu.Lock()
 	t.sendCount++
 	sendNumber := t.sendCount
@@ -2333,7 +2671,7 @@ func newB1BlockingCloseTransport() *b1BlockingCloseTransport {
 	}
 }
 
-func (t *b1BlockingCloseTransport) Send(context.Context, *jsonrpcRequest) error {
+func (t *b1BlockingCloseTransport) Send(context.Context, *jsonrpcOutboundMessage) error {
 	return nil
 }
 
@@ -2685,7 +3023,7 @@ func TestSSETransportConcurrentClose(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
-			_ = tr.Send(ctx, &jsonrpcRequest{Method: "ping"})
+			_ = tr.Send(ctx, &jsonrpcOutboundMessage{Method: "ping"})
 		}()
 		wg.Wait()
 	}
@@ -2731,7 +3069,7 @@ func TestSSETransportConcurrentClose_AfterConnect(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		_ = tr.Send(ctx, &jsonrpcRequest{Method: "ping"})
+		_ = tr.Send(ctx, &jsonrpcOutboundMessage{Method: "ping"})
 	}()
 	wg.Wait()
 }
@@ -2788,6 +3126,9 @@ func TestHelperFakeMCPServer(t *testing.T) {
 // 删除配置。StartServer 成功后重新加锁，必须检测到配置已删除并清理 client。
 func TestConnectDeleteRace(t *testing.T) {
 	s := newTestMCPService(t)
+	if err := s.setWorkspaceRoot(filepath.Dir(os.Args[0])); err != nil {
+		t.Fatalf("setWorkspaceRoot: %v", err)
+	}
 	cfg := MCPServerConfig{
 		Name:      "race-srv",
 		Transport: "stdio",
@@ -2845,6 +3186,9 @@ func TestConnectDeleteRace(t *testing.T) {
 // ConnectServer 期间不删除配置时，连接成功建立。
 func TestConnectDeleteRace_NoOrphan_WhenConfigSurvives(t *testing.T) {
 	s := newTestMCPService(t)
+	if err := s.setWorkspaceRoot(filepath.Dir(os.Args[0])); err != nil {
+		t.Fatalf("setWorkspaceRoot: %v", err)
+	}
 	cfg := MCPServerConfig{
 		Name:      "ok-srv",
 		Transport: "stdio",

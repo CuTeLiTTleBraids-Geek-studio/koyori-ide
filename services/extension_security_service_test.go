@@ -4,16 +4,17 @@ package services
 //
 // Covers:
 //   - Classification logic (Trusted / Reviewed / Restricted)
-//   - SHA-256 signature verification (correct hash passes, wrong hash fails)
+//   - SHA-256 integrity checks (correct hash passes, wrong hash fails)
 //   - Blacklist checking (built-in + user-added)
 //   - Restricted extensions cannot be enabled without explicit approval
 //   - Blacklisted extensions are blocked from installation
-//   - Unverified extensions cannot be enabled
+//   - Extensions without an integrity check cannot be enabled
 //   - New installs default to disabled + pending review
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -123,45 +124,54 @@ func TestExtensionSecurity_ValidatePermissionsDeduplicates(t *testing.T) {
 	}
 }
 
-// --- SHA-256 signature verification ---
+// --- SHA-256 integrity checks ---
 
-func TestExtensionSecurity_VerifyExtensionSignature_CorrectHashPasses(t *testing.T) {
+func TestExtensionSecurity_VerifyExtensionIntegrity_CorrectHashPasses(t *testing.T) {
 	s, dir := newTestExtensionSecurityService(t)
 	content := "fake vsix payload"
 	vsixPath := writeVSIX(t, filepath.Join(dir, "ext.vsix"), content)
 	expected := sha256HexStr(content)
-	if err := s.VerifyExtensionSignature(vsixPath, expected); err != nil {
-		t.Errorf("VerifyExtensionSignature with correct hash failed: %v", err)
+	if err := s.VerifyExtensionIntegrity(vsixPath, expected); err != nil {
+		t.Errorf("VerifyExtensionIntegrity with correct hash failed: %v", err)
 	}
 }
 
-func TestExtensionSecurity_VerifyExtensionSignature_WrongHashFails(t *testing.T) {
+func TestExtensionSecurity_VerifyExtensionIntegrity_WrongHashFails(t *testing.T) {
 	s, dir := newTestExtensionSecurityService(t)
 	content := "fake vsix payload"
 	vsixPath := writeVSIX(t, filepath.Join(dir, "ext.vsix"), content)
 	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
-	err := s.VerifyExtensionSignature(vsixPath, wrongHash)
-	if !errors.Is(err, ErrSignatureMismatch) {
-		t.Errorf("VerifyExtensionSignature with wrong hash = %v, want ErrSignatureMismatch", err)
+	err := s.VerifyExtensionIntegrity(vsixPath, wrongHash)
+	if !errors.Is(err, ErrIntegrityMismatch) {
+		t.Errorf("VerifyExtensionIntegrity with wrong hash = %v, want ErrIntegrityMismatch", err)
 	}
 }
 
-func TestExtensionSecurity_VerifyExtensionSignature_EmptyHashRejected(t *testing.T) {
+func TestExtensionSecurity_VerifyExtensionIntegrity_EmptyHashRejected(t *testing.T) {
 	s, dir := newTestExtensionSecurityService(t)
 	vsixPath := writeVSIX(t, filepath.Join(dir, "ext.vsix"), "x")
-	if err := s.VerifyExtensionSignature(vsixPath, ""); err == nil {
-		t.Error("VerifyExtensionSignature with empty expected hash should fail")
+	if err := s.VerifyExtensionIntegrity(vsixPath, ""); err == nil {
+		t.Error("VerifyExtensionIntegrity with empty expected hash should fail")
 	}
 }
 
-func TestExtensionSecurity_VerifyExtensionSignature_CaseInsensitive(t *testing.T) {
+func TestExtensionSecurity_VerifyExtensionIntegrity_CaseInsensitive(t *testing.T) {
 	s, dir := newTestExtensionSecurityService(t)
 	content := "payload"
 	vsixPath := writeVSIX(t, filepath.Join(dir, "ext.vsix"), content)
-	upper := sha256HexStr(content)
+	upper := strings.ToUpper(sha256HexStr(content))
 	// Uppercase hex should still match (EqualFold).
-	if err := s.VerifyExtensionSignature(vsixPath, upper); err != nil {
+	if err := s.VerifyExtensionIntegrity(vsixPath, upper); err != nil {
 		t.Errorf("uppercase hash should match: %v", err)
+	}
+}
+
+func TestExtensionSecurity_VerifyExtensionSignature_CompatibilityWrapper(t *testing.T) {
+	s, dir := newTestExtensionSecurityService(t)
+	content := "compatibility payload"
+	vsixPath := writeVSIX(t, filepath.Join(dir, "ext.vsix"), content)
+	if err := s.VerifyExtensionSignature(vsixPath, sha256HexStr(content)); err != nil {
+		t.Errorf("VerifyExtensionSignature compatibility wrapper failed: %v", err)
 	}
 }
 
@@ -450,14 +460,14 @@ func TestExtensionSecurity_SetExtensionEnabled_BlacklistedBlocked(t *testing.T) 
 	}
 }
 
-// --- Unverified extensions cannot be enabled ---
+// --- Extensions without a SHA-256 integrity check cannot be enabled ---
 
-func TestExtensionSecurity_SetExtensionEnabled_UnverifiedRejected(t *testing.T) {
+func TestExtensionSecurity_SetExtensionEnabled_IntegrityUncheckedRejected(t *testing.T) {
 	s, dir := newTestExtensionSecurityService(t)
-	vsixPath := writeVSIX(t, filepath.Join(dir, "unverified.vsix"), "payload")
-	// Register without an expected hash → Verified stays false.
+	vsixPath := writeVSIX(t, filepath.Join(dir, "unchecked.vsix"), "payload")
+	// Register without an expected digest: no integrity check can have passed.
 	info, err := s.RegisterInstall(
-		"pub.unverified-ext",
+		"pub.unchecked-ext",
 		[]ExtensionPermission{PermFsRead},
 		vsixPath,
 		"",
@@ -465,11 +475,21 @@ func TestExtensionSecurity_SetExtensionEnabled_UnverifiedRejected(t *testing.T) 
 	if err != nil {
 		t.Fatalf("RegisterInstall: %v", err)
 	}
-	if info.Verified {
-		t.Error("extension registered without hash should be unverified")
+	if info.IntegrityChecked {
+		t.Error("extension registered without an expected digest must be integrityUnchecked")
 	}
-	if err := s.configureExtensionEnabled("pub.unverified-ext", true); !errors.Is(err, ErrNotVerified) {
-		t.Errorf("SetExtensionEnabled for unverified ext = %v, want ErrNotVerified", err)
+	if info.Verified {
+		t.Error("deprecated verified compatibility field must mirror integrityChecked")
+	}
+	if err := s.configureExtensionEnabled("pub.unchecked-ext", true); !errors.Is(err, ErrIntegrityNotChecked) {
+		t.Errorf("SetExtensionEnabled for integrity-unchecked ext = %v, want ErrIntegrityNotChecked", err)
+	}
+	got, err := s.GetSecurityInfo("pub.unchecked-ext")
+	if err != nil {
+		t.Fatalf("GetSecurityInfo: %v", err)
+	}
+	if got.Enabled {
+		t.Error("integrity-unchecked extension was enabled despite the fail-closed gate")
 	}
 }
 
@@ -495,8 +515,11 @@ func TestExtensionSecurity_RegisterInstall_DefaultsToDisabledPendingReview(t *te
 	if !info.PendingReview {
 		t.Error("new install should default to pending review")
 	}
+	if !info.IntegrityChecked {
+		t.Error("install with matching hash should be marked integrityChecked")
+	}
 	if !info.Verified {
-		t.Error("install with matching hash should be verified")
+		t.Error("deprecated verified compatibility field should mirror integrityChecked")
 	}
 	if info.Level != SecurityTrusted {
 		t.Errorf("level = %q, want trusted", info.Level)
@@ -535,8 +558,134 @@ func TestExtensionSecurity_GetSecurityInfo_PersistsAcrossInstances(t *testing.T)
 	if got.Level != SecurityReviewed {
 		t.Errorf("level = %q, want reviewed", got.Level)
 	}
+	if !got.IntegrityChecked {
+		t.Error("integrityChecked should persist")
+	}
 	if !got.Verified {
-		t.Error("verified flag should persist")
+		t.Error("deprecated verified compatibility field should mirror integrityChecked")
+	}
+}
+
+func TestExtensionSecurity_IntegrityCheckedPersistsInStateFile(t *testing.T) {
+	s, dir := newTestExtensionSecurityService(t)
+	vsixPath := writeVSIX(t, filepath.Join(dir, "ext.vsix"), "payload")
+	if _, err := s.RegisterInstall("pub.persisted", []ExtensionPermission{PermFsRead}, vsixPath, sha256HexStr("payload")); err != nil {
+		t.Fatalf("RegisterInstall: %v", err)
+	}
+
+	statePath := filepath.Join(dir, "koyori-ide", extensionSecurityStateFileName)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read security state: %v", err)
+	}
+	var state struct {
+		Extensions map[string]struct {
+			IntegrityChecked bool `json:"integrityChecked"`
+			Verified         bool `json:"verified"`
+		} `json:"extensions"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("decode security state: %v", err)
+	}
+	entry, ok := state.Extensions["pub.persisted"]
+	if !ok {
+		t.Fatalf("persisted security state has no pub.persisted entry: %s", data)
+	}
+	if !entry.IntegrityChecked {
+		t.Error("persisted security state must write integrityChecked=true")
+	}
+	if !entry.Verified {
+		t.Error("deprecated persisted verified field must mirror integrityChecked")
+	}
+}
+
+func TestExtensionSecurity_LegacyVerifiedStateMigratesToIntegrityChecked(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "koyori-ide", extensionSecurityStateFileName)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state directory: %v", err)
+	}
+	legacy := []byte(`{
+  "extensions": {
+    "pub.legacy": {
+      "level": "trusted",
+      "permissions": ["fs.read"],
+      "sha256": "legacy-digest",
+      "verified": true,
+      "enabled": false,
+      "pendingReview": true
+    }
+  }
+}`)
+	if err := os.WriteFile(statePath, legacy, 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	s := NewExtensionSecurityService(dir)
+	info, err := s.GetSecurityInfo("pub.legacy")
+	if err != nil {
+		t.Fatalf("GetSecurityInfo: %v", err)
+	}
+	if !info.IntegrityChecked || !info.Verified {
+		t.Fatalf("legacy verified state did not migrate to integrityChecked: %+v", info)
+	}
+	if err := s.configureExtensionEnabled("pub.legacy", true); err != nil {
+		t.Fatalf("legacy integrity-checked extension should enable: %v", err)
+	}
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	var migrated extensionSecurityStateFile
+	if err := json.Unmarshal(data, &migrated); err != nil {
+		t.Fatalf("decode migrated state: %v", err)
+	}
+	if !migrated.Extensions["pub.legacy"].IntegrityChecked {
+		t.Fatalf("migrated state did not persist integrityChecked=true: %s", data)
+	}
+}
+
+func TestExtensionSecurity_ExplicitIntegrityUncheckedStateFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "koyori-ide", extensionSecurityStateFileName)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state directory: %v", err)
+	}
+	state := []byte(`{
+  "extensions": {
+    "pub.unchecked": {
+      "level": "trusted",
+      "permissions": ["fs.read"],
+      "sha256": "unchecked-digest",
+      "integrityChecked": false,
+      "verified": true,
+      "enabled": false,
+      "pendingReview": true
+    }
+  }
+}`)
+	if err := os.WriteFile(statePath, state, 0o600); err != nil {
+		t.Fatalf("write security state: %v", err)
+	}
+
+	s := NewExtensionSecurityService(dir)
+	info, err := s.GetSecurityInfo("pub.unchecked")
+	if err != nil {
+		t.Fatalf("GetSecurityInfo: %v", err)
+	}
+	if info.IntegrityChecked || info.Verified {
+		t.Fatalf("explicit integrityChecked=false must take precedence over legacy verified=true: %+v", info)
+	}
+	if err := s.configureExtensionEnabled("pub.unchecked", true); !errors.Is(err, ErrIntegrityNotChecked) {
+		t.Fatalf("enable unchecked state error = %v, want ErrIntegrityNotChecked", err)
+	}
+	info, err = s.GetSecurityInfo("pub.unchecked")
+	if err != nil {
+		t.Fatalf("GetSecurityInfo after rejected enable: %v", err)
+	}
+	if info.Enabled {
+		t.Fatal("explicit integrityChecked=false state was enabled")
 	}
 }
 
@@ -688,10 +837,10 @@ func TestComputeSHA256_Streaming(t *testing.T) {
 	}
 }
 
-// TestComputeSHA256_Streaming_VerifyExtensionSignature confirms that
-// VerifyExtensionSignature also works with the streaming implementation
+// TestComputeSHA256_Streaming_VerifyExtensionIntegrity confirms that
+// VerifyExtensionIntegrity also works with the streaming implementation
 // on a large file (M-10).
-func TestComputeSHA256_Streaming_VerifyExtensionSignature(t *testing.T) {
+func TestComputeSHA256_Streaming_VerifyExtensionIntegrity(t *testing.T) {
 	s, dir := newTestExtensionSecurityService(t)
 
 	// Create a 2 MB file with a repeating pattern.
@@ -713,14 +862,14 @@ func TestComputeSHA256_Streaming_VerifyExtensionSignature(t *testing.T) {
 	}
 	expected := hex.EncodeToString(expectedHasher.Sum(nil))
 
-	// VerifyExtensionSignature should accept the correct hash.
-	if err := s.VerifyExtensionSignature(vsixPath, expected); err != nil {
-		t.Errorf("VerifyExtensionSignature with correct hash failed: %v", err)
+	// VerifyExtensionIntegrity should accept the correct hash.
+	if err := s.VerifyExtensionIntegrity(vsixPath, expected); err != nil {
+		t.Errorf("VerifyExtensionIntegrity with correct hash failed: %v", err)
 	}
 	// And reject a wrong hash.
 	wrong := "0000000000000000000000000000000000000000000000000000000000000000"
-	if err := s.VerifyExtensionSignature(vsixPath, wrong); !errors.Is(err, ErrSignatureMismatch) {
-		t.Errorf("VerifyExtensionSignature with wrong hash = %v, want ErrSignatureMismatch", err)
+	if err := s.VerifyExtensionIntegrity(vsixPath, wrong); !errors.Is(err, ErrIntegrityMismatch) {
+		t.Errorf("VerifyExtensionIntegrity with wrong hash = %v, want ErrIntegrityMismatch", err)
 	}
 }
 

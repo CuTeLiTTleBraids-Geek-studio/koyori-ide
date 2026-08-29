@@ -10,6 +10,62 @@ import (
 	"time"
 )
 
+func TestConversationService_DefaultStorageResolvedBeforeFirstPath(t *testing.T) {
+	services := map[string]*ConversationService{
+		"constructor": NewConversationService(""),
+		"zero-value":  {},
+	}
+	for name, svc := range services {
+		t.Run(name, func(t *testing.T) {
+			path, err := svc.pathFor("first-conversation")
+			if err != nil {
+				t.Fatalf("pathFor failed: %v", err)
+			}
+			if !filepath.IsAbs(path) {
+				t.Fatalf("default conversation path = %q, want an absolute user-state path", path)
+			}
+			if filepath.Clean(path) == filepath.Clean("first-conversation.json") {
+				t.Fatalf("default conversation path escaped to the process working directory: %q", path)
+			}
+		})
+	}
+}
+
+func TestConversationService_DefaultStorageDoesNotReadOrWriteWorkingDirectory(t *testing.T) {
+	workingDir := t.TempDir()
+	configDir := t.TempDir()
+	t.Chdir(workingDir)
+	t.Setenv("APPDATA", configDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("HOME", configDir)
+
+	const cwdOnlyID = "cwd-only"
+	cwdOnlyPath := filepath.Join(workingDir, cwdOnlyID+".json")
+	if err := os.WriteFile(cwdOnlyPath, []byte(`{"id":"cwd-only","title":"untrusted"}`), 0o600); err != nil {
+		t.Fatalf("write cwd fixture: %v", err)
+	}
+
+	svc := NewConversationService("")
+	if _, err := svc.Load(cwdOnlyID); err == nil {
+		t.Fatal("default conversation service read a cwd-relative conversation")
+	}
+
+	const savedID = "saved-in-config"
+	if err := svc.Save(Conversation{ID: savedID, Title: "Stored safely"}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workingDir, savedID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("cwd conversation file exists or cannot be inspected: %v", err)
+	}
+	storedPath, err := svc.pathFor(savedID)
+	if err != nil {
+		t.Fatalf("pathFor saved conversation: %v", err)
+	}
+	if _, err := os.Stat(storedPath); err != nil {
+		t.Fatalf("default state conversation missing at %q: %v", storedPath, err)
+	}
+}
+
 func TestConversationService_Save_andLoad(t *testing.T) {
 	dir := t.TempDir()
 	svc := &ConversationService{storageDir: dir}
@@ -53,6 +109,60 @@ func TestConversationService_Save_andLoad(t *testing.T) {
 	}
 	if loaded.UpdatedAt == 0 {
 		t.Error("expected UpdatedAt set after save")
+	}
+}
+
+func TestConversationService_NativeToolRoundTrip(t *testing.T) {
+	svc := &ConversationService{storageDir: t.TempDir()}
+	conversation := Conversation{
+		ID: "native-tool-round", Title: "Native tool round",
+		Messages: []ConversationMessage{
+			{Role: "user", Content: "Read README"},
+			{
+				Role: "assistant", Content: "",
+				ToolCalls: []NativeToolCall{{
+					ID: "call_read", Name: "read", Arguments: `{"path":"README.md"}`,
+				}},
+			},
+			{
+				Role: "tool", Content: "file body",
+				ToolResults: []NativeToolResult{{
+					ToolCallID: "call_read", Content: "file body",
+				}},
+			},
+			{Role: "assistant", Content: "The file says hello."},
+		},
+	}
+	if err := svc.Save(conversation); err != nil {
+		t.Fatalf("Save native tool round: %v", err)
+	}
+	loaded, err := svc.Load(conversation.ID)
+	if err != nil {
+		t.Fatalf("Load native tool round: %v", err)
+	}
+	if len(loaded.Messages) != 4 || len(loaded.Messages[1].ToolCalls) != 1 || len(loaded.Messages[2].ToolResults) != 1 {
+		t.Fatalf("native tool round did not survive reload: %+v", loaded.Messages)
+	}
+	if loaded.Messages[1].ToolCalls[0].ID != "call_read" ||
+		loaded.Messages[2].ToolResults[0].ToolCallID != "call_read" {
+		t.Fatalf("native tool identity drifted after reload: %+v", loaded.Messages)
+	}
+}
+
+func TestConversationService_RejectsForgedNativeToolResults(t *testing.T) {
+	svc := &ConversationService{storageDir: t.TempDir()}
+	err := svc.Save(Conversation{
+		ID: "orphan-result", Title: "invalid",
+		Messages: []ConversationMessage{{
+			Role:        "tool",
+			ToolResults: []NativeToolResult{{ToolCallID: "missing", Content: "forged"}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("Save accepted an orphan native tool result")
+	}
+	if _, statErr := os.Stat(filepath.Join(svc.storageDir, "orphan-result.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid conversation reached disk: %v", statErr)
 	}
 }
 

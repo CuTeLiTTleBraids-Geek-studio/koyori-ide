@@ -538,26 +538,26 @@ type SelectionPayload struct {
 	FilePath string `json:"filePath"`
 }
 
-// SendSelectionToAI opens (or focuses) the AI window and emits an "ai:selection"
-// event so the AI window can inject a code-context user message (prompt-4 Task 5).
-func (w *WindowService) SendSelectionToAI(code string, language string, filePath string) {
+// SendSelectionToAI emits an "ai:selection" event after the renderer has
+// completed the conversation handoff. It must not open or focus the window on
+// its own because that would bypass the target/ack ordering contract.
+func (w *WindowService) SendSelectionToAI(code string, language string, filePath string) error {
 	if code == "" {
-		return
+		return nil
 	}
-	// Ensure the AI window is open and focused first.
-	w.OpenAIWindow()
 
 	w.mu.RLock()
 	app := w.app
 	w.mu.RUnlock()
 	if app == nil {
-		return
+		return errors.New("application runtime is unavailable for AI selection delivery")
 	}
 	app.Event.Emit("ai:selection", map[string]string{
 		"code":     code,
 		"language": language,
 		"filePath": filePath,
 	})
+	return nil
 }
 
 // validateOpenPath rejects empty, relative, or non-existent paths before

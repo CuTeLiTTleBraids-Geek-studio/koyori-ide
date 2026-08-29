@@ -101,6 +101,10 @@ func nativeWriteApproval(targetPath string, size int64) bool {
 // The renderer must supply contentHash = SHA-256(newContent) to bind the token
 // to the exact bytes the user approved. Size is displayed in the approval dialog.
 func (s *AgentService) RequestWriteApproval(targetPath, contentHash string, size int64) (string, error) {
+	return "", fmt.Errorf("use RequestAgentToolCapability with the write ToolDef: %w", ErrInvalidInput)
+}
+
+func (s *AgentService) requestWriteApprovalLegacy(targetPath, contentHash string, size int64) (string, error) {
 	if strings.TrimSpace(targetPath) == "" {
 		return "", fmt.Errorf("target path is required: %w", ErrInvalidInput)
 	}
@@ -170,6 +174,10 @@ func (s *AgentService) RequestWriteApproval(targetPath, contentHash string, size
 // Rejection reasons: empty/forged/expired/replayed token, path mismatch, content
 // hash mismatch, cross-generation token, path outside workspace root.
 func (s *AgentService) ExecuteApprovedWrite(targetPath, content, token string) error {
+	return fmt.Errorf("use ExecuteApprovedAgentTool with the write ToolDef: %w", ErrInvalidInput)
+}
+
+func (s *AgentService) executeApprovedWriteLegacy(targetPath, content, token string) error {
 	if token == "" {
 		return fmt.Errorf("write approval token is required: %w", ErrInvalidInput)
 	}

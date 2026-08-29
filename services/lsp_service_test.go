@@ -1871,6 +1871,7 @@ func TestLSPService_NaturalProcessExitRemovesServer(t *testing.T) {
 func TestLSPService_StopUsesSingleWaitOwnerAndIsIdempotent(t *testing.T) {
 	svc := NewLSPService("")
 	cmd, process := startLSPTestProcess(t, "block")
+	_, unrelated := startLSPTestProcess(t, "block")
 	installLSPTestProcess(svc, "go", cmd, process)
 
 	if err := svc.StopLSPServer("go"); err != nil {
@@ -1884,8 +1885,23 @@ func TestLSPService_StopUsesSingleWaitOwnerAndIsIdempotent(t *testing.T) {
 	if cmd.ProcessState == nil {
 		t.Fatal("explicit stop returned before the process was reaped")
 	}
+	select {
+	case <-unrelated.done:
+		t.Fatal("stopping a managed LSP server terminated an unrelated process")
+	default:
+	}
 	if err := svc.StopLSPServer("go"); err != nil {
 		t.Fatalf("repeat StopLSPServer: %v", err)
+	}
+}
+
+func TestWaitForLSPProcessExitPreservesTerminationFailure(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	terminationErr := errors.New("termination failed")
+
+	if err := waitForLSPProcessExit(done, time.Second, terminationErr); !errors.Is(err, terminationErr) {
+		t.Fatalf("wait error = %v, want termination failure", err)
 	}
 }
 

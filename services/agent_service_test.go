@@ -2,12 +2,17 @@ package services
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 var _ agentServiceRootSetter = (*AgentService)(nil)
@@ -44,6 +49,69 @@ func TestExecCommand_Success(t *testing.T) {
 	}
 	if res.Blocked {
 		t.Errorf("expected not blocked, got blocked=true")
+	}
+}
+
+func TestAgentCommandOutputHelper(t *testing.T) {
+	if len(os.Args) == 0 {
+		return
+	}
+	switch os.Args[len(os.Args)-1] {
+	case "agent-command-timeout-helper":
+		time.Sleep(5 * time.Second)
+		return
+	case "agent-command-output-helper":
+	default:
+		return
+	}
+	payload := strings.Repeat("界", maxAgentCommandOutputBytes)
+	if _, err := os.Stdout.WriteString(payload); err != nil {
+		t.Fatalf("write helper stdout: %v", err)
+	}
+	if _, err := os.Stderr.WriteString(payload); err != nil {
+		t.Fatalf("write helper stderr: %v", err)
+	}
+}
+
+func TestExecCommand_ReportsCommandContextTimeoutAsFailure(t *testing.T) {
+	svc := NewAgentService()
+	svc.commandTimeout = 50 * time.Millisecond
+	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	commandLine := strconv.Quote(os.Args[0]) + " -test.run=TestAgentCommandOutputHelper -- agent-command-timeout-helper"
+	result, err := svc.executeCommand(commandLine, "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout error = %v, want context.DeadlineExceeded", err)
+	}
+	if result.ExitCode != -1 || !strings.Contains(result.Stderr, "[command timed out after") {
+		t.Fatalf("timeout result = %+v", result)
+	}
+	if len(result.Stderr) > maxAgentCommandOutputBytes {
+		t.Fatalf("timeout stderr length = %d, want <= %d", len(result.Stderr), maxAgentCommandOutputBytes)
+	}
+}
+
+func TestExecCommand_BoundsCapturedStdoutAndStderr(t *testing.T) {
+	svc := NewAgentService()
+	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	commandLine := strconv.Quote(os.Args[0]) + " -test.run=TestAgentCommandOutputHelper -- agent-command-output-helper"
+	result, err := svc.executeCommand(commandLine, "")
+	if err != nil {
+		t.Fatalf("execute output helper: %v", err)
+	}
+	for name, output := range map[string]string{"stdout": result.Stdout, "stderr": result.Stderr} {
+		if len(output) > maxAgentCommandOutputBytes {
+			t.Fatalf("%s length = %d, want <= %d", name, len(output), maxAgentCommandOutputBytes)
+		}
+		if !utf8.ValidString(output) {
+			t.Fatalf("%s is not valid UTF-8", name)
+		}
+		if !strings.Contains(output, "[truncated,") {
+			t.Fatalf("%s lacks an explicit truncation marker", name)
+		}
 	}
 }
 
@@ -88,7 +156,7 @@ func TestApprovedCommandTokenIsSingleUseAndBoundToArguments(t *testing.T) {
 	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	token, err := svc.RequestCommandApproval("go version", "")
+	token, err := svc.requestCommandApprovalLegacy("go version", "")
 	if err != nil {
 		t.Fatalf("request approval: %v", err)
 	}
@@ -99,7 +167,7 @@ func TestApprovedCommandTokenIsSingleUseAndBoundToArguments(t *testing.T) {
 		t.Fatal("expected mismatched attempt to consume token")
 	}
 
-	token, err = svc.RequestCommandApproval("go version", "")
+	token, err = svc.requestCommandApprovalLegacy("go version", "")
 	if err != nil {
 		t.Fatalf("request second approval: %v", err)
 	}
@@ -118,7 +186,7 @@ func TestApprovedCommandTokenInvalidatedByWorkspaceChange(t *testing.T) {
 	if err := svc.configureWorkspaceRoot(root); err != nil {
 		t.Fatalf("set root: %v", err)
 	}
-	token, err := svc.RequestCommandApproval("go version", root)
+	token, err := svc.requestCommandApprovalLegacy("go version", root)
 	if err != nil {
 		t.Fatalf("request approval: %v", err)
 	}
@@ -618,7 +686,7 @@ func TestAgentService_ValidateCwdEmptyRootFailsClosed(t *testing.T) {
 		}
 	}
 	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
-	if _, err := svc.RequestCommandApproval("go version", t.TempDir()); err == nil {
+	if _, err := svc.requestCommandApprovalLegacy("go version", t.TempDir()); err == nil {
 		t.Fatal("approval accepted external cwd without a workspace root")
 	}
 	if _, err := svc.executeCommand("go version", t.TempDir()); err == nil {
@@ -633,7 +701,7 @@ func TestAgentService_RestoreEmptyRootFailsClosedAndInvalidatesToken(t *testing.
 	if err := svc.setWorkspaceRoot(root); err != nil {
 		t.Fatal(err)
 	}
-	token, err := svc.RequestCommandApproval("go version", root)
+	token, err := svc.requestCommandApprovalLegacy("go version", root)
 	if err != nil {
 		t.Fatal(err)
 	}

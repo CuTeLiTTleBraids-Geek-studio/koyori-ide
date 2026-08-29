@@ -948,7 +948,22 @@ func startServerProcess(language, exePath, kind, workspaceRoot string) (*lspProc
 		_ = stdout.Close()
 		return nil, nil, nil, err
 	}
-	return newLSPProcess(cmd), stdin, stdout, nil
+	tree, err := attachLSPProcessTree(cmd)
+	if err != nil {
+		// attachLSPProcessTree has already closed/terminated its Job using the
+		// original process handle. Do not fall back to PID-based taskkill here:
+		// a short-lived shim can have its PID reused by an unrelated process.
+		killErr := cmd.Process.Kill()
+		if errors.Is(killErr, os.ErrProcessDone) {
+			killErr = nil
+		}
+		waitErr := cmd.Wait()
+		cleanupErr := errors.Join(killErr, waitErr)
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, nil, nil, errors.Join(fmt.Errorf("attach LSP process tree: %w", err), cleanupErr)
+	}
+	return newLSPProcess(cmd, tree), stdin, stdout, nil
 }
 
 // buildLSPClientCapabilities 构造 LSP initialize 请求中声明的客户端能力

@@ -2,11 +2,14 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,6 +42,10 @@ type WorkflowStep struct {
 	// Plan 11 Task 11 Step 1: Timeout is the maximum execution time in seconds.
 	// 0 means no timeout.
 	Timeout int `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// Tool and Input are the typed adapter contract. A typed step must use an
+	// explicit tool/input schema; command/args are reserved for command steps.
+	Tool  string                 `json:"tool,omitempty" yaml:"tool,omitempty"`
+	Input map[string]interface{} `json:"input,omitempty" yaml:"input,omitempty"`
 }
 
 // WorkflowStepType specifies the kind of a workflow step (Step 1).
@@ -52,6 +59,169 @@ const (
 	WorkflowStepMCP     WorkflowStepType = "mcp"     // MCP tool call
 	WorkflowStepSkill   WorkflowStepType = "skill"   // Skills system
 )
+
+var workflowSkillIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+func isSupportedWorkflowStepType(stepType WorkflowStepType) bool {
+	switch stepType {
+	case "", WorkflowStepCommand, WorkflowStepAI, WorkflowStepGit, WorkflowStepFile, WorkflowStepMCP, WorkflowStepSkill:
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowStepHasExecutableDefinition(step WorkflowStep) bool {
+	switch step.Type {
+	case "", WorkflowStepCommand:
+		return strings.TrimSpace(step.Command) != ""
+	case WorkflowStepMCP:
+		return workflowMCPInputIsValid(step)
+	case WorkflowStepGit:
+		return workflowGitStatusInputIsValid(step)
+	case WorkflowStepAI:
+		return workflowAIInputIsValid(step)
+	case WorkflowStepSkill:
+		return workflowSkillActivationInputIsValid(step)
+	case WorkflowStepFile:
+		switch step.Tool {
+		case "read":
+			if len(step.Input) != 1 || strings.TrimSpace(step.Command) != "" || len(step.Args) != 0 || strings.TrimSpace(step.Cwd) != "" {
+				return false
+			}
+			pathValue, ok := step.Input["path"].(string)
+			if !ok {
+				return false
+			}
+			_, err := normalizeWorkflowFileReadPath(pathValue)
+			return err == nil
+		case "write":
+			return workflowFileWriteInputIsValid(step)
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+// workflowStepSourceAccepted keeps legacy AI prompt steps loadable for
+// migration/diagnostics, but they are intentionally non-executable and never
+// enter the Agent catalog. New AI execution requires the typed tool/input
+// contract below.
+func workflowStepSourceAccepted(step WorkflowStep) bool {
+	if step.Type == WorkflowStepAI && strings.TrimSpace(step.Command) != "" &&
+		strings.TrimSpace(step.Tool) == "" && len(step.Input) == 0 && len(step.Args) == 0 && strings.TrimSpace(step.Cwd) == "" {
+		return true
+	}
+	return workflowStepHasExecutableDefinition(step)
+}
+
+const maxWorkflowAIPromptBytes = 64 * 1024
+
+var workflowAIOperations = map[string]struct{}{
+	"generate":       {},
+	"review":         {},
+	"commit-message": {},
+}
+
+// workflowAIInputIsValid defines the only AI workflow shape that can enter
+// the unified Agent catalog. The prompt remains in the backend-owned
+// workflow source; renderer execution requests carry only workflow/step
+// identity and an empty argument object.
+func workflowAIInputIsValid(step WorkflowStep) bool {
+	if step.Type != WorkflowStepAI || strings.TrimSpace(step.Tool) != step.Tool {
+		return false
+	}
+	if _, ok := workflowAIOperations[step.Tool]; !ok ||
+		strings.TrimSpace(step.Command) != "" || len(step.Args) != 0 || strings.TrimSpace(step.Cwd) != "" ||
+		len(step.Input) != 1 {
+		return false
+	}
+	prompt, ok := step.Input["prompt"].(string)
+	return ok && strings.TrimSpace(prompt) != "" && len([]byte(prompt)) <= maxWorkflowAIPromptBytes
+}
+
+func workflowMCPInputIsValid(step WorkflowStep) bool {
+	if strings.TrimSpace(step.Tool) == "" || strings.TrimSpace(step.Command) != "" ||
+		len(step.Args) != 0 || strings.TrimSpace(step.Cwd) != "" || step.Input == nil {
+		return false
+	}
+	for key := range step.Input {
+		if strings.TrimSpace(key) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func workflowGitStatusInputIsValid(step WorkflowStep) bool {
+	if strings.TrimSpace(step.Tool) != "status" ||
+		strings.TrimSpace(step.Command) != "" || len(step.Args) != 0 || strings.TrimSpace(step.Cwd) != "" {
+		return false
+	}
+	return len(step.Input) == 0
+}
+
+func workflowSkillActivationInputIsValid(step WorkflowStep) bool {
+	if strings.TrimSpace(step.Tool) != "activate" || step.Tool != "activate" ||
+		strings.TrimSpace(step.Command) != "" || len(step.Args) != 0 || strings.TrimSpace(step.Cwd) != "" || len(step.Input) != 1 {
+		return false
+	}
+	skillID, ok := step.Input["id"].(string)
+	if !ok {
+		return false
+	}
+	_, err := normalizeWorkflowSkillID(skillID)
+	return err == nil
+}
+
+func normalizeWorkflowSkillID(value string) (string, error) {
+	canonical := strings.TrimSpace(value)
+	if canonical == "" || canonical != value || !workflowSkillIDPattern.MatchString(canonical) {
+		return "", fmt.Errorf("workflow Skill id must be 1-128 ASCII letters, digits, dots, underscores, or hyphens: %w", ErrInvalidInput)
+	}
+	return canonical, nil
+}
+
+func normalizeWorkflowFileReadPath(value string) (string, error) {
+	const maxWorkflowFilePathBytes = 4096
+	raw := strings.TrimSpace(value)
+	if raw == "" || len(raw) > maxWorkflowFilePathBytes || strings.ContainsRune(raw, '\x00') {
+		return "", fmt.Errorf("file workflow path must be a non-empty root-relative path: %w", ErrInvalidInput)
+	}
+	// Workflow definitions are portable. Treat both slash styles as separators
+	// before applying the shared traversal check so a Windows path cannot gain
+	// different authority when the same project is opened on another platform.
+	normalizedSeparators := strings.ReplaceAll(raw, "\\", "/")
+	if strings.Contains(normalizedSeparators, ":") || !IsRelativePathSafe(normalizedSeparators) {
+		return "", fmt.Errorf("file workflow path %q is not root-relative: %w", value, ErrNotAllowed)
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(normalizedSeparators)))
+	if !IsRelativePathSafe(cleaned) {
+		return "", fmt.Errorf("file workflow path %q escapes the workspace: %w", value, ErrNotAllowed)
+	}
+	return cleaned, nil
+}
+
+const maxWorkflowFileWriteBytes = 1 << 20
+
+// workflowFileWriteInputIsValid defines the only file mutation shape that
+// enters the Agent catalog. The content remains backend-owned workflow source;
+// renderer execution requests carry an empty object and can never redirect it.
+func workflowFileWriteInputIsValid(step WorkflowStep) bool {
+	if step.Type != WorkflowStepFile || step.Tool != "write" ||
+		strings.TrimSpace(step.Command) != "" || len(step.Args) != 0 || strings.TrimSpace(step.Cwd) != "" || len(step.Input) != 2 {
+		return false
+	}
+	pathValue, pathOK := step.Input["path"].(string)
+	content, contentOK := step.Input["content"].(string)
+	if !pathOK || !contentOK {
+		return false
+	}
+	canonicalPath, err := normalizeWorkflowFileReadPath(pathValue)
+	return err == nil && canonicalPath == pathValue && len([]byte(content)) <= maxWorkflowFileWriteBytes
+}
 
 // OnFailureAction controls step failure behavior (Step 1).
 type OnFailureAction string
@@ -131,7 +301,36 @@ type WorkflowDef struct {
 // .koyori-ide/workflows/ directory (N-19). Supported file extensions: .yml, .yaml,
 // .json. Files are sorted alphabetically by filename so the UI shows a
 // stable order.
-type WorkflowService struct{}
+type WorkflowService struct {
+	mutationMu       sync.RWMutex
+	onMutationChange func() error
+	agentLoadMu      sync.RWMutex
+	agentLoadHook    func(stage, relativePath string) error
+}
+
+// setOnMutationChange installs the trusted backend callback used to refresh
+// the Agent ToolDef source after a workflow file mutation. It is intentionally
+// unexported so renderer code cannot replace the authority boundary.
+//
+//wails:ignore
+func (s *WorkflowService) setOnMutationChange(callback func() error) {
+	s.mutationMu.Lock()
+	s.onMutationChange = callback
+	s.mutationMu.Unlock()
+}
+
+func (s *WorkflowService) notifyMutationChange() error {
+	s.mutationMu.RLock()
+	callback := s.onMutationChange
+	s.mutationMu.RUnlock()
+	if callback == nil {
+		return nil
+	}
+	if err := callback(); err != nil {
+		return fmt.Errorf("refresh workflow agent tools: %w", err)
+	}
+	return nil
+}
 
 // allowedRunOnEvents is the whitelist of valid runOn.event values (N-55).
 // "file-saved" triggers when a matching file is saved (Proposal B).
@@ -185,12 +384,91 @@ func (s *WorkflowService) ValidateWorkflow(wf *WorkflowDef) WorkflowValidationRe
 	hasValidStep := false
 	seenNames := make(map[string]bool)
 	for i, step := range wf.Steps {
+		if !isSupportedWorkflowStepType(step.Type) {
+			errs = append(errs, WorkflowValidationError{
+				Field:   fmt.Sprintf("steps[%d].type", i),
+				Message: fmt.Sprintf("unknown step type %q", step.Type),
+			})
+		}
 		if step.Name == "" {
 			errs = append(errs, WorkflowValidationError{
 				Field:   fmt.Sprintf("steps[%d].name", i),
 				Message: "step name is empty",
 			})
 			continue
+		}
+		if step.Type == WorkflowStepFile {
+			if step.Tool != "read" && step.Tool != "write" {
+				errs = append(errs, WorkflowValidationError{
+					Field:   fmt.Sprintf("steps[%d].tool", i),
+					Message: "file workflow steps require tool \"read\" or \"write\"",
+				})
+			}
+			if step.Tool == "read" {
+				pathValue, ok := step.Input["path"].(string)
+				if !ok {
+					errs = append(errs, WorkflowValidationError{
+						Field:   fmt.Sprintf("steps[%d].input.path", i),
+						Message: "file read workflow steps require a non-empty input.path",
+					})
+				} else if _, pathErr := normalizeWorkflowFileReadPath(pathValue); pathErr != nil {
+					errs = append(errs, WorkflowValidationError{
+						Field:   fmt.Sprintf("steps[%d].input.path", i),
+						Message: pathErr.Error(),
+					})
+				}
+				if len(step.Input) != 1 {
+					errs = append(errs, WorkflowValidationError{
+						Field:   fmt.Sprintf("steps[%d].input", i),
+						Message: "file read input only accepts path",
+					})
+				}
+			} else if step.Tool == "write" {
+				if !workflowFileWriteInputIsValid(step) {
+					errs = append(errs, WorkflowValidationError{
+						Field:   fmt.Sprintf("steps[%d].input", i),
+						Message: fmt.Sprintf("file write input requires canonical path and string content <= %d bytes; command, args, and cwd are forbidden", maxWorkflowFileWriteBytes),
+					})
+				}
+			}
+			if strings.TrimSpace(step.Command) != "" || len(step.Args) != 0 || strings.TrimSpace(step.Cwd) != "" {
+				errs = append(errs, WorkflowValidationError{
+					Field:   fmt.Sprintf("steps[%d].command", i),
+					Message: "file workflow steps cannot include command, args, or cwd",
+				})
+			}
+		}
+		if step.Type == WorkflowStepMCP {
+			if !workflowMCPInputIsValid(step) {
+				errs = append(errs, WorkflowValidationError{
+					Field:   fmt.Sprintf("steps[%d].input", i),
+					Message: "MCP workflow steps require a tool and an object input; command, args, and cwd are forbidden",
+				})
+			}
+		}
+		if step.Type == WorkflowStepGit {
+			if !workflowGitStatusInputIsValid(step) {
+				errs = append(errs, WorkflowValidationError{
+					Field:   fmt.Sprintf("steps[%d].input", i),
+					Message: "git workflow steps require tool \"status\" with an empty object input; command, args, and cwd are forbidden",
+				})
+			}
+		}
+		if step.Type == WorkflowStepSkill {
+			if !workflowSkillActivationInputIsValid(step) {
+				errs = append(errs, WorkflowValidationError{
+					Field:   fmt.Sprintf("steps[%d].input", i),
+					Message: "Skill workflow steps require tool \"activate\" and exactly one canonical input.id; command, args, and cwd are forbidden",
+				})
+			}
+		}
+		if step.Type == WorkflowStepAI && (step.Tool != "" || len(step.Input) > 0) {
+			if !workflowAIInputIsValid(step) {
+				errs = append(errs, WorkflowValidationError{
+					Field:   fmt.Sprintf("steps[%d].input", i),
+					Message: "AI workflow steps require tool generate/review/commit-message and exactly one bounded input.prompt; command, args, and cwd are forbidden",
+				})
+			}
 		}
 		if seenNames[step.Name] {
 			errs = append(errs, WorkflowValidationError{
@@ -199,13 +477,13 @@ func (s *WorkflowService) ValidateWorkflow(wf *WorkflowDef) WorkflowValidationRe
 			})
 		}
 		seenNames[step.Name] = true
-		if step.Command == "" {
+		if step.Type != WorkflowStepFile && step.Type != WorkflowStepMCP && step.Type != WorkflowStepGit && step.Type != WorkflowStepSkill && step.Type != WorkflowStepAI && step.Command == "" {
 			errs = append(errs, WorkflowValidationError{
 				Field:   fmt.Sprintf("steps[%d].command", i),
 				Message: fmt.Sprintf("step %q has empty command", step.Name),
 			})
 		}
-		if step.Name != "" && step.Command != "" {
+		if step.Name != "" && workflowStepHasExecutableDefinition(step) {
 			hasValidStep = true
 		}
 	}
@@ -404,23 +682,26 @@ func parseWorkflow(data []byte, ext string) (*WorkflowDef, error) {
 	return &wf, nil
 }
 
-// workflowIsValid checks that a workflow has at least one step, and each
-// step has a non-empty name and command. Steps with empty names or
-// commands are silently dropped; the workflow is invalid only if no
-// valid steps remain.
+// workflowIsValid rejects the complete workflow when any step is malformed.
+// Executing a valid subset would silently change the workflow's side effects.
 func workflowIsValid(wf *WorkflowDef) bool {
 	if wf == nil {
 		return false
 	}
-	valid := make([]WorkflowStep, 0, len(wf.Steps))
-	for _, s := range wf.Steps {
-		if s.Name == "" || s.Command == "" {
-			continue
+	for _, step := range wf.Steps {
+		if !isSupportedWorkflowStepType(step.Type) || !workflowStepSourceAccepted(step) {
+			return false
 		}
-		valid = append(valid, s)
 	}
-	wf.Steps = valid
-	return len(valid) > 0
+	if len(wf.Steps) == 0 {
+		return false
+	}
+	for _, step := range wf.Steps {
+		if strings.TrimSpace(step.Name) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // hasWorkflowExt returns true if ext is one of the recognized workflow
@@ -531,7 +812,7 @@ func workflowPath(projectRoot, name string) (string, error) {
 	dir := filepath.Join(projectRoot, ".koyori-ide", "workflows")
 	full := filepath.Join(dir, safe+".yml")
 	// Ensure the resolved path stays under the workflows directory.
-	if _, err := ValidatePathWithinRoot(dir, full); err != nil {
+	if _, err := ValidateMutatingPathWithinRoot(dir, full); err != nil {
 		return "", fmt.Errorf("workflow path outside workflows dir: %w", err)
 	}
 	return full, nil
@@ -576,6 +857,13 @@ func toWorkflowFileDTO(wf *WorkflowDef) workflowFileDTO {
 // Fails if a file with the same name already exists. New workflows default
 // to RequiresConfirmation = true (G-SEC-03).
 func (s *WorkflowService) CreateWorkflow(projectRoot, name string, def *WorkflowDef) error {
+	if err := s.createWorkflow(projectRoot, name, def); err != nil {
+		return err
+	}
+	return s.notifyMutationChange()
+}
+
+func (s *WorkflowService) createWorkflow(projectRoot, name string, def *WorkflowDef) error {
 	if def == nil {
 		return fmt.Errorf("workflow definition is required")
 	}
@@ -626,6 +914,13 @@ func (s *WorkflowService) CreateWorkflow(projectRoot, name string, def *Workflow
 // SaveWorkflow overwrites an existing workflow (or creates it if missing).
 // Always forces RequiresConfirmation = true for project sources.
 func (s *WorkflowService) SaveWorkflow(projectRoot, name string, def *WorkflowDef) error {
+	if err := s.saveWorkflow(projectRoot, name, def); err != nil {
+		return err
+	}
+	return s.notifyMutationChange()
+}
+
+func (s *WorkflowService) saveWorkflow(projectRoot, name string, def *WorkflowDef) error {
 	if def == nil {
 		return fmt.Errorf("workflow definition is required")
 	}
@@ -663,20 +958,31 @@ func (s *WorkflowService) SaveWorkflow(projectRoot, name string, def *WorkflowDe
 
 // DeleteWorkflow removes .koyori-ide/workflows/<name>.yml (and .yaml/.json variants).
 func (s *WorkflowService) DeleteWorkflow(projectRoot, name string) error {
-	safe, err := sanitizeWorkflowName(name)
+	mutated, err := s.deleteWorkflow(projectRoot, name)
 	if err != nil {
+		if mutated {
+			return errors.Join(err, s.notifyMutationChange())
+		}
 		return err
 	}
+	return s.notifyMutationChange()
+}
+
+func (s *WorkflowService) deleteWorkflow(projectRoot, name string) (bool, error) {
+	safe, err := sanitizeWorkflowName(name)
+	if err != nil {
+		return false, err
+	}
 	if projectRoot == "" {
-		return fmt.Errorf("projectRoot is required")
+		return false, fmt.Errorf("projectRoot is required")
 	}
 	dir := filepath.Join(projectRoot, ".koyori-ide", "workflows")
 	var lastErr error
 	found := false
 	for _, ext := range workflowFileExtensions {
 		full := filepath.Join(dir, safe+ext)
-		if _, err := ValidatePathWithinRoot(dir, full); err != nil {
-			return fmt.Errorf("workflow path outside workflows dir: %w", err)
+		if _, err := ValidateMutatingPathWithinRoot(dir, full); err != nil {
+			return found, fmt.Errorf("workflow path outside workflows dir: %w", err)
 		}
 		if _, err := os.Stat(full); err != nil {
 			if os.IsNotExist(err) {
@@ -686,17 +992,17 @@ func (s *WorkflowService) DeleteWorkflow(projectRoot, name string) error {
 			continue
 		}
 		if err := os.Remove(full); err != nil {
-			return fmt.Errorf("delete workflow: %w", err)
+			return found, fmt.Errorf("delete workflow: %w", err)
 		}
 		found = true
 	}
 	if !found {
 		if lastErr != nil {
-			return lastErr
+			return false, lastErr
 		}
-		return fmt.Errorf("workflow %q not found", safe)
+		return false, fmt.Errorf("workflow %q not found", safe)
 	}
-	return nil
+	return true, nil
 }
 
 // RenameWorkflow renames a workflow file from oldName to newName.
@@ -719,13 +1025,18 @@ func (s *WorkflowService) RenameWorkflow(projectRoot, oldName, newName string) e
 		return err
 	}
 	wf.Name = newSafe
-	if err := s.CreateWorkflow(projectRoot, newSafe, wf); err != nil {
+	if err := s.createWorkflow(projectRoot, newSafe, wf); err != nil {
 		return err
 	}
-	if err := s.DeleteWorkflow(projectRoot, oldSafe); err != nil {
+	mutated, err := s.deleteWorkflow(projectRoot, oldSafe)
+	if err != nil {
 		// Best-effort rollback of the new file if delete fails.
-		_ = s.DeleteWorkflow(projectRoot, newSafe)
-		return fmt.Errorf("delete old workflow after rename: %w", err)
+		_, rollbackErr := s.deleteWorkflow(projectRoot, newSafe)
+		var refreshErr error
+		if mutated || rollbackErr != nil {
+			refreshErr = s.notifyMutationChange()
+		}
+		return errors.Join(fmt.Errorf("delete old workflow after rename: %w", err), rollbackErr, refreshErr)
 	}
-	return nil
+	return s.notifyMutationChange()
 }

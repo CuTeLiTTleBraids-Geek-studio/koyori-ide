@@ -230,7 +230,7 @@ func (t *TerminalService) StartSession(id string, workingDir string, shell strin
 			slog.Warn("terminal: rejected shell not in whitelist", "sessionId", id, "shell", shell)
 			return fmt.Errorf("shell %q is not in the allowed list (M-4: bash/sh/zsh/powershell/pwsh/cmd/wsl)", shell)
 		}
-		resolvedShell = []string{shell}
+		resolvedShell = resolveShellCommand(shell)
 	}
 
 	t.mu.Lock()

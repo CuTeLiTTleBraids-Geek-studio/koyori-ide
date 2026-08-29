@@ -401,6 +401,34 @@ func (s *DiffService) ApplyAll(diff MultiFileDiff) map[string]string {
 	return result
 }
 
+// ApplySelectedHunks keeps only the selected hunk indexes and returns the
+// reconstructed file content. An empty selection is a no-op (old content).
+func (s *DiffService) ApplySelectedHunks(fd FileDiff, selected []int) string {
+	if len(fd.Hunks) == 0 {
+		return fd.NewContent
+	}
+	keep := map[int]struct{}{}
+	for _, idx := range selected {
+		if idx >= 0 && idx < len(fd.Hunks) {
+			keep[idx] = struct{}{}
+		}
+	}
+	if len(keep) == 0 {
+		return fd.OldContent
+	}
+	if len(keep) == len(fd.Hunks) {
+		return fd.NewContent
+	}
+	content := fd.NewContent
+	for idx := len(fd.Hunks) - 1; idx >= 0; idx-- {
+		if _, ok := keep[idx]; ok {
+			continue
+		}
+		content = s.RejectHunk(FileDiff{Path: fd.Path, OldContent: fd.OldContent, NewContent: content, Hunks: fd.Hunks}, idx)
+	}
+	return content
+}
+
 // RejectHunk 拒绝单个 hunk（返回不含该 hunk 的内容）。
 // Step 7: Reject 单 hunk。
 func (s *DiffService) RejectHunk(fd FileDiff, hunkIdx int) string {

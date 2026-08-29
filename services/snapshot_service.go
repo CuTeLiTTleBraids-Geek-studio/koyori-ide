@@ -709,7 +709,7 @@ func (s *SnapshotService) restoreFile(fs FileSnapshot, rootAbs string) error {
 	}
 	targetPath := filepath.Join(rootAbs, fs.Path)
 	// G-SEC-06: 验证目标路径在工作区内
-	if _, err := ValidatePathWithinRoot(rootAbs, targetPath); err != nil {
+	if _, err := ValidateMutatingPathWithinRoot(rootAbs, targetPath); err != nil {
 		return fmt.Errorf("path validation failed for %s: %w", fs.Path, err)
 	}
 	// 确保父目录存在

@@ -15,6 +15,7 @@ type ServiceSet struct {
 	Settings      *services.SettingsService
 	Terminal      *services.TerminalService
 	Search        *services.SearchService
+	Agent         *services.AgentService
 	AI            *services.AIService
 	LSP           *services.LSPService
 	LanguagePacks *services.LanguagePackService
@@ -26,6 +27,6 @@ type ServiceSet struct {
 	Window        *services.WindowService
 	HTTPClient    *services.HTTPClientService
 	ExecJS        func(string)
-	ExecAIJS      func(string)
+	ExecAIJS      func(string) bool
 	CloseWindow   func()
 }

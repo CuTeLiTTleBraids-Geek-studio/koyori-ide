@@ -7,11 +7,14 @@ package services
 // 中注入到 AIGoalService / AIPlanService，当参数为 nil 时自动回退使用。
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 )
 
 // defaultSecurityChecker 用 AgentService.CheckCommand 实现 SecurityChecker。
@@ -110,7 +113,7 @@ func parseStepCommandArgs(args string) (string, error) {
 	return parsed.Command, nil
 }
 
-func (e *defaultStepExecutor) Execute(tool, args string) (string, error) {
+func (e *defaultStepExecutor) Execute(planID string, _ int, tool, args string) (string, error) {
 	if strings.TrimSpace(tool) == "" {
 		return "", fmt.Errorf("unsupported step tool %q: tool is required: %w", tool, ErrInvalidInput)
 	}
@@ -146,17 +149,14 @@ func (e *defaultStepExecutor) Execute(tool, args string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Plan approval is not command approval. The internal executor must still
-	// obtain a backend-issued, single-use capability for the exact argv/cwd.
-	token, err := e.agent.RequestCommandApproval(cmd, root)
+	result, err := e.agent.executeInternalAgentTool(
+		context.Background(), e.agent.executionSessionID(agentcore.SessionPlan, planID), "run",
+		map[string]interface{}{"command": cmd, "cwd": root},
+	)
 	if err != nil {
 		return "", err
 	}
-	result, err := e.agent.ExecuteApprovedCommand(cmd, root, token)
-	if err != nil {
-		return "", err
-	}
-	return result.Stdout, nil
+	return result.Observation, nil
 }
 
 // defaultGoalExecutor 用 AgentService 实现 GoalExecutor（简化版）。
@@ -188,60 +188,61 @@ func (e *defaultGoalExecutor) requireRoot() (string, error) {
 }
 
 func (e *defaultGoalExecutor) Plan(goal *Goal) (string, error) {
-	// 简化实现：返回基于 goal.Description 的固定规划。
-	// 完整实现应调用 AIService 让 AI 生成步骤。
-	return fmt.Sprintf("Plan for goal %q: analyze requirements, execute steps, verify", goal.Description), nil
+	if _, err := e.requireRoot(); err != nil {
+		return "", err
+	}
+	steps, reason, err := generateCatalogPlan(context.Background(), e.agent, goal.Description, goal.SuccessCriteria)
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(map[string]interface{}{"steps": steps, "reason": reason})
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
 }
 
 func (e *defaultGoalExecutor) Execute(goal *Goal, steps string) (GoalRoundResult, error) {
 	if e.agent == nil {
 		return GoalRoundResult{}, fmt.Errorf("agent service not injected: %w", ErrInvalidInput)
 	}
-	// 执行一个跨平台的无害命令来证明 executor 可用。
-	// "echo" 在 Windows 上不是独立可执行文件（需要 cmd /c），
-	// 使用 AgentService 内置的 echo 兼容处理或改用 go env 命令。
-	cmd := "go env GOOS"
-	root, err := e.requireRoot()
-	if err != nil {
+	if _, err := e.requireRoot(); err != nil {
 		return GoalRoundResult{Error: err.Error()}, err
 	}
-	token, err := e.agent.RequestCommandApproval(cmd, root)
-	if err != nil {
-		return GoalRoundResult{Error: err.Error()}, err
+	parsed := parsePlanSteps(steps)
+	if len(parsed) == 0 {
+		return GoalRoundResult{Success: false, Note: "empty plan; no invented steps"}, nil
 	}
-	result, err := e.agent.ExecuteApprovedCommand(cmd, root, token)
+	step := parsed[0]
+	if goal != nil && goal.Iteration > 0 && goal.Iteration <= len(parsed) {
+		step = parsed[goal.Iteration-1]
+	}
+	result, err := executePlanStep(e.agent, goal.ID, step.Tool, step.Args)
 	if err != nil {
-		return GoalRoundResult{Error: err.Error()}, err
+		return GoalRoundResult{Error: err.Error(), Note: err.Error()}, err
+	}
+	done, blocked, note := evaluateGoalOutcome(goal, result.Observation)
+	if blocked {
+		return GoalRoundResult{Success: false, Note: note, Error: note}, fmt.Errorf("%s: %w", note, ErrNotAllowed)
 	}
 	return GoalRoundResult{
-		Success:  result.ExitCode == 0,
-		Snapshot: "",
-		Note:     fmt.Sprintf("executed step for goal %q", goal.ID),
+		Success: done,
+		Note:    note + "\n" + result.Observation,
 	}, nil
 }
 
 func (e *defaultGoalExecutor) Evaluate(goal *Goal) (bool, error) {
-	// 简化实现：不自动判定达成。完整实现应调用 AIService 评估。
-	return false, nil
-}
-
-// IsPrototype implements PrototypeExecutor (GOAL-P0-04A).
-//
-// This executor is scaffolding, not an autonomous coding loop: Plan returns a
-// fixed sentence built from the goal description, Execute ignores that plan and
-// always runs `go env GOOS`, and Evaluate always reports "not achieved". Driving
-// it automatically would show the user goal iterations that cannot possibly
-// accomplish their goal, so AIGoalService refuses to run it unless the user
-// explicitly opts into prototype execution.
-func (e *defaultGoalExecutor) IsPrototype() bool { return true }
-
-// PrototypeLimitation implements PrototypeExecutor (GOAL-P0-04A). The text is
-// shown verbatim in the UI so the product surface cannot overstate what this
-// executor does.
-func (e *defaultGoalExecutor) PrototypeLimitation() string {
-	return "The built-in Goal executor is a prototype: it plans with a fixed " +
-		"sentence, always runs `go env GOOS` regardless of that plan, and never " +
-		"evaluates your success criteria. It cannot complete real coding goals."
+	if goal == nil {
+		return false, nil
+	}
+	goal.mu.Lock()
+	defer goal.mu.Unlock()
+	if len(goal.Checkpoints) == 0 {
+		return false, nil
+	}
+	last := goal.Checkpoints[len(goal.Checkpoints)-1]
+	done, _, _ := evaluateGoalOutcome(goal, last.Note)
+	return done, nil
 }
 
 // NewDefaultSecurityChecker 创建默认 SecurityChecker。

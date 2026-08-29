@@ -267,13 +267,12 @@ func TestDefaultSystemPrompt_MentionsNoLineNumbers(t *testing.T) {
 	}
 }
 
-func TestAgentSystemPrompt_MentionsObservationFeedback(t *testing.T) {
+func TestAgentSystemPrompt_MentionsNativeToolResults(t *testing.T) {
 	lower := strings.ToLower(AgentSystemPrompt)
-	if !strings.Contains(lower, "observation") {
-		t.Error("AgentSystemPrompt should mention [Observation] feedback format")
-	}
-	if !strings.Contains(lower, "rejection") {
-		t.Error("AgentSystemPrompt should mention [Rejection] feedback format")
+	for _, phrase := range []string{"native", "tool result", "approval", "execution"} {
+		if !strings.Contains(lower, phrase) {
+			t.Errorf("AgentSystemPrompt should mention %q", phrase)
+		}
 	}
 }
 
@@ -523,18 +522,17 @@ func TestAgentSystemPrompt_N66_HasInjectionGuardrails(t *testing.T) {
 	}
 }
 
-// N-70: AgentSystemPrompt should include few-shot examples for tool use
-// (read, write, run, search) so the model emits the correct format.
-func TestAgentSystemPrompt_N70_HasFewShotToolUseExamples(t *testing.T) {
+// N-70: AgentSystemPrompt must describe native tool use as the primary
+// protocol. Fenced calls remain a clearly marked compatibility fallback.
+func TestAgentSystemPrompt_N70_NativeToolUseIsPrimary(t *testing.T) {
 	lower := strings.ToLower(AgentSystemPrompt)
-	if !strings.Contains(lower, "example 1") || !strings.Contains(lower, "example 2") {
-		t.Error("N-70: AgentSystemPrompt should have at least 2 few-shot examples")
-	}
-	// Each tool verb should appear in an example.
-	for _, verb := range []string{"read:", "write:", "run:", "search:"} {
-		if !strings.Contains(lower, verb) {
-			t.Errorf("N-70: AgentSystemPrompt should include example with %q", verb)
+	for _, phrase := range []string{"native", "function/tool-calling", "declared in the request", "compatibility fallback"} {
+		if !strings.Contains(lower, phrase) {
+			t.Errorf("N-70: AgentSystemPrompt should contain %q", phrase)
 		}
+	}
+	if strings.Contains(lower, "emit a fenced") {
+		t.Error("N-70: AgentSystemPrompt must not instruct fenced calls as the primary protocol")
 	}
 }
 
