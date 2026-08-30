@@ -1090,12 +1090,12 @@ func (s *MCPService) Close() error {
 // follows the mcp.<server>.<tool> namespace (Step 6). Approval remains a
 // backend session-level decision; RiskLevel is execution metadata.
 type AgentMCPTool struct {
-	Namespace    string                 `json:"namespace"` // mcp.<server>.<tool>
-	Server       string                 `json:"server"`
-	Tool         string                 `json:"tool"`
-	Description  string                 `json:"description"`
-	InputSchema  map[string]interface{} `json:"inputSchema"`
-	RiskLevel    RiskLevel              `json:"riskLevel"`
+	Namespace   string                 `json:"namespace"` // mcp.<server>.<tool>
+	Server      string                 `json:"server"`
+	Tool        string                 `json:"tool"`
+	Description string                 `json:"description"`
+	InputSchema map[string]interface{} `json:"inputSchema"`
+	RiskLevel   RiskLevel              `json:"riskLevel"`
 }
 
 // ListAgentMCPTools returns all tools from all connected MCP servers,
@@ -1128,12 +1128,12 @@ func (s *MCPService) ListAgentMCPTools(ctx context.Context) ([]AgentMCPTool, err
 		for _, t := range serverTools {
 			risk := ClassifyMCPToolRisk(t.Name, t.Description)
 			tools = append(tools, AgentMCPTool{
-				Namespace:    fmt.Sprintf("mcp.%s.%s", server, t.Name),
-				Server:       server,
-				Tool:         t.Name,
-				Description:  t.Description,
-				InputSchema:  t.InputSchema,
-				RiskLevel:    risk,
+				Namespace:   fmt.Sprintf("mcp.%s.%s", server, t.Name),
+				Server:      server,
+				Tool:        t.Name,
+				Description: t.Description,
+				InputSchema: t.InputSchema,
+				RiskLevel:   risk,
 			})
 		}
 		if err := lease.validateCurrent(); err != nil {

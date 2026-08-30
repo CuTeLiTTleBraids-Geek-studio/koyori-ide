@@ -1348,7 +1348,6 @@ func (s *AgentService) approveSkillAgentTool(request agentcore.ApprovalRequest, 
 	return approveSkill(skill), nil
 }
 
-
 func isValidSkillFingerprint(value string) bool {
 	if len(value) != sha256.Size*2 {
 		return false

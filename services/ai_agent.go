@@ -182,7 +182,7 @@ func aiConfigFingerprint(config AIConfig) string {
 		ConfigID: config.ConfigID, Provider: config.Provider, BaseURL: config.BaseURL, Protocol: config.Protocol,
 		Model: config.Model, SystemPrompt: config.SystemPrompt,
 		CredentialHash: hex.EncodeToString(credentialHash[:]),
-		MaxTokens: config.MaxTokens, ContextWindow: config.ContextWindow, Temperature: config.Temperature,
+		MaxTokens:      config.MaxTokens, ContextWindow: config.ContextWindow, Temperature: config.Temperature,
 		ReasoningEffort: config.ReasoningEffort,
 	})
 	sum := sha256.Sum256(encoded)

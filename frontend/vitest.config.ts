@@ -22,6 +22,9 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     css: true,
+    // P19 CI 修复：默认桩掉 @wailsio/runtime（阻断 drag.js 的
+    // window.setInterval 泄漏），见 test-setup/vitest.setup.ts。
+    setupFiles: ["./test-setup/vitest.setup.ts"],
     // N-130: coverage configuration. Run with `npm run test:coverage`.
     // Reports go to frontend/coverage/. v8 provider requires no extra deps.
     coverage: {

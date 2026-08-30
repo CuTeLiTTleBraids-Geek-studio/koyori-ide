@@ -637,7 +637,9 @@ describe("GitPanel", () => {
     expect(diffStub.props("staged")).toBe(false);
   });
 
-  it("truncation offers a continuation action that extends the visible window (P1-04)", async () => {
+  // jsdom 渲染 1000 行变更接近 vitest 默认 5s 超时，在负载高的机器上会
+  // 间歇性超时（断言本身不变，仅放宽该用例的时间预算）。
+  it("truncation offers a continuation action that extends the visible window (P1-04)", { timeout: 20000 }, async () => {
     gitState.changes = Array.from({ length: 1000 }, (_, i) => ({
       path: `f${i}.txt`,
       status: "Modified",

@@ -642,11 +642,11 @@ func (s *ComputerUseService) requestOperationApproval(action, details string, re
 	}
 	now := s.currentTime()
 	approval := computerUseApproval{
-		action: action,
-		details: canonicalDetails,
+		action:           action,
+		details:          canonicalDetails,
 		configGeneration: generation,
-		expiresAt: now.Add(computerUseApprovalTTL),
-		confirmedByUser: confirmedByUser,
+		expiresAt:        now.Add(computerUseApprovalTTL),
+		confirmedByUser:  confirmedByUser,
 	}
 	for attempts := 0; attempts < 4; attempts++ {
 		token, err := newComputerUseApprovalToken()

@@ -1327,7 +1327,6 @@ func TestMCPService_LoadConfigIgnoresLegacyAutoApprove(t *testing.T) {
 	}
 }
 
-
 // TestMCPService_SecretsEncryptedOnDisk verifies G-SEC-07: Header/Env
 // secrets are encrypted on disk (not stored as plaintext).
 func TestMCPService_SecretsEncryptedOnDisk(t *testing.T) {
@@ -1466,7 +1465,6 @@ func TestMCPService_SaveServer_AllTransports(t *testing.T) {
 		t.Fatalf("expected 3 servers, got %d", len(servers))
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // ConnectServer requires Enabled=true (G-SEC-12)

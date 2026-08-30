@@ -62,10 +62,10 @@ func TestComputerUseCatalogAppearsWhenEnabled(t *testing.T) {
 
 func TestComputerUseAgentHonorsSessionPermissionMode(t *testing.T) {
 	for _, test := range []struct {
-		name          string
-		mode          agentcore.SessionPermissionMode
-		confirm       bool
-		wantPlatform  bool
+		name         string
+		mode         agentcore.SessionPermissionMode
+		confirm      bool
+		wantPlatform bool
 	}{
 		{name: "always ask", mode: agentcore.SessionPermissionAlwaysAsk, confirm: false, wantPlatform: false},
 		{name: "assist", mode: agentcore.SessionPermissionAssist, confirm: false, wantPlatform: false},
