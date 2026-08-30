@@ -1336,12 +1336,29 @@ func redactAgentWorkspaceText(agent *AgentService, value string) string {
 	if root == "." || root == "" {
 		return value
 	}
-	value = strings.ReplaceAll(value, root, "<workspace>")
-	slashedRoot := filepath.ToSlash(root)
-	if slashedRoot != root {
-		value = strings.ReplaceAll(value, slashedRoot, "<workspace>")
+	// 覆盖同一目录的多种字符串形态：规范形态（符号链接/8.3 短名已解析）
+	// 与调用方传入的原始拼写（WorkspaceContext.InputRoots）。在 CI 的
+	// Windows 短名 TEMP / macOS /var 前缀环境下两者不同，漏掉任一都会
+	// 把工作区路径泄漏进审计日志。
+	spellings := []string{root}
+	agent.mu.Lock()
+	workspace := agent.workspaceContext
+	agent.mu.Unlock()
+	if workspace != nil {
+		spellings = append(spellings, workspace.InputRoots()...)
 	}
-	return value
+	replaced := value
+	for _, spelling := range spellings {
+		if spelling == "" || spelling == "." {
+			continue
+		}
+		replaced = strings.ReplaceAll(replaced, spelling, "<workspace>")
+		slashed := filepath.ToSlash(spelling)
+		if slashed != spelling {
+			replaced = strings.ReplaceAll(replaced, slashed, "<workspace>")
+		}
+	}
+	return replaced
 }
 
 type redactedAgentWorkspaceError struct {

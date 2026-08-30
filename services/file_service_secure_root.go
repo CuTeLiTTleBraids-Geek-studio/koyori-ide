@@ -407,6 +407,14 @@ func secureRelativePath(root, target string) (string, string, bool) {
 	if err != nil {
 		return "", "", false
 	}
+	// P19 CI 修复：目标与根须在同一解析形态下做 Rel。根在 newSecureWorkspace
+	// 已规范化（符号链接/8.3 短名已展开），而调用方传入的目标可能是原始拼写
+	//（Windows 短名 TEMP、macOS /var 前缀）；纯词法比较会把同一目录判为越界。
+	// 与 ValidatePathWithinRoot 相同，这里对目标做同等解析；符号链接逃逸仍由
+	// 后续 os.Root 组件遍历强制。
+	if resolved, resolveErr := evalSymlinksAllowMissing(targetAbs); resolveErr == nil {
+		targetAbs = resolved
+	}
 	relative, err := filepath.Rel(rootAbs, targetAbs)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return "", "", false

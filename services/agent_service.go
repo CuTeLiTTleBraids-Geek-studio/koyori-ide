@@ -506,6 +506,12 @@ func validateAgentWorkspaceRoot(root string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("workspace root is not a directory: %s", abs)
 	}
+	// P19 CI 修复：与 WorkspaceContext/FileService 安全根一致地规范化（Windows
+	// 8.3 短名、macOS /var 符号链接前缀）。否则 agent 侧以原始拼写拼接工具
+	// 路径，而安全根是解析后的形态，容器判断与审计脱敏会在 CI 环境失效。
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = filepath.Clean(resolved)
+	}
 	return abs, nil
 }
 

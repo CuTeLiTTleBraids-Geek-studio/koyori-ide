@@ -82,6 +82,12 @@ func (s *SearchService) setWorkspaceRoot(root string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("workspace root is not a directory: %s", abs)
 	}
+	// 与 setWorkspaceRoots/canonicalizeExistingWorkspaceRoots 保持同一规范化
+	// 形态（Windows 8.3 短名、符号链接前缀），避免单根与多根模式容器行为
+	// 随路径拼写漂移。
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = filepath.Clean(resolved)
+	}
 	s.mu.Lock()
 	s.workspaceRoot = abs
 	s.workspaceRoots = nil

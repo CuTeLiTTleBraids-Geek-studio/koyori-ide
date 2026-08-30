@@ -88,7 +88,15 @@ func captureMCPExecutableIdentity(root, raw string) (*mcpExecutableIdentity, err
 			return nil, fmt.Errorf("MCP workspace root identity changed: %w", ErrNotAllowed)
 		}
 		identity.rootIdentity = boundRoot
-		relative, relErr := filepath.Rel(root, path)
+		// P19 CI 修复：root 与 path 须在同一解析形态下做 Rel。path 在
+		// resolveMCPStdioCommand 已经过 EvalSymlinks（Windows 8.3 短名 /
+		// 符号链接前缀展开），root 仍是调用方原始拼写，纯词法 Rel 会把
+		// 同一目录误判为越界。
+		rootResolved := root
+		if resolvedRoot, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+			rootResolved = filepath.Clean(resolvedRoot)
+		}
+		relative, relErr := filepath.Rel(rootResolved, path)
 		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return nil, fmt.Errorf("MCP executable left workspace root: %w", ErrNotAllowed)
 		}
