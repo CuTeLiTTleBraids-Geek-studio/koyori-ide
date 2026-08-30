@@ -31,7 +31,7 @@ func newGitRebaseTestService(
 }
 
 func TestGitRebaseServiceGetTodoListParsesOldestFirstMetadata(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalTestPath(t, t.TempDir())
 	gitDir := filepath.Join(repo, ".git")
 	if err := os.Mkdir(gitDir, 0o755); err != nil {
 		t.Fatal(err)

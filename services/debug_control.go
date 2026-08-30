@@ -332,14 +332,6 @@ func (d *DebugService) Pause() error {
 	return err
 }
 
-func (d *DebugService) step(cmd string) error {
-	owner := d.activeSession()
-	if owner == nil {
-		return fmt.Errorf("no debug session")
-	}
-	return d.stepSession(owner, cmd)
-}
-
 func (d *DebugService) stepSession(owner *DebugSession, cmd string) error {
 	return d.stepSessionWithArgs(owner, cmd, nil)
 }

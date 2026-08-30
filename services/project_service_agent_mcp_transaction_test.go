@@ -45,8 +45,8 @@ func newProjectAgentMCPWiring(t *testing.T, root string) (*ProjectService, *Work
 // exercises the same trusted wiring used by the application rather than a
 // stand-alone fake setter.
 func TestProjectServiceWorkspaceSwitchDefersAgentCatalogUntilRootsCommit(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	project, workspace, agent, mcp := newProjectAgentMCPWiring(t, rootA)
 	if _, err := project.AddProject(rootB); err != nil {
 		t.Fatalf("AddProject with trusted Agent/MCP/Skills wiring: %v", err)
@@ -73,8 +73,8 @@ func TestProjectServiceWorkspaceSwitchDefersAgentCatalogUntilRootsCommit(t *test
 }
 
 func TestProjectServiceWorkspaceSwitchDefersAgentCatalogAcrossRollback(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	project, workspace, agent, mcp := newProjectAgentMCPWiring(t, rootA)
 	saveErr := errors.New("injected project ledger failure")
 	project.beforeSave = func([]Project) error { return saveErr }

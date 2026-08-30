@@ -1286,7 +1286,14 @@ func secureGitRebaseDirectory(
 }
 
 func gitRebasePathInside(root, target string) (bool, error) {
-	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
+	// P19 CI 修复：root 与 target 须在同一解析形态下比较。target 已经过
+	// EvalSymlinks（macOS /var → /private/var、Windows 8.3 短名展开），
+	// root 仍是调用方原始拼写，纯词法 Rel 会把同一目录判为逃逸。
+	root = filepath.Clean(root)
+	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+		root = filepath.Clean(resolved)
+	}
+	relative, err := filepath.Rel(root, filepath.Clean(target))
 	if err != nil {
 		return false, fmt.Errorf("compare git administrative paths: %w", err)
 	}

@@ -3,7 +3,6 @@
 package services
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,6 +213,6 @@ func waitForLSPChildPID(t *testing.T, path string) int {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal(fmt.Sprintf("timed out waiting for child PID file %s", path))
+	t.Fatalf("timed out waiting for child PID file %s", path)
 	return 0
 }

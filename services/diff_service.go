@@ -723,7 +723,7 @@ func parseUnifiedDiff(diffText, oldContent, newContent string) []Hunk {
 func parseHunkHeader(line string) Hunk {
 	// 格式: @@ -1,5 +1,7 @@
 	var oldStart, oldCount, newStart, newCount int
-	fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &oldStart, &oldCount, &newStart, &newCount)
+	_, _ = fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &oldStart, &oldCount, &newStart, &newCount)
 	if oldCount == 0 {
 		oldCount = 1
 	}

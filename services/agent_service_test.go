@@ -536,7 +536,7 @@ func TestExecCommand_BlockedByDenylist_ForkBomb(t *testing.T) {
 
 func TestSetWorkspaceRoot_DefaultsCwd(t *testing.T) {
 	svc := NewAgentService()
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	if err := svc.configureWorkspaceRoot(root); err != nil {
 		t.Fatalf("SetWorkspaceRoot failed: %v", err)
 	}
@@ -618,7 +618,7 @@ func TestSetWorkspaceRoot_NotADirectory(t *testing.T) {
 
 func TestExecCommand_CwdInsideWorkspace_Succeeds(t *testing.T) {
 	svc := NewAgentService()
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	svc.configureWorkspaceRoot(root)
 	// HIGH-03: use `go version` — a standalone executable on all
 	// platforms. Shell builtins (echo, cd) are no longer available since

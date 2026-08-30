@@ -834,7 +834,7 @@ func (c *CoverageService) ParseCoverProfile(profilePath string) ([]CoverageHit, 
 	sc := bufio.NewScanner(f)
 	// skip mode line
 	if sc.Scan() {
-		// mode: set
+		_ = sc.Text() // 跳过 mode 行
 	}
 	for sc.Scan() {
 		line := sc.Text()

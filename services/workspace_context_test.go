@@ -28,7 +28,7 @@ func TestWorkspaceContext_SetCanonicalizesAndBumpsGeneration(t *testing.T) {
 		t.Fatalf("fresh context generation = %d, want 0", gen)
 	}
 
-	dir := t.TempDir()
+	dir := canonicalTestPath(t, t.TempDir())
 	// Feed a non-canonical form to prove Set normalizes rather than storing raw input.
 	if err := ctx.Set(filepath.Join(dir, "sub", "..")); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -178,7 +178,7 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 	}
 
 	// Open workspace A through the real entry point.
-	workspaceA := t.TempDir()
+	workspaceA := canonicalTestPath(t, t.TempDir())
 	if _, err := g.project.AddProject(workspaceA); err != nil {
 		t.Fatalf("AddProject(A): %v", err)
 	}
@@ -234,7 +234,7 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 	}
 
 	// AC: switching to B replaces the root everywhere and invalidates generation A.
-	workspaceB := t.TempDir()
+	workspaceB := canonicalTestPath(t, t.TempDir())
 	if _, err := g.project.AddProject(workspaceB); err != nil {
 		t.Fatalf("AddProject(B): %v", err)
 	}
@@ -269,7 +269,7 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 func TestWorkspaceContextRollbackKeepsSingleWorkspace(t *testing.T) {
 	g := newWorkspaceIntegrationGraph(t)
 
-	workspaceA := t.TempDir()
+	workspaceA := canonicalTestPath(t, t.TempDir())
 	if _, err := g.project.AddProject(workspaceA); err != nil {
 		t.Fatalf("AddProject(A): %v", err)
 	}

@@ -377,9 +377,7 @@ func resolveTemplate(tmpl string, results map[string]*WorkflowStepResult) string
 	tmpl = strings.TrimSpace(tmpl)
 	if strings.HasPrefix(tmpl, "{{") && strings.HasSuffix(tmpl, "}}") {
 		inner := strings.TrimSpace(tmpl[2 : len(tmpl)-2])
-		if strings.HasPrefix(inner, ".") {
-			inner = inner[1:]
-		}
+		inner = strings.TrimPrefix(inner, ".")
 		// 解析 StepName.Status
 		parts := strings.SplitN(inner, ".", 2)
 		if len(parts) == 2 {

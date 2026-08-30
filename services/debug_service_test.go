@@ -132,7 +132,9 @@ func TestDebugService_ListSessionsReleasesRegistryBeforeSessionSnapshot(t *testi
 
 	registryAvailable := make(chan struct{})
 	go func() {
+		// 等待锁可用，确认旧持有者已释放。
 		d.sessionsMu.Lock()
+		_ = len(d.sessions)
 		d.sessionsMu.Unlock()
 		close(registryAvailable)
 	}()

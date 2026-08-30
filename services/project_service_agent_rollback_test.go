@@ -30,10 +30,12 @@ func (s *projectRollbackMCPSetter) setWorkspaceRoot(root string) error {
 	if s.beforeReturn != nil {
 		s.beforeReturn(root)
 	}
-	if s.err != nil && root == s.failRoot {
+	// 工作区根在进入 setter 前已规范化（符号链接/8.3 短名解析），注入的
+	// failRoot/restoreRoot 是测试传入的原始拼写，二者须按路径身份比较。
+	if s.err != nil && sameWorkspaceIdentityPath(root, s.failRoot) {
 		return s.err
 	}
-	if s.restoreErr != nil && root == s.restoreRoot {
+	if s.restoreErr != nil && sameWorkspaceIdentityPath(root, s.restoreRoot) {
 		return s.restoreErr
 	}
 	return nil
@@ -50,7 +52,8 @@ type projectRollbackClearMCPSetter struct {
 
 func (s *projectRollbackClearMCPSetter) setWorkspaceRoot(root string) error {
 	s.root = root
-	if s.setErr != nil && root == s.failSetRoot {
+	// 注入的 failSetRoot 是原始拼写；进入 setter 的根已规范化，按路径身份比较。
+	if s.setErr != nil && sameWorkspaceIdentityPath(root, s.failSetRoot) {
 		return s.setErr
 	}
 	return nil
@@ -80,7 +83,8 @@ func (s *projectRollbackBlockingMCPSetter) setWorkspaceRoot(root string) error {
 	s.mu.Lock()
 	s.root = root
 	s.mu.Unlock()
-	if root != s.failRoot {
+	// 注入的 failRoot 是原始拼写；进入 setter 的根已规范化，按路径身份比较。
+	if !sameWorkspaceIdentityPath(root, s.failRoot) {
 		return nil
 	}
 	s.once.Do(func() { close(s.entered) })
@@ -130,8 +134,8 @@ func (p *projectRollbackPersistence) Save(rows []agentcore.Session) (agentcore.P
 }
 
 func TestProjectServiceRollbackPreservesAgentLifecycleAuthority(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	if err := WireAgentExecutionCore(agent, nil, nil, nil, nil, NewAIPermissionService(t.TempDir())); err != nil {
@@ -266,9 +270,9 @@ func TestProjectServiceAdapterRollbackFailurePoisonsAgentAuthority(t *testing.T)
 }
 
 func TestProjectServiceMultiRootAdapterRollbackFailurePoisonsAgentAuthority(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	rootC := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
+	rootC := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	permission := NewAIPermissionService(t.TempDir())
@@ -325,8 +329,8 @@ func TestProjectServiceMultiRootAdapterRollbackFailurePoisonsAgentAuthority(t *t
 }
 
 func TestProjectServiceWorkspaceAuthorityPrecedesFirstSetter(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	workspace := NewWorkspaceContext()
 	if err := workspace.Set(rootA); err != nil {
 		t.Fatalf("set workspace context: %v", err)
@@ -416,8 +420,8 @@ func TestProjectServiceWorkspaceAuthorityPrecedesFirstSetter(t *testing.T) {
 }
 
 func TestProjectServiceWorkspaceAuthorityHeldThroughSnapshotPublication(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	workspace := NewWorkspaceContext()
 	if err := workspace.Set(rootA); err != nil {
 		t.Fatalf("set workspace context: %v", err)
@@ -614,9 +618,9 @@ func TestProjectServiceClearAuthorityPrecedesFirstSetter(t *testing.T) {
 }
 
 func TestProjectServiceMultiRootAgentBeginFailureDoesNotReenterWorkspaceAuthority(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	rootC := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
+	rootC := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	persistenceErr := errors.New("injected lifecycle close rejection")
@@ -680,8 +684,8 @@ func TestProjectServiceMultiRootAgentBeginFailureDoesNotReenterWorkspaceAuthorit
 }
 
 func TestProjectServiceLoadFailureRestoresAgentLifecycleAuthority(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	permission := NewAIPermissionService(t.TempDir())
@@ -733,8 +737,8 @@ func TestProjectServiceLoadFailureRestoresAgentLifecycleAuthority(t *testing.T) 
 }
 
 func TestProjectServiceSaveFailureRestoresAgentLifecycleAuthority(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	permission := NewAIPermissionService(t.TempDir())
@@ -786,7 +790,7 @@ func TestProjectServiceSaveFailureRestoresAgentLifecycleAuthority(t *testing.T) 
 }
 
 func TestProjectServiceSingleRootMultiProjectUsesOneTransactionalSave(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	secondSaveErr := errors.New("unexpected second project ledger save")
 	saveCalls := 0
 	service := &ProjectService{
@@ -812,8 +816,8 @@ func TestProjectServiceSingleRootMultiProjectUsesOneTransactionalSave(t *testing
 }
 
 func TestProjectServiceRollbackSerializesChatExecutionAndBurnsOutstandingCapability(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	if err := os.WriteFile(filepath.Join(rootA, "note.txt"), []byte("workspace-a"), 0o600); err != nil {
 		t.Fatalf("seed workspace A: %v", err)
 	}
@@ -1127,8 +1131,8 @@ func TestProjectServiceSkillRollbackIdentityFailurePoisonsAuthority(t *testing.T
 }
 
 func TestProjectServiceRollbackSerializesSessionOwnerPublication(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	permission := NewAIPermissionService(t.TempDir())
@@ -1327,9 +1331,9 @@ func TestProjectServiceRollbackSerializesSessionOwnerRemoval(t *testing.T) {
 }
 
 func TestProjectServiceMultiRootRollbackPreservesAgentLifecycleAuthority(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	rootC := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
+	rootC := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	if err := WireAgentExecutionCore(agent, nil, nil, nil, nil, NewAIPermissionService(t.TempDir())); err != nil {
@@ -1391,8 +1395,8 @@ func TestProjectServiceMultiRootRollbackPreservesAgentLifecycleAuthority(t *test
 }
 
 func TestProjectServiceAgentLifecycleRollbackFailurePoisonsAuthority(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	if err := WireAgentExecutionCore(agent, nil, nil, nil, nil, NewAIPermissionService(t.TempDir())); err != nil {
@@ -1464,7 +1468,7 @@ func TestProjectServiceAgentLifecycleRollbackFailurePoisonsAuthority(t *testing.
 }
 
 func TestProjectServiceClearRollbackPreservesAgentLifecycleAuthority(t *testing.T) {
-	rootA := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	if err := WireAgentExecutionCore(agent, nil, nil, nil, nil, NewAIPermissionService(t.TempDir())); err != nil {
@@ -1597,7 +1601,7 @@ func TestProjectServiceClearRollbackFailurePoisonsAgentAuthority(t *testing.T) {
 }
 
 func TestProjectServiceRemoveSavesInsideReversibleWorkspaceClear(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	workspace := NewWorkspaceContext()
 	if err := workspace.Set(root); err != nil {
 		t.Fatalf("set workspace context: %v", err)

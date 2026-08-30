@@ -245,7 +245,13 @@ func shouldFallbackAgentOperation(ctx context.Context, err error) bool {
 		return true
 	}
 	var networkErr net.Error
-	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary())
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+	// networkErr.Temporary() 自 Go 1.18 起废弃；DNS 的可重试语义改用其
+	// 结构体字段 IsTemporary 判定，其余连接级失败已由 net.OpError 分支覆盖。
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsTemporary
 }
 
 func (a *AIService) sendWithAgentConfig(ctx context.Context, config AIConfig, messages []ChatMessage) (*ChatResponse, error) {

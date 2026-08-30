@@ -148,7 +148,7 @@ func NewLocalWorkspaceRef(workspaceID string, generation uint64, nonce string) (
 }
 
 func (r WorkspaceRef) Scope() WorkspaceScope {
-	return WorkspaceScope{r.HostID, r.WorkspaceID, r.Generation, r.HostInstanceNonce, r.URI}
+	return WorkspaceScope(r)
 }
 
 func (r WorkspaceRef) Validate() error {

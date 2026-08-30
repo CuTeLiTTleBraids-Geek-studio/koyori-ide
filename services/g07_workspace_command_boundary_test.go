@@ -244,8 +244,8 @@ func TestG07DebugValidatesEveryWorkspacePathAndExplicitExecutable(t *testing.T) 
 }
 
 func TestG07WorkspaceLeaseResolvesRelativePathsAndExpires(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	child := filepath.Join(rootA, "src")
 	if err := os.Mkdir(child, 0o700); err != nil {
 		t.Fatal(err)

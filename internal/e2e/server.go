@@ -2378,11 +2378,11 @@ func (s *server) runSingleAgentToolRoundProbe(
 	probeSettings.AIProvider = "openai"
 	probeSettings.Temperature = 0
 	probeSettings.MaxTokens = 128
-    if spec.ApprovalMode == "auto-approve" {
-        probeSettings.AgentPermissionMode = "assist"
-    } else {
-        probeSettings.AgentPermissionMode = "always-ask"
-    }
+	if spec.ApprovalMode == "auto-approve" {
+		probeSettings.AgentPermissionMode = "assist"
+	} else {
+		probeSettings.AgentPermissionMode = "always-ask"
+	}
 	expectedVersion := originalSettings.Version
 	probeSettings.ExpectedVersion = &expectedVersion
 	if err := s.services.Settings.SaveSettings(probeSettings); err != nil {

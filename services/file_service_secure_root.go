@@ -42,18 +42,18 @@ func newSecureWorkspace(paths []string) (*secureWorkspace, error) {
 	for _, path := range paths {
 		absolute, err := canonicalSecureRoot(path)
 		if err != nil {
-			workspace.close()
+			_ = workspace.close()
 			return nil, err
 		}
 		root, err := os.OpenRoot(absolute)
 		if err != nil {
-			workspace.close()
+			_ = workspace.close()
 			return nil, fmt.Errorf("open workspace root %q: %w", absolute, err)
 		}
 		identity, err := root.Stat(".")
 		if err != nil {
 			_ = root.Close()
-			workspace.close()
+			_ = workspace.close()
 			return nil, fmt.Errorf("identify workspace root %q: %w", absolute, err)
 		}
 		duplicate := false
@@ -72,7 +72,7 @@ func newSecureWorkspace(paths []string) (*secureWorkspace, error) {
 			resolvedInfo, statErr := os.Stat(resolved)
 			if statErr != nil || !os.SameFile(identity, resolvedInfo) {
 				_ = root.Close()
-				workspace.close()
+				_ = workspace.close()
 				return nil, fmt.Errorf("workspace root changed while binding %q: %w", absolute, ErrNotAllowed)
 			}
 			canonical = filepath.Clean(resolved)

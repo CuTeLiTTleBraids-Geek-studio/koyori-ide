@@ -44,15 +44,6 @@ func remoteTestSession(generation uint64) *SSHSession {
 	}
 }
 
-// skipIfNoSSHServer 跳过依赖真实 SSH 服务器的测试。
-// 当前测试集不使用此 helper（所有测试均为离线测试），保留以便未来扩展。
-func skipIfNoSSHServer(t *testing.T) {
-	t.Helper()
-	if os.Getenv("KOYORI_IDE_SSH_TEST_HOST") == "" {
-		t.Skip("skipping SSH server test; set KOYORI_IDE_SSH_TEST_HOST to enable")
-	}
-}
-
 func TestLocalFileSystem_WatchCancellationClosesChannel(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -668,7 +659,9 @@ func TestRemoteHostKeyDigestStableAndDistinct(t *testing.T) {
 	if got := remoteHostID(keyA.PublicKey()); got != hex.EncodeToString(want[:]) {
 		t.Fatalf("HostID = %q, want SHA-256 of public key marshal bytes", got)
 	}
-	if remoteHostID(keyA.PublicKey()) != remoteHostID(keyA.PublicKey()) {
+	first := remoteHostID(keyA.PublicKey())
+	second := remoteHostID(keyA.PublicKey())
+	if first != second {
 		t.Fatal("same SSH host key produced unstable HostID")
 	}
 	if remoteHostID(keyA.PublicKey()) == remoteHostID(keyB.PublicKey()) {

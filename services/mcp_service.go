@@ -2,8 +2,6 @@ package services
 
 import (
 	"context"
-	crypto_rand "crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -649,79 +647,6 @@ func (s *MCPService) CallTool(ctx context.Context, server, tool string, args map
 //wails:ignore
 func (s *MCPService) RequestToolApproval(ctx context.Context, server, tool string, args map[string]interface{}) (string, error) {
 	return "", fmt.Errorf("use AgentService.RequestAgentToolCapability: %w", ErrInvalidInput)
-}
-
-// requestToolApprovalLegacy is retained only for package-level regression
-// tests of the superseded token format. Renderer execution is deny-only above;
-// production MCP Agent calls use agentcore's shared capability pipeline.
-func (s *MCPService) requestToolApprovalLegacy(ctx context.Context, server, tool string, args map[string]interface{}) (string, error) {
-	if strings.TrimSpace(server) == "" || strings.TrimSpace(tool) == "" {
-		return "", fmt.Errorf("server and tool are required: %w", ErrInvalidInput)
-	}
-	argsBytes, err := json.Marshal(args)
-	if err != nil {
-		return "", fmt.Errorf("encode MCP tool arguments: %w", err)
-	}
-	lease, rootGeneration, err := s.acquireWorkspaceLease()
-	if err != nil {
-		return "", err
-	}
-
-	s.mu.RLock()
-	var cfg *MCPServerConfig
-	for i := range s.config.Servers {
-		if s.config.Servers[i].Name == server {
-			copy := s.config.Servers[i]
-			cfg = &copy
-			break
-		}
-	}
-	_, connected := s.clients[server]
-	lifecycleGeneration := s.lifecycleGeneration
-	s.mu.RUnlock()
-	if cfg == nil || !cfg.Enabled || !connected {
-		return "", fmt.Errorf("MCP server %q is not enabled and connected: %w", server, ErrNotAllowed)
-	}
-
-	tools, err := s.ListTools(ctx, server)
-	if err != nil {
-		return "", err
-	}
-	description := ""
-	found := false
-	for _, candidate := range tools {
-		if candidate.Name == tool {
-			description = candidate.Description
-			found = true
-			break
-		}
-	}
-	if !found {
-		return "", fmt.Errorf("MCP tool %q not found on server %q: %w", tool, server, ErrNotFound)
-	}
-	if s.approveTool == nil || !s.approveTool(server, tool, string(argsBytes), ClassifyMCPToolRisk(tool, description)) {
-		return "", fmt.Errorf("MCP tool call was not approved: %w", ErrNotAllowed)
-	}
-	if err := lease.validateCurrent(); err != nil {
-		return "", err
-	}
-
-	raw := make([]byte, 32)
-	if _, err := crypto_rand.Read(raw); err != nil {
-		return "", fmt.Errorf("create MCP approval token: %w", err)
-	}
-	token := hex.EncodeToString(raw)
-	s.approvalMu.Lock()
-	if s.approvals == nil {
-		s.approvals = make(map[string]mcpToolApproval)
-	}
-	s.approvals[token] = mcpToolApproval{
-		server: server, tool: tool, argsJSON: string(argsBytes),
-		rootGeneration: rootGeneration, lifecycleGeneration: lifecycleGeneration,
-		expiresAt: time.Now().Add(2 * time.Minute),
-	}
-	s.approvalMu.Unlock()
-	return token, nil
 }
 
 // ExecuteApprovedTool consumes a backend-issued capability and invokes the

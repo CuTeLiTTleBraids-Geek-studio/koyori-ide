@@ -226,13 +226,6 @@ func openAgentAuditLogPath(auditPath string) (*os.Root, *os.File, string, error)
 	return root, file, name, nil
 }
 
-// newAgentServiceWithAuditFile takes ownership of a trusted, already-opened
-// audit handle. It is package-private so neither renderer bindings nor tool
-// arguments can select an audit destination.
-func newAgentServiceWithAuditFile(workspaceContext *WorkspaceContext, auditFile *os.File) *AgentService {
-	return newAgentServiceWithAuditDestination(workspaceContext, auditFile, nil, "", false)
-}
-
 func newAgentServiceWithAuditRoot(workspaceContext *WorkspaceContext, auditFile *os.File, auditRoot *os.Root, auditName string) *AgentService {
 	return newAgentServiceWithAuditDestination(workspaceContext, auditFile, auditRoot, auditName, false)
 }
@@ -839,8 +832,33 @@ var shellMetachars = []struct {
 	{')', "subshell syntax () is not supported"},
 	{'{', "brace expansion {} is not supported"},
 	{'}', "brace expansion {} is not supported"},
-	{'~', "home directory expansion (~) is not supported — use the full path"},
 	{'\n', "multi-line commands are not supported — run each command separately"},
+}
+
+// tildeMetacharDesc 保留 ~ 的拒绝语义（home 目录展开），但由
+// rejectTokenLeadingTilde 按位置判定：只有 token 起始处的 ~ 才是 shell
+// home 展开语法；路径中段的 ~ 是合法字符（Windows 8.3 短名，例如
+// C:\Users\RUNNER~1\...），并且命令不经 shell 直接 exec，mid-token 的
+// ~ 对 exec 无任何特殊含义。
+const tildeMetacharDesc = "home directory expansion (~) is not supported — use the full path"
+
+// rejectTokenLeadingTilde rejects ~ at the start of a token (after
+// whitespace or an opening quote) where a shell would expand it to the
+// home directory. Mid-token ~ (Windows 8.3 short names) is allowed.
+func rejectTokenLeadingTilde(command string) error {
+	for i := 0; i < len(command); i++ {
+		if command[i] != '~' {
+			continue
+		}
+		if i == 0 {
+			return fmt.Errorf("unsupported shell syntax: %s", tildeMetacharDesc)
+		}
+		switch command[i-1] {
+		case ' ', '\t', '"', '\'':
+			return fmt.Errorf("unsupported shell syntax: %s", tildeMetacharDesc)
+		}
+	}
+	return nil
 }
 
 // parseCommand splits a command line into an argv slice for direct
@@ -857,6 +875,9 @@ func parseCommand(command string) ([]string, error) {
 		if strings.IndexByte(command, mc.char) >= 0 {
 			return nil, fmt.Errorf("unsupported shell syntax: %s", mc.desc)
 		}
+	}
+	if err := rejectTokenLeadingTilde(command); err != nil {
+		return nil, err
 	}
 	argv, err := shlex.Split(command)
 	if err != nil {
@@ -1029,21 +1050,6 @@ func (s *AgentService) InvalidateMCPCache() {
 //wails:ignore
 func (s *AgentService) CallMCPTool(ctx context.Context, namespace string, args map[string]interface{}) (*MCPToolResult, error) {
 	return nil, fmt.Errorf("backend MCP approval token required: %w", ErrInvalidInput)
-}
-
-func (s *AgentService) callMCPTool(ctx context.Context, namespace string, args map[string]interface{}) (*MCPToolResult, error) {
-	s.mu.Lock()
-	mcp := s.mcpService
-	s.mu.Unlock()
-	if mcp == nil {
-		return nil, fmt.Errorf("MCP service not configured: %w", ErrInvalidInput)
-	}
-	parts := strings.SplitN(namespace, ".", 3)
-	if len(parts) != 3 || parts[0] != "mcp" {
-		return nil, fmt.Errorf("invalid MCP namespace %q: %w", namespace, ErrInvalidInput)
-	}
-	server, tool := parts[1], parts[2]
-	return mcp.callTool(ctx, server, tool, args)
 }
 
 // ExecResult is the outcome of a synchronous command execution.

@@ -440,7 +440,7 @@ func TestFileService_H1_WorkspaceSwitchRetiresRootsAfterCapabilityRelease(t *tes
 }
 
 func TestFileService_H1_SetWorkspaceRootsFailureRollsBack(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	svc := newFileServiceAt(t, root)
 	previous := svc.secureWorkspace
 	err := svc.setWorkspaceRoots([]string{t.TempDir(), filepath.Join(t.TempDir(), "missing")})
@@ -1415,7 +1415,7 @@ func TestEvalSymlinksAllowMissing_NonExistentFileWithExistentParent(t *testing.T
 }
 
 func TestEvalSymlinksAllowMissing_NonExistentParent(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonicalTestPath(t, t.TempDir())
 	// Both the file and its parent don't exist.
 	file := filepath.Join(dir, "missing-subdir", "newfile.txt")
 	got, err := evalSymlinksAllowMissing(file)
@@ -1516,7 +1516,7 @@ func TestFileService_P4_MultiRootValidation(t *testing.T) {
 // TestFileService_P4_SingleRootDegradation 验证多根接口在传入单个根时
 // 退化为单根行为，且 rootDir 字段同步更新。
 func TestFileService_P4_SingleRootDegradation(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	svc := &FileService{}
 	if err := svc.setWorkspaceRoots([]string{root}); err != nil {
 		t.Fatalf("SetWorkspaceRoots(single) failed: %v", err)

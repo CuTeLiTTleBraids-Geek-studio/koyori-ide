@@ -68,14 +68,6 @@ func cloneStringSlicePointer(value *[]string) *[]string {
 	return &cloned
 }
 
-func cloneLSPRangePointer(value *LSPRange) *LSPRange {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
-}
-
 func completionTextEditFromJSON(edit completionTextEditJSON) TextEdit {
 	mapped := TextEdit{NewText: edit.NewText}
 	if edit.Range != nil {

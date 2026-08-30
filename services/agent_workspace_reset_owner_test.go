@@ -35,8 +35,8 @@ func (p *workspaceResetPersistence) Save(rows []agentcore.Session) (agentcore.Pe
 
 func newWorkspaceResetOwnerFixture(t *testing.T) (*AgentService, *workspaceResetPersistence, string, string, context.Context, string) {
 	t.Helper()
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	if err := WireAgentExecutionCore(agent, nil, nil, nil, nil, NewAIPermissionService(t.TempDir())); err != nil {

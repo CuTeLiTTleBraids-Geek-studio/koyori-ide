@@ -97,9 +97,7 @@ func ParseHTTPFile(content string, environment HTTPEnvironment) ([]HTTPRequest, 
 		if match == nil {
 			continue
 		}
-		if _, secret := secretRefs[match[1]]; secret {
-			delete(secretRefs, match[1])
-		}
+		delete(secretRefs, match[1])
 		value, err := expandHTTPVariables(match[2], values, secretRefs)
 		if err != nil {
 			return nil, fmt.Errorf("line %d variable %q: %w", index+1, match[1], err)

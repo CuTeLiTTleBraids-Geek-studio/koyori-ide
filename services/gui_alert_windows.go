@@ -16,5 +16,5 @@ func ShowStartupError(title, message string) {
 	const mbIconError = 0x10
 	t, _ := syscall.UTF16PtrFromString(title)
 	m, _ := syscall.UTF16PtrFromString(message)
-	msgBox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), mbOK|mbIconError)
+	_, _, _ = msgBox.Call(0, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), mbOK|mbIconError)
 }

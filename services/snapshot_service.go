@@ -128,22 +128,6 @@ func hashContent(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// storeBlob 存储文件内容到内容寻址存储（Step 4）。
-// 相同 hash 的文件不重复存储。
-func (s *SnapshotService) storeBlob(data []byte) (string, error) {
-	hash := hashContent(data)
-	blobPath := filepath.Join(s.blobDir, hash)
-	// 检查是否已存在（内容寻址去重）
-	if _, err := os.Stat(blobPath); err == nil {
-		return hash, nil // 已存在，跳过
-	}
-	// 原子写入 blob
-	if err := atomicWriteFile(blobPath, data, 0o644); err != nil {
-		return "", fmt.Errorf("store blob %s: %w", hash, err)
-	}
-	return hash, nil
-}
-
 // storeBlobFromFile streams the file at path into content-addressable
 // storage without buffering the entire file in memory. M-4: replaces the
 // previous os.ReadFile + hash.Write(data) pattern in CreateSnapshot which

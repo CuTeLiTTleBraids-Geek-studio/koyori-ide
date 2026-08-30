@@ -215,8 +215,8 @@ func TestExternalReceiptRecoveryEntryPointsUseWorkspaceAuthority(t *testing.T) {
 }
 
 func TestExternalReceiptRecoveryWaitsForProjectWorkspaceTransaction(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	agent := newLifecycleTestAgentAtWorkspace(t, rootA)
 	t.Cleanup(func() { _ = agent.Close() })
 	permission := NewAIPermissionService(t.TempDir())

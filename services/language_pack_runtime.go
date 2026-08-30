@@ -704,10 +704,6 @@ func languagePackExtensions(languages []languagePackLanguage) []string {
 	return extensions
 }
 
-func builtInLanguagePackServerDefinitions() []lspServerDefinition {
-	return languagePackServerDefinitions(builtInLanguagePacks)
-}
-
 func builtInLanguagePackToolchainCommands() []ToolchainCommand {
 	commands := make([]ToolchainCommand, 0)
 	seen := make(map[string]string)

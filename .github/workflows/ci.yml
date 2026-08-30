@@ -120,6 +120,11 @@ jobs:
         with:
           go-version: "1.26.6"
 
+      - name: Set up Node.js for binding generation
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
       - name: Download dependencies
         run: go mod download
 
@@ -130,6 +135,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
+
+      # TestMCPServiceRendererBindingContract asserts the generated
+      # mcpservice.ts against the deny-only surface, so the go-test legs need
+      # the same untracked bindings tree the wails-bindings job verifies.
+      - name: Generate untracked Wails bindings
+        run: node scripts/generate-bindings.mjs
 
       # The root package embeds frontend/dist (go:embed in main.go). Go-only
       # CI legs do not build the frontend, so a placeholder index.html is

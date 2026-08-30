@@ -88,14 +88,6 @@ func planWithLLM(ctx context.Context, ai *AIService, goal, constraints string, c
 	return steps, "", nil
 }
 
-func jsonString(value string) string {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return `""`
-	}
-	return string(encoded)
-}
-
 func filterPlanStepsToCatalog(steps []catalogPlanStep, catalogIDs []string) []catalogPlanStep {
 	allowed := make(map[string]struct{}, len(catalogIDs))
 	for _, id := range catalogIDs {

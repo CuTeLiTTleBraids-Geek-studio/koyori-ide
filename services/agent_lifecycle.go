@@ -1046,10 +1046,6 @@ func (l *AgentLifecycle) configuredPermissionMode() agentcore.SessionPermissionM
 	return mode
 }
 
-func (l *AgentLifecycle) createOwnedSessionPermissionDefault(kind agentcore.SessionKind) (string, error) {
-	return l.createOwnedSessionWithinWorkspaceAuthority(kind, l.configuredPermissionMode())
-}
-
 func (l *AgentLifecycle) workspaceOwnerFingerprint(root, sessionID string, kind agentcore.SessionKind, owner agentcore.SessionOwner) string {
 	if l == nil || len(l.workspaceIdentityKey) == 0 {
 		return ""
@@ -2334,22 +2330,6 @@ func (s *AIPlanService) beginPlanExecution(planID, operation string, startedAt t
 		CostBasis: agentcore.CostNotApplicable,
 		StartedAt: startedAt, CompletedAt: startedAt, Pending: true,
 	})
-}
-
-func (s *AIPlanService) recordPlanExecution(planID, operation string, startedAt, completedAt time.Time, executionErr error) error {
-	if s.lifecycle == nil {
-		return nil
-	}
-	record := agentcore.UsageRecord{
-		SessionID: lifecycleSessionID(agentcore.SessionPlan, planID),
-		UnitKind:  agentcore.UsageUnitPlan, Operation: operation,
-		CostBasis: agentcore.CostNotApplicable,
-		StartedAt: startedAt, CompletedAt: completedAt, Success: executionErr == nil,
-	}
-	if executionErr != nil {
-		record.Error = "execution failed"
-	}
-	return s.lifecycle.Record(record)
 }
 
 func (s *AIPlanService) completePlanExecution(receipt agentcore.UsageReceipt, planID, operation string, startedAt, completedAt time.Time, executionErr error) error {

@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -308,8 +309,12 @@ func (s *SkillsService) failClosedLoad(userDir, projectDir string, loadErr error
 func loadSkillsFromDir(dir string, scope SkillScope) ([]Skill, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // 目录不存在不算错误
+		// 目录不存在，或路径存在但不是目录（如 .koyori-ide/skills 是普通
+		// 文件）都按"无项目技能"处理：Windows 对后一种情况本就返回
+		// not-exist 类错误，linux/macOS 返回 ENOTDIR——统一视为空集，
+		// 保证技能源损坏时 fail-closed（空技能）且不阻断工作区切换。
+		if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+			return nil, nil
 		}
 		return nil, err
 	}

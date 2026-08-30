@@ -858,7 +858,7 @@ func TestExternalReceiptRecoveryUnscopedPublicationRacesWorkspaceOpen(t *testing
 		dispositionDone <- dispositionErr
 	}()
 	<-guardEntered
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	workspaceDone := make(chan error, 1)
 	go func() { workspaceDone <- agent.configureWorkspaceRoot(root) }()
 	select {

@@ -32,7 +32,6 @@ var (
 	procSendInput           = modUser32.NewProc("SendInput")
 	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
 	procGetWindowThreadProc = modUser32.NewProc("GetWindowThreadProcessId")
-	procWindowFromPoint     = modUser32.NewProc("WindowFromPoint")
 
 	procCreateCompatibleDC     = modGdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = modGdi32.NewProc("CreateCompatibleBitmap")
@@ -303,7 +302,7 @@ func platformForegroundProcessName() (string, error) {
 		return "", fmt.Errorf("no foreground window")
 	}
 	var pid uint32
-	procGetWindowThreadProc.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	_, _, _ = procGetWindowThreadProc.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
 	if pid == 0 {
 		return "", fmt.Errorf("foreground pid is 0")
 	}

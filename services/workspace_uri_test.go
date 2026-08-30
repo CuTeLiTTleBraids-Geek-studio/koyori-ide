@@ -93,7 +93,7 @@ func TestWorkspaceURIRejectsInvalidIdentitiesAndLocalURI(t *testing.T) {
 			t.Errorf("Unicode URI %q accepted", raw)
 		}
 	}
-	for _, path := range []string{`..\other`, `dir\..\other`, `\absolute`, `\\server\share`, `C:\absolute`, `C:relative`} {
+	for _, path := range []string{`..\elsewhere`, `dir\..\elsewhere`, `\absolute`, `\\server\share`, `C:\absolute`, `C:relative`} {
 		if _, err := NewWorkspaceURI("host", "ws", path); err == nil {
 			t.Errorf("relative path %q accepted", path)
 		}

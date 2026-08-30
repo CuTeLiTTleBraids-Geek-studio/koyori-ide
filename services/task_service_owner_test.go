@@ -31,7 +31,7 @@ func TestTaskServiceWorkflowSessionRejectsCrossServiceTerminalization(t *testing
 	if err != nil {
 		t.Fatalf("BeginWorkflowExecution: %v", err)
 	}
-	if _, err := otherTask.BeginWorkflowExecution(nil, "missing-context"); !errors.Is(err, ErrNotAllowed) {
+	if _, err := otherTask.BeginWorkflowExecution(nil, "missing-context"); !errors.Is(err, ErrNotAllowed) { //nolint:staticcheck // SA1012: intentionally nil, asserts fail-closed
 		t.Fatalf("contextless BeginWorkflowExecution = %v, want ErrNotAllowed", err)
 	}
 	if err := otherTask.CompleteWorkflowExecution(otherCtx, sessionID); !errors.Is(err, ErrNotAllowed) {

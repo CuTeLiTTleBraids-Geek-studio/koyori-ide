@@ -1867,12 +1867,6 @@ func (s *MarketplaceService) saveExtensionStateLocked(state mpExtensionStateFile
 	return atomicWriteJSON(path, state, 0600)
 }
 
-func (s *MarketplaceService) saveExtensionState(state mpExtensionStateFile) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveExtensionStateLocked(state)
-}
-
 // extensionStateKey is the map key for an extension's persisted state, also
 // used as the on-disk directory name: "<publisher>.<name>".
 func extensionStateKey(publisher, name string) string {
@@ -1943,7 +1937,6 @@ const (
 // cannot slip under per-entry limits.
 type vsixExtractStats struct {
 	totalBytes int64
-	entryCount int
 }
 
 func extractVSIXEntries(zr *zip.Reader, targetDir string) error {
@@ -1996,7 +1989,14 @@ func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, see
 	if err != nil {
 		return fmt.Errorf("resolve VSIX entry path %q: %w", f.Name, err)
 	}
-	if destResolved != absTarget && !strings.HasPrefix(destResolved, absTarget+string(filepath.Separator)) {
+	// P19 CI 修复：destResolved 已经过符号链接/8.3 短名解析，而 absTarget
+	// 是调用方原始拼写（macOS /var 前缀、Windows 短名 TEMP）。两侧须在同一
+	// 解析形态下做前缀比较，否则同一目录会被判为越界。
+	targetResolved := absTarget
+	if resolved, resolveErr := filepath.EvalSymlinks(absTarget); resolveErr == nil {
+		targetResolved = filepath.Clean(resolved)
+	}
+	if destResolved != targetResolved && !strings.HasPrefix(destResolved, targetResolved+string(filepath.Separator)) {
 		return fmt.Errorf("VSIX entry %q resolves outside the install directory (path traversal)", f.Name)
 	}
 	// Reject symlink entries (Unix mode bit). A VSIX should ship real files.

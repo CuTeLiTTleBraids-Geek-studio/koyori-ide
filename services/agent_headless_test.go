@@ -276,7 +276,7 @@ func TestHeadlessAgentHostRejectsBroadExistingStateLeafPermissions(t *testing.T)
 
 func TestHeadlessAgentHostUsesProductionReadAndDurableUsage(t *testing.T) {
 	workspace := t.TempDir()
-	state := headlessPrivateStateDir(t)
+	state := canonicalTestPath(t, headlessPrivateStateDir(t))
 	fixture := filepath.Join(workspace, "fixture.txt")
 	content := "headless-host-fixture"
 	if err := os.WriteFile(fixture, []byte(content), 0o600); err != nil {

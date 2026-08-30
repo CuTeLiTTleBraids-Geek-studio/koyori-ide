@@ -946,7 +946,7 @@ func TestAIService_StartStream_ProviderBudgetErrorIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartStream: %v", err)
 	}
-	events := waitForAIStreamEvent(t, callerWindow, "ai:error")
+	_ = waitForAIStreamEvent(t, callerWindow, "ai:error")
 	deadline := time.Now().Add(5 * time.Second)
 	for ai.IsStreaming() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -954,7 +954,7 @@ func TestAIService_StartStream_ProviderBudgetErrorIsTerminal(t *testing.T) {
 	if ai.IsStreaming() {
 		t.Fatal("provider budget failure did not release the stream slot")
 	}
-	events = callerWindow.eventsSnapshot()
+	events := callerWindow.eventsSnapshot()
 	var sawBudgetError bool
 	for _, event := range events {
 		payload, _ := event.Data.(map[string]interface{})

@@ -12,7 +12,7 @@ import (
 )
 
 func TestResolveMCPStdioCommand_BindsWorkspaceRoot(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	commandPath := filepath.Join(root, "tools", "server")
 	if err := os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
 		t.Fatalf("mkdir command directory: %v", err)

@@ -161,6 +161,7 @@ func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
 	go func() {
 		close(locked)
 		mu.Lock()
+		runtime.Gosched()
 		mu.Unlock()
 		close(finished)
 	}()

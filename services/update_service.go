@@ -122,17 +122,6 @@ func (s *UpdateService) SetRepository(owner, repo string) error {
 	return nil
 }
 
-// setHTTPClient 覆盖内部 HTTP 客户端（测试用）。
-//
-//wails:ignore
-func (s *UpdateService) setHTTPClient(c *http.Client) {
-	if c != nil {
-		owned := *c
-		owned.CheckRedirect = s.validateRedirect
-		s.httpClient = &owned
-	}
-}
-
 // setHTTPTransport injects a one-hop transport for tests. Redirect ownership
 // remains with the service's HTTP client and cannot be bypassed by the transport.
 //

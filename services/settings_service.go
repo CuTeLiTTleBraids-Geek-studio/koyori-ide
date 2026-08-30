@@ -708,15 +708,6 @@ func (s *SettingsService) getAPIKeyForConfig(configID string) (string, error) {
 	return "", nil
 }
 
-// saveSettingsInternal is kept for backward compatibility with callers that
-// don't hold the lock. It acquires the read lock and delegates to
-// saveSettingsLocked. Prefer SaveSettings for new code.
-func (s *SettingsService) saveSettingsInternal(settings Settings) error {
-	s.pathMu.RLock()
-	defer s.pathMu.RUnlock()
-	return s.saveSettingsLocked(settings)
-}
-
 // IsAPIKeyEncryptedOnDisk reads the raw settings file and returns true if the
 // stored API key carries an encryption prefix ("dpapi:" or "aes:"). Returns
 // false if the key is plaintext, empty, or the file is missing/corrupt.

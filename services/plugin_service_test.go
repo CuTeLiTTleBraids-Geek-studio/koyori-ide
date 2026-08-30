@@ -556,7 +556,7 @@ func TestPluginService_SetPluginEnabled_ToggleBack(t *testing.T) {
 		t.Fatalf("ListPlugins: %v", err)
 	}
 	if len(plugins) != 0 {
-		// No plugin directory created, so ListPlugins returns empty.
+		t.Fatalf("ListPlugins = %d plugins, want 0", len(plugins))
 	}
 	// State file should reflect enabled=true.
 	state := svc.loadPluginState()

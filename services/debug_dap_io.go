@@ -65,27 +65,6 @@ func initializeDAPSessionForRunWithAdapter(owner *DebugSession, generation uint6
 	return nil
 }
 
-func dapInitializeForRun(request dapRunRequest) error {
-	_, err := dapInitializeCapabilitiesForRun(request)
-	return err
-}
-
-func (d *DebugService) dapInitialize() error {
-	return dapInitializeForRun(d.dapRequestBody)
-}
-
-func (d *DebugService) applyAllBreakpoints(bps []DebugBreakpoint) error {
-	owner := d.activeSession()
-	if owner == nil {
-		return fmt.Errorf("no debug session")
-	}
-	owner.mu.Lock()
-	generation := owner.runGeneration
-	conn := owner.conn
-	owner.mu.Unlock()
-	return d.applyAllBreakpointsForRun(owner, generation, conn, bps)
-}
-
 func (d *DebugService) applyAllBreakpointsForRun(owner *DebugSession, generation uint64, conn net.Conn, bps []DebugBreakpoint) error {
 	byFile := map[string][]DebugBreakpoint{}
 	for _, b := range bps {

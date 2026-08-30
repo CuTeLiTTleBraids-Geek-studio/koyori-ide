@@ -213,7 +213,13 @@ func (s *WorkflowService) runAgentWorkflowLoadHook(stage, relativePath string) e
 // tests. The callback must not call FileService methods because the loader
 // holds the FileService capability lock while invoking it.
 //
+// 唯一调用方是 agent_execution_workflow_skill_windows_test.go（仅 Windows
+// 编译）；GOOS=linux 的 lint 视角看不到它，故此处显式登记 unused 豁免，
+// 避免 CI 的 Linux lint 腿误报死代码。
+//
 //wails:ignore
+//
+//nolint:unused // 仅被 GOOS=windows 的测试引用，Linux lint 视角不可见
 func (s *WorkflowService) setAgentWorkflowLoadHook(hook func(stage, relativePath string) error) {
 	s.agentLoadMu.Lock()
 	s.agentLoadHook = hook

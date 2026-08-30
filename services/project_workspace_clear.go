@@ -2,26 +2,8 @@ package services
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 )
-
-// clearWorkspaceRoots removes cached roots after the active project is
-// removed. Every mutation has an inverse; a failure restores all adapters and
-// the exact WorkspaceContext generation instead of leaving a partial clear.
-func (p *ProjectService) clearWorkspaceRoots() error {
-	authority := p.beginAgentWorkspaceAuthority()
-	defer authority.release()
-	transition, err := p.beginWorkspaceRootClearWithinAuthority(authority)
-	if err != nil {
-		return err
-	}
-	if err := authority.flushCatalog(); err != nil {
-		return errors.Join(fmt.Errorf("refresh Agent catalog: %w", err), transition.rollback())
-	}
-	transition.commit()
-	return nil
-}
 
 func (p *ProjectService) beginWorkspaceRootClearWithinAuthority(authority *agentWorkspaceAuthorityGuard) (*workspaceClearTransition, error) {
 	actions := make([]workspaceClearAction, 0, 12)

@@ -171,7 +171,7 @@ func TestHeadlessAgentCLIProcess(t *testing.T) {
 	// A malformed identity key used to enter the generic AES recovery path,
 	// which logged the absolute state/backup paths to stderr and rewrote the
 	// caller's key. Headless construction must reject it without either effect.
-	corruptState := t.TempDir()
+	corruptState := headlessPrivateStateDir(t)
 	corruptKey := filepath.Join(corruptState, "agent_lifecycle_identity.key")
 	corruptBytes := []byte("not-a-valid-headless-identity-key")
 	if err := os.WriteFile(corruptKey, corruptBytes, 0o600); err != nil {
@@ -182,7 +182,7 @@ func TestHeadlessAgentCLIProcess(t *testing.T) {
 		t.Fatalf("corrupt identity key unexpectedly succeeded: stdout=%s", stdout)
 	}
 	if !strings.Contains(stdout, "usage-unavailable") {
-		t.Fatalf("corrupt identity output = %q, want usage-unavailable category", stdout)
+		t.Fatalf("corrupt identity output = %q, want usage-unavailable category; stderr=%q", stdout, stderr)
 	}
 	assertHeadlessOutputRedacted(t, stdout, stderr, fixtureContent, workspace, corruptState)
 	afterKey, err := os.ReadFile(corruptKey)

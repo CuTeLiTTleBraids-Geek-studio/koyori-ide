@@ -142,11 +142,6 @@ func (t *TerminalService) validateWorkingDir(workingDir string) error {
 	return err
 }
 
-func (t *TerminalService) resolveWorkingDir(workingDir string) (string, error) {
-	resolved, _, err := t.resolveWorkingDirWithLease(workingDir)
-	return resolved, err
-}
-
 func (t *TerminalService) acquireWorkspaceLease() (workspaceLease, error) {
 	t.mu.Lock()
 	root := t.rootDir

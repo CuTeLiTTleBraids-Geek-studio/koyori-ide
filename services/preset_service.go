@@ -175,14 +175,8 @@ func (s *PresetService) loadMergedPresets(projectRoot string) []PresetWithSource
 			order = append(order, name)
 		}
 		byName[name] = PresetWithSource{
-			PresetFile: PresetFile{
-				Name:        p.Name,
-				Label:       p.Label,
-				Description: p.Description,
-				Icon:        p.Icon,
-				Prompt:      p.Prompt,
-			},
-			Source: PresetSourceBuiltin,
+			PresetFile: PresetFile(p),
+			Source:     PresetSourceBuiltin,
 		}
 	}
 

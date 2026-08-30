@@ -424,16 +424,6 @@ type SSHFileSystem struct {
 
 const maxSSHReadFileSize = int64(64 * 1024 * 1024)
 
-// newSSHFileSystem 基于 *ssh.Client 创建一个 SSHFileSystem。
-// 同时初始化 SFTP 子系统客户端。
-func newSSHFileSystem(client *ssh.Client) (*SSHFileSystem, error) {
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return nil, fmt.Errorf("open sftp session: %w", err)
-	}
-	return &SSHFileSystem{client: client, sftp: sc}, nil
-}
-
 // ReadFile 通过 SFTP 读取远程文件。
 func (s *SSHFileSystem) ReadFile(path string) ([]byte, error) {
 	if path == "" {
@@ -1259,21 +1249,6 @@ func validateSSHConfig(c SSHConfig) error {
 		return errors.New("ssh config: must provide keyPath or password")
 	}
 	return nil
-}
-
-// dialSSH 根据 SSHConfig 建立 SSH 连接。
-//
-// 认证策略：
-//   - 优先 KeyPath（私钥文件）
-//   - 其次 Password
-//   - 二者都不可用返回错误（已在 validateSSHConfig 拦截）
-//
-// known_hosts 校验：KnownHostsPath 必须非空，并加载该文件启用严格校验。
-//
-// 安全：本函数不打印任何敏感字段。
-func dialSSH(config SSHConfig) (*ssh.Client, error) {
-	client, _, err := dialSSHWithHostIdentity(config)
-	return client, err
 }
 
 func dialSSHWithHostIdentity(config SSHConfig) (*ssh.Client, string, error) {

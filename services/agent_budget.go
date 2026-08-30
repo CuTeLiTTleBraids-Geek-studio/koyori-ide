@@ -107,32 +107,6 @@ func (b *toolBudget) reserve() (uint64, error) {
 	return b.epoch, nil
 }
 
-// precheck reports whether a reservation would currently succeed, without
-// consuming anything.
-//
-// This exists purely so a caller can refuse before prompting the user. It is
-// explicitly NOT an enforcement point: two concurrent callers can both pass it
-// and only one may survive `reserve`. Any caller that treats a passing
-// precheck as permission is wrong.
-func (b *toolBudget) precheck() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.window > 0 && time.Since(b.startedAt) >= b.window {
-		return fmt.Errorf(
-			"agent tool budget epoch %d expired after %s; start a new budget to continue: %w",
-			b.epoch, b.window, ErrAgentBudgetExhausted,
-		)
-	}
-	if b.spent >= b.limit {
-		return fmt.Errorf(
-			"agent tool budget exhausted (%d/%d calls in epoch %d); start a new budget to continue: %w",
-			b.spent, b.limit, b.epoch, ErrAgentBudgetExhausted,
-		)
-	}
-	return nil
-}
-
 // currentEpoch reports the active epoch without consuming budget.
 func (b *toolBudget) currentEpoch() uint64 {
 	b.mu.Lock()
@@ -265,12 +239,4 @@ func (s *AgentService) auditEvent(msg string, keyvals ...any) {
 		return
 	}
 	slog.Default().Info(msg, keyvals...)
-}
-
-// consumeToolBudget reserves one tool call against the active budget.
-//
-// Returns the epoch the call is bound to. The caller must embed that epoch in
-// the capability it issues so a token cannot be redeemed after a budget reset.
-func (s *AgentService) consumeToolBudget() (uint64, error) {
-	return s.ensureBudget().reserve()
 }

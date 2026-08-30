@@ -740,9 +740,8 @@ func (s *ExtensionSecurityService) setExtensionEnabled(extensionID string, enabl
 		// calling SetExtensionEnabled. Restricted is the hard gate
 		// because network access is the highest-risk capability.
 		entry.PendingReview = false
-	} else {
-		// Disabling always succeeds (subject to blacklist above).
 	}
+	// Disabling always succeeds (subject to blacklist above).
 	entry.Enabled = enabled
 
 	state.Extensions[extensionID] = entry

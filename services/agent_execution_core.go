@@ -404,7 +404,9 @@ func (s *AgentService) beginProjectWorkspaceAuthority() *agentWorkspaceAuthority
 	// caller is either included in this drain or observes the deferral before it
 	// can publish. After this hand-off no catalog publication can overlap the
 	// root setters below.
+	// drain 屏障：等待在途的目录刷新结束（临界区内读取保证非空）。
 	s.catalogRefreshMu.Lock()
+	_ = s.rootGeneration
 	s.catalogRefreshMu.Unlock()
 	return &agentWorkspaceAuthorityGuard{
 		agent:           s,
@@ -864,41 +866,6 @@ func WireAgentExecutionCore(agent *AgentService, file *FileService, search *Sear
 		})
 	}
 	return agent.refreshDynamicAgentTools(context.Background())
-}
-
-// clearAgentSkillSessions invalidates session-scoped skill policy whenever the
-// workspace or skill source changes. The durable lifecycle reset must publish
-// before these maps are cleared: a PersistenceNotPublished failure restores
-// the old runtime/session state, so dropping the owner map first would strand
-// the caller that still owns that restored authority. An indeterminate or
-// poisoned reset has already revoked runtime authority and therefore clears
-// the maps fail-closed.
-func clearAgentSkillSessions(agent *AgentService) error {
-	if agent == nil {
-		return nil
-	}
-	deps := executionDependenciesFor(agent)
-	deps.mu.RLock()
-	lifecycle := deps.lifecycle
-	deps.mu.RUnlock()
-	if lifecycle != nil {
-		if err := lifecycle.resetForWorkspaceChange(); err != nil {
-			if lifecyclePersistenceIsIndeterminate(err) {
-				deps.mu.Lock()
-				deps.sessionSkills = make(map[string]map[string]string)
-				deps.sessionOwners = make(map[string]agentSessionOwner)
-				deps.mu.Unlock()
-			}
-			return err
-		}
-	} else if runtime, err := agent.coreRuntime(); err == nil {
-		runtime.UnregisterAllSessions()
-	}
-	deps.mu.Lock()
-	deps.sessionSkills = make(map[string]map[string]string)
-	deps.sessionOwners = make(map[string]agentSessionOwner)
-	deps.mu.Unlock()
-	return nil
 }
 
 func bindAgentSkillSession(agent *AgentService, sessionID string, skill Skill, fingerprint string) error {

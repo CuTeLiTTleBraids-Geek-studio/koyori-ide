@@ -384,12 +384,6 @@ func (s *TaskService) FailWorkflowExecution(ctx context.Context, sessionID, reas
 	return lifecycle.Fail(agentcore.SessionWorkflow, sessionID, failure)
 }
 
-func (s *TaskService) beginWorkflowUsageAttempt(lifecycle *AgentLifecycle, sessionID string) error {
-	s.workflowAttemptMu.Lock()
-	defer s.workflowAttemptMu.Unlock()
-	return s.beginWorkflowUsageAttemptLocked(lifecycle, sessionID)
-}
-
 func (s *TaskService) beginWorkflowUsageAttemptLocked(lifecycle *AgentLifecycle, sessionID string) error {
 	if _, exists, err := pendingWorkflowUsageAttempt(lifecycle, sessionID); err != nil {
 		return err
@@ -404,12 +398,6 @@ func (s *TaskService) beginWorkflowUsageAttemptLocked(lifecycle *AgentLifecycle,
 		StartedAt: startedAt, CompletedAt: startedAt, Pending: true,
 	})
 	return err
-}
-
-func (s *TaskService) completeWorkflowUsageAttempt(lifecycle *AgentLifecycle, sessionID string, success bool, failure error) error {
-	s.workflowAttemptMu.Lock()
-	defer s.workflowAttemptMu.Unlock()
-	return s.completeWorkflowUsageAttemptLocked(lifecycle, sessionID, success, failure)
 }
 
 func (s *TaskService) completeWorkflowUsageAttemptLocked(lifecycle *AgentLifecycle, sessionID string, success bool, failure error) error {

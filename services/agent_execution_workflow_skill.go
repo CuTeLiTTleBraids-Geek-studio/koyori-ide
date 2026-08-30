@@ -128,31 +128,6 @@ func (s *AgentService) refreshSkillAgentToolsAfterMutation(ctx context.Context) 
 	return nil
 }
 
-func (s *AgentService) refreshWorkflowAgentTools(runtime *agentcore.Runtime, workflow *WorkflowService) error {
-	catalog := runtime.Registry().Snapshot()
-	mcpDefinitions := make([]agentcore.ToolDef, 0)
-	for _, definition := range catalog.Tools {
-		if definition.Source == agentcore.SourceMCP {
-			mcpDefinitions = append(mcpDefinitions, definition)
-		}
-	}
-	deps := executionDependenciesFor(s)
-	deps.mu.RLock()
-	skills := deps.skills
-	deps.mu.RUnlock()
-	var loadedSkills []Skill
-	if skills != nil {
-		loadedSkills = skills.ListSkills()
-	}
-	definitions, err := s.buildWorkflowAgentTools(runtime, workflow, mcpDefinitions, skills, loadedSkills)
-	if err != nil {
-		_, clearErr := runtime.Registry().ReplaceSource(agentcore.SourceWorkflow, nil)
-		return errors.Join(err, clearErr)
-	}
-	_, err = runtime.Registry().ReplaceSource(agentcore.SourceWorkflow, definitions)
-	return err
-}
-
 func (s *AgentService) buildWorkflowAgentTools(
 	runtime *agentcore.Runtime,
 	workflow *WorkflowService,
@@ -650,20 +625,6 @@ func (s *AgentService) workflowSkillActivationToolDef(
 			"skillId": skill.ID, "scope": string(skill.Scope), "fingerprint": fingerprint,
 		},
 	}, nil
-}
-
-func (s *AgentService) refreshSkillAgentTools(runtime *agentcore.Runtime, skills *SkillsService) error {
-	var loaded []Skill
-	if skills != nil {
-		loaded = skills.ListSkills()
-	}
-	definitions, err := s.buildSkillAgentTools(runtime, skills, loaded)
-	if err != nil {
-		_, clearErr := runtime.Registry().ReplaceSource(agentcore.SourceSkill, nil)
-		return errors.Join(err, clearErr)
-	}
-	_, err = runtime.Registry().ReplaceSource(agentcore.SourceSkill, definitions)
-	return err
 }
 
 func (s *AgentService) buildSkillAgentTools(runtime *agentcore.Runtime, skills *SkillsService, loaded []Skill) ([]agentcore.ToolDef, error) {

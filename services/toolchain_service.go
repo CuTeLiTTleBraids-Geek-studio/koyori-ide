@@ -1289,10 +1289,10 @@ func parseGoCompiler(output, source string) []ToolchainDiagnostic {
 		}
 		col := 0
 		if m[3] != "" {
-			fmt.Sscanf(m[3], "%d", &col)
+			_, _ = fmt.Sscanf(m[3], "%d", &col)
 		}
 		var lineNo int
-		fmt.Sscanf(m[2], "%d", &lineNo)
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
 		severity := "error"
 		if strings.Contains(m[4], "warning") || strings.HasPrefix(line, "warning:") {
 			severity = "warning"
@@ -1323,8 +1323,8 @@ func parseGolangciLint(output string) []ToolchainDiagnostic {
 			continue
 		}
 		var lineNo, col int
-		fmt.Sscanf(m[2], "%d", &lineNo)
-		fmt.Sscanf(m[3], "%d", &col)
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
+		_, _ = fmt.Sscanf(m[3], "%d", &col)
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1352,8 +1352,8 @@ func parseTypeScript(output string) []ToolchainDiagnostic {
 			continue
 		}
 		var lineNo, col int
-		fmt.Sscanf(m[2], "%d", &lineNo)
-		fmt.Sscanf(m[3], "%d", &col)
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
+		_, _ = fmt.Sscanf(m[3], "%d", &col)
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1385,8 +1385,8 @@ func parseESLint(output string) []ToolchainDiagnostic {
 			continue
 		}
 		var lineNo, col int
-		fmt.Sscanf(m[2], "%d", &lineNo)
-		fmt.Sscanf(m[3], "%d", &col)
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
+		_, _ = fmt.Sscanf(m[3], "%d", &col)
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1412,10 +1412,8 @@ func splitToolchainLines(s string) []string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	lines := strings.Split(s, "\n")
 	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		// Keep blank lines so indices stay stable if ever needed; the
-		// parsers simply won't match them.
-		out = append(out, l)
-	}
+	// Keep blank lines so indices stay stable if ever needed; the
+	// parsers simply won't match them.
+	out = append(out, lines...)
 	return out
 }

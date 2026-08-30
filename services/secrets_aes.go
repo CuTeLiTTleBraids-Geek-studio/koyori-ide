@@ -34,13 +34,6 @@ func keyFilePath() string {
 	return filepath.Join(xdg.ConfigHome, "koyori-ide", "secret.key")
 }
 
-// loadOrCreateAESKey reads the per-install AES key, generating and persisting a
-// new 32-byte key on first use. The key file is created with 0600 permissions
-// so only the current user can read it.
-func loadOrCreateAESKey() ([]byte, error) {
-	return loadOrCreateAESKeyAt(keyFilePath())
-}
-
 // loadOrCreateAESKeyAt 是 loadOrCreateAESKey 的可测试版本，接受自定义路径。
 // 创建与损坏恢复由跨进程文件锁串行化，密钥先完整写入同目录临时文件，再通过
 // atomicWriteFile 发布。这样其他实例不会读到零长度或部分写入的最终文件。

@@ -828,8 +828,8 @@ func TestProjectService_P4_CodeWorkspaceFile_RejectsNonWorkspace(t *testing.T) {
 func TestProjectService_P4_AddMultiRootProject(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "projects.json")
 	svc := &ProjectService{configPath: configPath}
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	wsPath := filepath.Join(t.TempDir(), "multi.code-workspace")
 	wsContent, err := json.Marshal(map[string]any{
 		"folders": []map[string]string{{"path": rootA}, {"path": rootB}},
@@ -883,7 +883,7 @@ func TestProjectService_P4_AddMultiRootProject(t *testing.T) {
 func TestProjectService_P4_AddMultiRootProject_SingleDegradation(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "projects.json")
 	svc := &ProjectService{configPath: configPath}
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	absRoot, _ := filepath.Abs(root)
 	proj, err := svc.AddMultiRootProject([]string{absRoot}, "")
 	if err != nil {
@@ -900,9 +900,9 @@ func TestProjectService_P4_AddMultiRootProject_SingleDegradation(t *testing.T) {
 // TestProjectService_P4_AddMultiRootProject_Rollback 验证多根添加失败时
 // FileService 等服务的根被回滚到原值。
 func TestProjectService_P4_AddMultiRootProject_Rollback(t *testing.T) {
-	initialDir := t.TempDir()
-	newDirA := t.TempDir()
-	newDirB := t.TempDir()
+	initialDir := canonicalTestPath(t, t.TempDir())
+	newDirA := canonicalTestPath(t, t.TempDir())
+	newDirB := canonicalTestPath(t, t.TempDir())
 	// Make configPath a directory so load() fails (触发回滚)。
 	configBase := t.TempDir()
 	configPath := filepath.Join(configBase, "projects.json")
@@ -932,9 +932,9 @@ func TestProjectService_P4_AddMultiRootProject_Rollback(t *testing.T) {
 }
 
 func TestProjectService_P4_AddMultiRootProject_PropagatesAndRollsBackMCPRoot(t *testing.T) {
-	initialDir := t.TempDir()
-	newDirA := t.TempDir()
-	newDirB := t.TempDir()
+	initialDir := canonicalTestPath(t, t.TempDir())
+	newDirA := canonicalTestPath(t, t.TempDir())
+	newDirB := canonicalTestPath(t, t.TempDir())
 	initialAbs, _ := filepath.Abs(initialDir)
 	newAbsA, _ := filepath.Abs(newDirA)
 	newAbsB, _ := filepath.Abs(newDirB)

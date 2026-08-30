@@ -695,7 +695,7 @@ func startNotificationFixtureClient(t *testing.T, env map[string]string) *MCPCli
 	})
 	// Mirror what MCPService does before StartServer: stamp the committed
 	// workspace root the controlled roots/list response may return.
-	client.setRootsWorkspaceRoot(`C:\fixture-root`)
+	client.setRootsWorkspaceRoot(`/fixture-root`)
 	if err := client.StartServer(context.Background()); err != nil {
 		t.Fatalf("start notification fixture: %v", err)
 	}
@@ -833,7 +833,7 @@ func TestMCPClientDispatchFamiliesRejectionsAndMalformed_StdioFixture(t *testing
 			if err := json.Unmarshal(response.Result, &payload); err != nil {
 				t.Fatalf("decode roots payload %q: %v", line, err)
 			}
-			if len(payload.Roots) != 1 || payload.Roots[0].URI != "file:///C:/fixture-root" || payload.Roots[0].Name != "fixture-root" {
+			if len(payload.Roots) != 1 || payload.Roots[0].URI != "file:///fixture-root" || payload.Roots[0].Name != "fixture-root" {
 				t.Fatalf("roots/list payload = %s, want exactly the bound workspace root", line)
 			}
 			rootsAnswered = true

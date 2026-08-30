@@ -1240,14 +1240,8 @@ func (a *AIService) ListPresetsWithSource() []PresetWithSource {
 	result := make([]PresetWithSource, 0, len(builtinPresets))
 	for _, p := range builtinPresets {
 		result = append(result, PresetWithSource{
-			PresetFile: PresetFile{
-				Name:        p.Name,
-				Label:       p.Label,
-				Description: p.Description,
-				Icon:        p.Icon,
-				Prompt:      p.Prompt,
-			},
-			Source: PresetSourceBuiltin,
+			PresetFile: PresetFile(p),
+			Source:     PresetSourceBuiltin,
 		})
 	}
 	return result
@@ -1297,12 +1291,6 @@ func (a *AIService) DeleteUserPreset(name string) error {
 // N-93: takes a snapshot to avoid racing with SetConfig.
 func (a *AIService) effectiveSystemPrompt() string {
 	return effectiveSystemPromptFrom(a.snapshot().config)
-}
-
-// withSystemPrompt prepends the system prompt to the messages slice.
-// N-93: takes a snapshot to avoid racing with SetConfig.
-func (a *AIService) withSystemPrompt(messages []ChatMessage) []ChatMessage {
-	return withSystemPromptFrom(a.snapshot().config, messages)
 }
 
 func (a *AIService) Send(messages []ChatMessage) (response *ChatResponse, returnErr error) {
@@ -1966,9 +1954,7 @@ func sseDataLine(line string) (string, bool) {
 		return "", false
 	}
 	value := line[len("data:"):]
-	if strings.HasPrefix(value, " ") {
-		value = value[1:]
-	}
+	value = strings.TrimPrefix(value, " ")
 	return value, true
 }
 
@@ -2591,19 +2577,6 @@ func (r *aiStreamActivityReader) Read(buffer []byte) (int, error) {
 		r.activity()
 	}
 	return n, err
-}
-
-func (a *AIService) streamShutdownWaitDuration() time.Duration {
-	if a == nil {
-		return defaultAIStreamShutdownTimeout
-	}
-	a.mu.RLock()
-	d := a.streamShutdownTimeout
-	a.mu.RUnlock()
-	if d <= 0 {
-		return defaultAIStreamShutdownTimeout
-	}
-	return d
 }
 
 func waitForAIStreamShutdown(done <-chan struct{}, timeout time.Duration) error {

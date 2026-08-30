@@ -754,24 +754,6 @@ func (p *ProjectService) removeProject(id string, authority *agentWorkspaceAutho
 	return fmt.Errorf("project not found: %s", id)
 }
 
-// isSameWorkspacePath reports whether two paths denote the same workspace.
-// Both sides are canonicalized because the context stores a cleaned absolute
-// path while the persisted project record keeps whatever the user supplied.
-func (p *ProjectService) isSameWorkspacePath(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	absA, err := filepath.Abs(a)
-	if err != nil {
-		return false
-	}
-	absB, err := filepath.Abs(b)
-	if err != nil {
-		return false
-	}
-	return sameWorkspaceIdentityPath(absA, absB)
-}
-
 func sortProjectsByRecency(projects []Project) {
 	sort.Slice(projects, func(i, j int) bool {
 		return projects[i].LastOpened > projects[j].LastOpened
@@ -1562,9 +1544,7 @@ func (p *ProjectService) applyMultiRoots(roots []string, authority *agentWorkspa
 	if err != nil {
 		return nil, err
 	}
-	for _, s := range singleSetters {
-		snaps = append(snaps, s)
-	}
+	snaps = append(snaps, singleSetters...)
 	return snaps, nil
 }
 

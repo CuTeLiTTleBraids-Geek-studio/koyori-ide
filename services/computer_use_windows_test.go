@@ -52,7 +52,7 @@ func TestWindowsMouseMoveHitsDedicatedWindow(t *testing.T) {
 	}
 	hwnd, _, err := modUser32.NewProc("CreateWindowExW").Call(
 		0,
-		uintptr(atom),
+		atom,
 		uintptr(unsafe.Pointer(windowName)),
 		0x00CF0000, // WS_OVERLAPPEDWINDOW
 		100, 100, 240, 180,
