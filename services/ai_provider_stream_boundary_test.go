@@ -111,7 +111,9 @@ func TestAIProviderStreamBoundaryProviderTimeout(t *testing.T) {
 	}
 	select {
 	case <-requestAccepted:
-	case <-time.After(time.Second):
+	// P19 CI 修复：验收握手是前置步骤而非被测对象；GH windows runner 的
+	// 停顿（run 33311670489）曾让 1s 窗口失真，放宽到 5s 不弱化任何断言。
+	case <-time.After(5 * time.Second):
 		t.Fatal("provider did not accept timeout request")
 	}
 	event := waitForAIStreamTerminalEvent(t, callerWindow, time.Second)
@@ -155,7 +157,7 @@ func TestAIProviderStreamBoundaryStopReleasesProviderAndDropsLateChunk(t *testin
 	}
 	select {
 	case <-requestAccepted:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("provider did not accept stop request")
 	}
 	if err := ai.StopStream(callerCtx); err != nil {
