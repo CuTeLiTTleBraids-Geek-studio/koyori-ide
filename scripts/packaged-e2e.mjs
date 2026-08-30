@@ -1457,10 +1457,12 @@ async function main() {
           await checkpoint({ phase: "frontend-probes" });
           await verifyFrontendE2EProbeMarkers();
           await checkpoint({ phase: "wails-build" });
-          log("build", "wails3 build -tags desktop,production,e2e");
+          log("build", "wails3 build -tags desktop,production,e2e DEV=false");
+          // P19 CI 修复：alpha2.111 的 build Taskfile 要求显式 DEV 变量
+          // （与 ci.yml wails-build 腿的修复一致），否则 precondition 直接失败。
           const build = spawnSync(
             installed.command,
-            ["build", "-tags", "desktop,production,e2e"],
+            ["build", "-tags", "desktop,production,e2e", "DEV=false"],
             {
               cwd: root,
               stdio: "inherit",
