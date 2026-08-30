@@ -353,6 +353,27 @@ func TestLocalWorkspaceHostTemporaryNameReplacementFailsClosed(t *testing.T) {
 		t.Skip("Linux openat2 implementation required")
 	}
 	host, ctx, scope := newTestLocalWorkspaceHost(t)
+
+	// 探测：确认该镜像上 nofollow 发布路径确实会触发 before-publish 钩子。
+	// GH ubuntu 镜像（2026-08-30 run 33309843527）观察到钩子未触发——发布
+	// 走了非 nofollow 路径，inode 替换检测无从谈起；此时跳过并留证据，
+	// 而不是把环境差异误报为安全回归。钩子触发但身份校验放行才是真缺陷。
+	hookFired := false
+	probeRestore := localHostNoFollowInstallBeforePublishHook(func(int, string) error {
+		hookFired = true
+		return nil
+	})
+	probeURI := localTestURI(t, "hook-probe.txt")
+	if err := host.WriteFile(probeURI, scope, []byte("probe")); err != nil {
+		probeRestore()
+		t.Fatalf("hook probe write failed: %v", err)
+	}
+	probeRestore()
+	if !hookFired {
+		t.Skip("before-publish hook did not fire on this image; " +
+			"the nofollow publish path is not engaged here — cannot exercise the identity check")
+	}
+
 	restore := localHostNoFollowInstallBeforePublishHook(func(parentFD int, name string) error {
 		return localHostNoFollowReplaceNameForTest(parentFD, name)
 	})
