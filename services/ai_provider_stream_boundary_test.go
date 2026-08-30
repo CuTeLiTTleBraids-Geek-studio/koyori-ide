@@ -103,7 +103,13 @@ func TestAIProviderStreamBoundaryProviderTimeout(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	ai, _, lifecycle, permission, callerCtx, callerWindow, sessionID := newAIProviderBoundaryAgent(t, server.URL, "openai", nil)
-	ai.streamIdleTimeout = 25 * time.Millisecond
+	// P19 CI 修复：空闲边界值本身是被测行为（provider 收到请求后不再产出
+	// 数据），25ms 只是为了跑得快——但 GH windows runner 在长套件末尾的
+	// 拨号+首字节延迟会超过 25ms，空闲看门狗把流提前杀死（run
+	// 33312211439 "stopped producing data"），验收握手永远收不到。放宽到
+	// 250ms：provider 发完响应头后保持静默，空闲边界仍然必然触发，断言
+	// 全部不变。
+	ai.streamIdleTimeout = 250 * time.Millisecond
 	ai.streamWallTimeout = time.Second
 	started, err := ai.StartAgentStream(callerCtx, sessionID, []ChatMessage{{Role: "user", Content: "timeout"}})
 	if err != nil {
