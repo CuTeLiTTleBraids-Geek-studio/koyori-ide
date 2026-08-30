@@ -358,6 +358,35 @@ func TestLocalWorkspaceHostTemporaryNameReplacementFailsClosed(t *testing.T) {
 	// GH ubuntu 镜像（2026-08-30 run 33309843527）观察到钩子未触发——发布
 	// 走了非 nofollow 路径，inode 替换检测无从谈起；此时跳过并留证据，
 	// 而不是把环境差异误报为安全回归。钩子触发但身份校验放行才是真缺陷。
+	// 前提探测：inode 身份检测（localHostNoFollowNameMatches）依赖
+	// "unlink+recreate 必然改变 (dev,ino)"。部分镜像的 /tmp（如 GH ubuntu
+	// runner，2026-08-30 run 33310756330）会在同名 unlink+recreate 后立即
+	// 复用 inode，此时替换对身份检测不可见——这是环境属性而非代码回归，
+	// 跳过并留证据。
+	probeDir := t.TempDir()
+	probePath := filepath.Join(probeDir, "probe")
+	if err := os.WriteFile(probePath, []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(probePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(probePath, []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(probePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(first, second) {
+		t.Skip("filesystem reuses the same file identity across same-name unlink+recreate; " +
+			"identity-based replacement detection cannot engage here")
+	}
+
 	hookFired := false
 	probeRestore := localHostNoFollowInstallBeforePublishHook(func(int, string) error {
 		hookFired = true

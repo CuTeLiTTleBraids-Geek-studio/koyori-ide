@@ -265,8 +265,19 @@ func newExecutionCoreTestServices(t *testing.T) (*AgentService, *FileService, *S
 	if err := workspace.Set(root); err != nil {
 		t.Fatalf("workspace.Set: %v", err)
 	}
-	agent := NewAgentServiceWithWorkspaceContext(workspace)
-	t.Cleanup(func() { _ = agent.Close() })
+	// 审计句柄按测试隔离：requiredAuditEvent 断言依赖 audit sink，不能依赖
+	// 全局用户级 agent-audit.log（GH macos runner 上该 best-effort 打开会
+	// 失败，导致 ErrAuditUnavailable——run 33310756330）。
+	auditPath := filepath.Join(t.TempDir(), "agent-audit.log")
+	auditFile, err := os.OpenFile(auditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open per-test audit file: %v", err)
+	}
+	agent := newAgentServiceWithAuditRoot(workspace, auditFile, nil, "agent-audit.log")
+	t.Cleanup(func() {
+		_ = agent.Close()
+		_ = auditFile.Close()
+	})
 	if err := agent.configureWorkspaceRoot(root); err != nil {
 		t.Fatalf("configureWorkspaceRoot: %v", err)
 	}
