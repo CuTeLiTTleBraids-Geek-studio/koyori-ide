@@ -93,7 +93,7 @@ func keychainLoad(account, markerB64 string) (string, error) {
 // L-4: account 参数化,传递给 keychainStore 用于 Keychain 条目标签。
 // AES fallback 路径不使用 account。
 func platformEncryptSecret(account, plaintext string) (string, error) {
-	if macosKeychainAvailable() {
+	if !secretsTestAESOnly && macosKeychainAvailable() {
 		stored, err := keychainStore(account, plaintext)
 		if err == nil {
 			return stored, nil

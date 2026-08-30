@@ -3,6 +3,8 @@
 
 # Source code and docs: LF
 *.go    text eol=lf
+go.mod  text eol=lf
+go.sum  text eol=lf
 *.ts    text eol=lf
 *.tsx   text eol=lf
 *.js    text eol=lf

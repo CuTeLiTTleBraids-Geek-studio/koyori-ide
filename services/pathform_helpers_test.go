@@ -8,8 +8,8 @@ import (
 // canonicalTestPath 把测试期望/输入中的路径解析到与生产层一致的规范形态
 // （macOS /var → /private/var 符号链接前缀、Windows 8.3 短名展开）。
 //
-// 背景（P19 CI 修复）：GitHub 的 Windows runner TEMP 是 8.3 短名
-// （C:\Users\RUNNER~1\...），macOS 的 TEMP 带 /var 符号链接前缀，而生产层
+// 背景（P19 CI 修复）：GitHub 的 Windows runner TEMP 是 8.3 短名目录
+// （用户目录的 ~1 缩写形态），macOS 的 TEMP 带 /var 符号链接前缀，而生产层
 // （WorkspaceContext、FileService 安全根、agent 根等）统一以
 // EvalSymlinks 解析后的形态保存与比较工作区路径。在开发机上两者恰好
 // 相等，测试因此掩盖了拼写差异；在 CI 上，任何拿 t.TempDir() 原始拼写

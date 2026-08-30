@@ -161,8 +161,11 @@ jobs:
       - name: Vet
         run: go vet ./services/... . ./internal/repo/...
 
+      # P19 CI 修复：`go build .` 会把二进制落在仓库根目录，G17 卫生测试
+      # 会因此报 "koyori-ide.exe still exists"。输出到 runner 临时目录。
       - name: Build
-        run: go build .
+        shell: bash
+        run: go build -o "${RUNNER_TEMP}/koyori-ide-ci-build" .
 
       # N-129: test the root package (main_test.go covers CSP nonce
       # injection), services, and the repository governance tests. The

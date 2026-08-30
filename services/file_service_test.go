@@ -212,6 +212,9 @@ func TestFileService_H1_InitialBypass_ParentSymlinkSwapAfterValidation(t *testin
 }
 
 func TestFileService_H1_WriteFile_RootSymlinkSwapAfterValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 的 os.Root 目录句柄会阻止 rename（本地探针验证：句柄打开期间 rename 恒失败），无法用 rename 模拟 root 替换攻击；该平台的绑定根保护由句柄本身强制，强于 unix 的路径解析检查。unix CI 腿仍然执行本测试。")
+	}
 	workspace := t.TempDir()
 	outside := t.TempDir()
 	outsideFile := filepath.Join(outside, "escape.txt")
@@ -343,6 +346,9 @@ func TestFileService_H1_ParentSwap_AllOperationsStayInsideRoot(t *testing.T) {
 }
 
 func TestFileService_H1_RootSwap_AllOperationsUseBoundRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 的 os.Root 目录句柄会阻止 rename（本地探针验证：句柄打开期间 rename 恒失败），无法用 rename 模拟 root 替换攻击；该平台的绑定根保护由句柄本身强制，强于 unix 的路径解析检查。unix CI 腿仍然执行本测试。")
+	}
 	operations := []struct {
 		name string
 		run  func(*FileService, string) error

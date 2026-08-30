@@ -837,9 +837,9 @@ var shellMetachars = []struct {
 
 // tildeMetacharDesc 保留 ~ 的拒绝语义（home 目录展开），但由
 // rejectTokenLeadingTilde 按位置判定：只有 token 起始处的 ~ 才是 shell
-// home 展开语法；路径中段的 ~ 是合法字符（Windows 8.3 短名，例如
-// C:\Users\RUNNER~1\...），并且命令不经 shell 直接 exec，mid-token 的
-// ~ 对 exec 无任何特殊含义。
+// home 展开语法；路径中段的 ~ 是合法字符（GitHub Windows runner 的
+// TEMP 目录用 8.3 短名目录，例如 <用户目录>~1），并且命令不经 shell
+// 直接 exec，mid-token 的 ~ 对 exec 无任何特殊含义。
 const tildeMetacharDesc = "home directory expansion (~) is not supported — use the full path"
 
 // rejectTokenLeadingTilde rejects ~ at the start of a token (after

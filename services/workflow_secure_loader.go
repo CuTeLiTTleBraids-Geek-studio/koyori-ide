@@ -218,7 +218,6 @@ func (s *WorkflowService) runAgentWorkflowLoadHook(stage, relativePath string) e
 // 避免 CI 的 Linux lint 腿误报死代码。
 //
 //wails:ignore
-//
 //nolint:unused // 仅被 GOOS=windows 的测试引用，Linux lint 视角不可见
 func (s *WorkflowService) setAgentWorkflowLoadHook(hook func(stage, relativePath string) error) {
 	s.agentLoadMu.Lock()

@@ -358,8 +358,15 @@ func TestLocalWorkspaceHostTemporaryNameReplacementFailsClosed(t *testing.T) {
 	})
 	defer restore()
 	uri := localTestURI(t, "target.txt")
-	if err := host.WriteFile(uri, scope, []byte("must not publish")); !errors.Is(err, ErrNotAllowed) {
-		t.Fatalf("WriteFile replacement error = %v, want ErrNotAllowed", err)
+	writeErr := host.WriteFile(uri, scope, []byte("must not publish"))
+	if !errors.Is(writeErr, ErrNotAllowed) {
+		entries := []string{}
+		if es, rdErr := os.ReadDir(ctx.Root()); rdErr == nil {
+			for _, e := range es {
+				entries = append(entries, e.Name())
+			}
+		}
+		t.Fatalf("WriteFile replacement error = %v (%T), want ErrNotAllowed; root entries=%v", writeErr, writeErr, entries)
 	}
 	if _, err := os.Stat(filepath.Join(ctx.Root(), "target.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("target was published: %v", err)
