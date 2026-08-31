@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
-// Personal-path leak guard (P19 P1-05): fails when any committable text file
-// embeds a Windows user profile path such as `C:\Users\<name>\...`.
+// Personal-path leak guard (P19 P1-05 / P20 P1-01): fails when any committable
+// text file embeds a personal user profile path in any of these forms:
+//   - Windows: `C:\Users\<name>\...` and its escaped doubling `C:\\Users\\<name>`
+//   - WSL mount: `/mnt/c/Users/<name>/...`
+//   - Linux home: `/home/<name>/...`
 // Scope follows the P19 acceptance rule "已跟踪文件中个人路径为 0": the file
 // set is `git ls-files --cached --others --exclude-standard`, i.e. tracked
 // files plus untracked-but-not-ignored files, so local ignored artifacts
@@ -27,22 +30,31 @@ const textExtensions = new Set([
 ]);
 const textBasenames = new Set(["LICENSE", "NOTICE", "VERSION", ".gitignore"]);
 
-// Segment names that are generic test fixtures, never real usernames.
+// Segment names that are generic test fixtures or documentation placeholders,
+// never real usernames.
 const allowedSegments = new Set([
   "example", "dev", "public", "default", "main.go", "proj",
+  "user", "alice",
 ]);
 
-// `C:\Users\<segment>` / `C:/Users/<segment>`; the segment excludes
-// separators, quoting, placeholders (`<`, `%`) and wildcard characters, so
-// `C:\Users\<具体用户名>` never matches.
-const personalPathPattern = /c:[\\/]users[\\/]([^\\/<>"'`%|:*?\s]+)/gi;
+// Path segment: excludes separators, quoting, placeholders (`<`, `%`) and
+// wildcard characters, so `C:\Users\<具体用户名>` and `/home/<user>` never
+// match. `{1,2}` on the separators accepts the escaped doubling form (two
+// backslashes, as markdown/code spans previously emitted) that docs used.
+const personalPathPatterns = [
+  /c:[\\/]{1,2}users[\\/]{1,2}([^\\/<>"'`%|:*?\s]+)/gi, // Windows profile (raw + escaped)
+  /\/mnt\/c\/users\/([^\\/<>"'`%|:*?\s]+)/gi, // WSL-mounted Windows profile
+  /\/home\/([^\\/<>"'`%|:*?\s]+)/gi, // Linux home directory
+];
 
 export function findPersonalPaths(text) {
   const findings = [];
-  for (const match of text.matchAll(personalPathPattern)) {
-    const segment = match[1];
-    if (allowedSegments.has(segment.toLowerCase())) continue;
-    findings.push({ match: match[0], index: match.index });
+  for (const pattern of personalPathPatterns) {
+    for (const match of text.matchAll(pattern)) {
+      const segment = match[1];
+      if (allowedSegments.has(segment.toLowerCase())) continue;
+      findings.push({ match: match[0], index: match.index });
+    }
   }
   return findings;
 }
@@ -83,4 +95,4 @@ if (failures.length) {
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
-console.log("[personal-paths] OK - no personal Windows user profile paths in committable text files");
+console.log("[personal-paths] OK - no personal user profile paths (Windows/WSL/Linux-home forms) in committable text files");

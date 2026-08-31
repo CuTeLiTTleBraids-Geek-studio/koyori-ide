@@ -687,7 +687,7 @@ go test -run 'Version|Release' . -count=1
 # 断言 services/ 中 SetWorkspaceRoot*/SetProjectRoot 均带 //wails:ignore
 
 # 仓库卫生（G-17）
-ls -la /mnt/c/Users/Cute_/Downloads/Koyori IDE-main | grep -Ei 'koyori-ide\.exe|NUL|\$profile|\.claude' || echo "clean"
+ls -la /mnt/c/Users/<用户名>/Downloads/Koyori IDE-main | grep -Ei 'koyori-ide\.exe|NUL|\$profile|\.claude' || echo "clean"
 ```
 
 ### 26.3 阻塞与环境重试（U 项复现命令）

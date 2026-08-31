@@ -302,7 +302,7 @@ func TestCheckCommand_RmWithoutFlags_NotBlocked(t *testing.T) {
 func TestCheckCommand_RmSubpath_NotBlocked(t *testing.T) {
 	svc := NewAgentService()
 	// `rm -r /tmp/test` targets a subpath, not root/home directly.
-	// The denylist should only block rm of /, ~, * (whole root/home/all).
+	// The denylist should only block rm of /, ~, * (whole root, home, or all).
 	check := svc.CheckCommand("rm -r /tmp/test")
 	if check.Blocked {
 		t.Errorf("expected 'rm -r /tmp/test' to not be blocked, reason: %s", check.BlockReason)

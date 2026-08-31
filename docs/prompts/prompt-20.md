@@ -179,3 +179,21 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 ## 8. 执行状态
 
 本轮（2026-08-31）仅完成只读审查与 2.1 节自动化验证，未做任何整改；16 个 open PR 与两条分支的漂移状态原样保留，作为 P0 的输入。下一轮实现从 P1-01 开始（顺序见第 5 节）。
+
+## 9. 执行日志（P20 整改轮，2026-08-31）
+
+### P1-01：个人路径清零 + 守卫加固（对应 AC-04）— 状态：`complete`
+
+- 实现：
+  - `scripts/check-personal-paths.mjs:47-53`：单正则改为三形态正则组——`c:[\\/]{1,2}users[\\/]{1,2}<segment>`（Windows 原始 + 转义双反斜杠）、`/mnt/c/users/<segment>`（WSL 挂载）、`/home/<segment>`（Linux home）；allowlist 机制保持，新增 `user`/`alice` 两个既有 fixture 名（frontend locales 占位符 `frontend/src/lib/locales/en.ts:2427`、`services/operational_events_g27_test.go:97`），真实用户名不进 allowlist。
+  - `scripts/check-personal-paths.test.mjs:25-45`：新增"三形态残留样本全部 FAIL"与"占位符/allowlist fixture 在新形态下放行"两组自测（样本用部件拼装，避免测试文件自命中）。
+  - 5 处残留占位符化（保留证据语义）：`docs/prompts/prompt-14.md:21`（转义 Windows 形态 → `<用户名>` 段）、`docs/prompts/prompt-7.md:690`、`docs/prompts/prompt-8.md:40`、`docs/prompts/prompt-8.md:521`（WSL 形态 → `<用户名>` 段）、`build/scripts/finalize-release-0.2.0.sh:4`（Linux home 绝对路径 → `L="$HOME"/...`，语义等价且脚本可执行）。
+  - `services/agent_service_test.go:305`：注释散文 "root, home, all"（斜杠连写形式）触发新形态误报，改写为顿号分隔（仅注释，无行为变更）。
+- `T`：
+  - 加固后、修复前：`node scripts/check-personal-paths.mjs` → exit 1，精确报告 5 处真实残留（`finalize-release-0.2.0.sh:4` Linux home 形态、`prompt-14.md:21` 转义 Windows 形态、`prompt-7.md:690`/`prompt-8.md:40`/`prompt-8.md:521` WSL 形态，匹配 segment 均为真实用户名）——守卫对修复前残留全部 FAIL 的直接证据。
+  - 修复后：`node scripts/check-personal-paths.mjs` → OK，exit 0（全仓跟踪+未忽略文件清零）。
+  - `node --test scripts/check-personal-paths.test.mjs` → 5 pass / 0 fail。
+  - `go test ./services -run 'TestCheckCommand' -count=1` → ok（6.2s，注释改动无回归）。
+  - `bash -n build/scripts/finalize-release-0.2.0.sh` → 语法通过。
+- 证据类型：`T`（本地自动化验证；CI run 见收敛轮统一 dispatch）。
+- 剩余边界：守卫覆盖文本文件（`textExtensions`/`textBasenames` 白名单扩展名）；二进制与忽略路径不在扫描面（沿 P19 既定 scope）。

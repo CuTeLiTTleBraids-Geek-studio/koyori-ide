@@ -18,7 +18,7 @@
 >
 > **事实优先级：** 当前代码与本机命令 > 本文 > prompt-13 > prompt-12。历史 packaged SHA / 进度板勾选不能升级为当前产品可用。
 >
-> **工作区：** `C:\\Users\\Cute_\\Downloads\\Gugacode-main`
+> **工作区：** `C:\\Users\\<用户名>\\Downloads\\Gugacode-main`
 > **起草日期：** 2026-08-22
 > **修订：** 2026-08-22 招入 Git 显示 BUG、活动栏收口、Debug/Test 命令面板、Go/TS 开箱、AI 补齐（`@codebase` / 内联补全）。不砍 Goal / Computer Use。
 

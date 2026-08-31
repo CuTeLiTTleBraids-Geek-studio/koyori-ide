@@ -12,15 +12,37 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // contains a literal personal-path match for the repository-wide check.
 const BS = String.fromCharCode(92);
 const win = (segment) => `C:${BS}Users${BS}${segment}`;
+// The escaped doubling form docs previously used (`C:\\Users\\<name>`).
+const winEscaped = (segment) => `C:${BS}${BS}Users${BS}${BS}${segment}`;
 const nix = (segment) => ["C:", "Users", segment].join("/");
+const wsl = (segment) => ["/mnt/c", "Users", segment].join("/");
+const linuxHome = (segment) => ["", "home", segment].join("/");
 
 test("flags real Windows user profile paths", () => {
   assert.deepEqual(
     findPersonalPaths(`WAILS3_BIN=${win("Cute_")}${BS}go${BS}bin${BS}wails3.exe`).map((f) => f.match),
     [win("Cute_")],
   );
-  assert.equal(findPersonalPaths(`workspace ${nix("Alice")}/Downloads/Gugacode-main`).length, 1);
+  assert.equal(findPersonalPaths(`workspace ${nix("cute_")}/Downloads/Gugacode-main`).length, 1);
   assert.equal(findPersonalPaths(`dir ${win("john.doe")}${BS}AppData`).length, 1);
+});
+
+test("flags the three residue forms hardened in P20 (pre-fix leak shapes)", () => {
+  // These mirror the exact forms found in the P20 audit residues:
+  // prompt-14 (escaped Windows), prompt-7/prompt-8 (WSL mount),
+  // finalize-release-0.2.0.sh (Linux home).
+  assert.deepEqual(
+    findPersonalPaths(`workspace ${winEscaped("Cute_")}${BS}Downloads`).map((f) => f.match),
+    [winEscaped("Cute_")],
+  );
+  assert.deepEqual(
+    findPersonalPaths(`rsync ${wsl("Cute_")}/Downloads/Koyori IDE-main/`).map((f) => f.match),
+    [wsl("Cute_")],
+  );
+  assert.deepEqual(
+    findPersonalPaths(`L=${linuxHome("cute_")}/pkg/bin`).map((f) => f.match),
+    [`${linuxHome("cute_")}`],
+  );
 });
 
 test("does not flag placeholders, generics, or non-user C: paths", () => {
@@ -30,6 +52,16 @@ test("does not flag placeholders, generics, or non-user C: paths", () => {
   assert.deepEqual(findPersonalPaths(`env LOCALAPPDATA ${win("dev")}${BS}AppData${BS}Local`), []);
   assert.deepEqual(findPersonalPaths("payload 恰为绑定根 file:///C:/fixture-root"), []);
   assert.deepEqual(findPersonalPaths(`UNC ${BS}${BS}SERVER${BS}SHARE${BS}Repo ${nix("main.go")}`), []);
+});
+
+test("placeholders and allowlisted fixtures stay allowed in the new forms", () => {
+  assert.deepEqual(findPersonalPaths(`工作区 ${winEscaped("<具体用户名>")}`), []);
+  assert.deepEqual(findPersonalPaths(`rsync ${wsl("<user>")}/Downloads`), []);
+  assert.deepEqual(findPersonalPaths(`L=${linuxHome("<user>")}/pkg`), []);
+  // Generic fixture names used by existing frontend/Go tests and locales.
+  assert.deepEqual(findPersonalPaths(`placeholder ${linuxHome("user")}/.ssh/id_rsa`), []);
+  assert.deepEqual(findPersonalPaths(`fixture ${linuxHome("alice")}/project`), []);
+  assert.deepEqual(findPersonalPaths(`fixture ${wsl("user")}/Downloads`), []);
 });
 
 test("repository currently contains no personal user profile paths", () => {
