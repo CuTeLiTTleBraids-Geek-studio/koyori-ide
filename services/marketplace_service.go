@@ -1119,8 +1119,13 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	// must not be chased; the 3xx response falls through to the status
 	// check below and is rejected.
 	client.CheckRedirect = noRedirectPolicy
+	// P20 P1-02: an injected transport (tests) is reused as-is; production's
+	// transport-less client dials through the SSRF-safe transport so the
+	// resolved IP is revalidated at connect time (DNS rebinding guard).
 	if sharedClient.Transport != nil {
 		client.Transport = sharedClient.Transport
+	} else {
+		client.Transport = marketplaceTransport()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), vsixDownloadTimeout)
 	defer cancel()
@@ -1880,25 +1885,62 @@ func (s *MarketplaceService) httpGetJSON(url string) ([]byte, error) {
 
 // httpGetBytes fetches raw bytes (e.g. a VSIX) from a URL.
 func (s *MarketplaceService) httpGetBytes(url string) ([]byte, error) {
-	return s.httpGet(url, "")
-}
-
-func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
+	// P20 P1-02: the sha256 sidecar and readme URLs come from the registry
+	// response, not from the user-validated registry base — apply the same
+	// SSRF gate as the VSIX funnel before any byte is fetched.
+	if _, err := validateDownloadURL(url); err != nil {
+		return nil, fmt.Errorf("registry fetch URL %q rejected: %w", url, err)
+	}
 	s.mu.Lock()
-	client := s.httpClient
+	sharedClient := s.httpClient
 	s.mu.Unlock()
-	if client == nil {
-		client = http.DefaultClient
+	if sharedClient == nil {
+		sharedClient = http.DefaultClient
 	}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	if accept != "" {
-		req.Header.Set("Accept", accept)
-	}
 	req.Header.Set("User-Agent", "koyori-ide-marketplace/1.0")
-	resp, err := client.Do(req)
+	// P20 P1-02: dial-time revalidation defeats DNS rebinding after the URL
+	// gate passed, and no-redirect stops a 302 aimed at an internal target
+	// (the 3xx falls through to the status check below and is rejected).
+	transport := sharedClient.Transport
+	if transport == nil {
+		transport = marketplaceTransport()
+	}
+	client := &http.Client{
+		Timeout:       sharedClient.Timeout,
+		Transport:     transport,
+		CheckRedirect: noRedirectPolicy,
+	}
+	return httpGetBody(client.Do(req))
+}
+
+// marketplaceTransport produces the dial-time revalidating transport used for
+// every registry-originated fetch (P20 P1-02). Production gets
+// NewSSRFSafeTransport so a hostname that passed ValidateNonPrivateURL cannot
+// rebind to a private address between validation and dial. Tests swap this
+// provider (alongside validateDownloadURL) to return nil so loopback
+// httptest servers stay reachable.
+var marketplaceTransport = newMarketplaceSSRFTransport
+
+var (
+	marketplaceTransportOnce sync.Once
+	marketplaceTransportReal http.RoundTripper
+)
+
+func newMarketplaceSSRFTransport() http.RoundTripper {
+	marketplaceTransportOnce.Do(func() {
+		marketplaceTransportReal = NewSSRFSafeTransport()
+	})
+	return marketplaceTransportReal
+}
+
+// httpGetBody reads and bounds an HTTP GET response body shared by the
+// registry JSON and raw-bytes funnels: non-2xx becomes an error (a 3xx that
+// reached this point was not followed), and the body is size-capped (H-2).
+func httpGetBody(resp *http.Response, err error) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -1918,6 +1960,25 @@ func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
 		return nil, fmt.Errorf("response body exceeds max size %d bytes", maxHTTPResponseSize)
 	}
 	return data, nil
+}
+
+func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
+	s.mu.Lock()
+	client := s.httpClient
+	s.mu.Unlock()
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	req.Header.Set("User-Agent", "koyori-ide-marketplace/1.0")
+	resp, err := client.Do(req)
+	return httpGetBody(resp, err)
 }
 
 // extractVSIXEntries extracts zip entries from an on-disk VSIX reader.
