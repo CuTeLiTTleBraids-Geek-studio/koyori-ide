@@ -141,6 +141,12 @@ jobs:
       # the same untracked bindings tree the wails-bindings job verifies.
       - name: Generate untracked Wails bindings
         run: node scripts/generate-bindings.mjs
+      - name: Debug dump generated imservice.ts (P20 bisect)
+        if: always()
+        run: |
+          F=frontend/bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/imservice.ts
+          sha256sum "$F" || true
+          cat "$F" || true
 
       # The root package embeds frontend/dist (go:embed in main.go). Go-only
       # CI legs do not build the frontend, so a placeholder index.html is
@@ -283,6 +289,12 @@ jobs:
 
       - name: Generate untracked Wails bindings
         run: node scripts/generate-bindings.mjs
+      - name: Debug dump generated imservice.ts (P20 bisect)
+        if: always()
+        run: |
+          F=frontend/bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/imservice.ts
+          sha256sum "$F" || true
+          cat "$F" || true
 
       - name: Type check
         run: npx vue-tsc --noEmit
@@ -347,6 +359,12 @@ jobs:
 
       - name: Generate untracked Wails bindings
         run: node scripts/generate-bindings.mjs
+      - name: Debug dump generated imservice.ts (P20 bisect)
+        if: always()
+        run: |
+          F=frontend/bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/imservice.ts
+          sha256sum "$F" || true
+          cat "$F" || true
 
       - name: Run tests with coverage
         run: npm run test:coverage
