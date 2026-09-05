@@ -269,14 +269,31 @@ func (s *IMService) saveConfigLocked() error {
 // Webhook URL 在保存阶段强校验（拒绝私网/环回/元数据目标）；任何 provider
 // 的 Webhook URL 发生变更即更换了出站目的地，撤销已批准状态并要求重新走
 // 原生同意边界（P19 P0-02）。
+// imProviderTypes is the fail-closed whitelist of supported provider types
+// (P20 P1-03). Anything outside it must be rejected at config save and at
+// send time: an unknown Type used to have its BotToken encrypted and stored
+// but silently never sent — the same class of defect as the wechat_work
+// token that was silently dropped before P19 P0-02.
+var imProviderTypes = map[string]bool{
+	"slack":       true,
+	"discord":     true,
+	"feishu":      true,
+	"wechat_work": true,
+}
+
 func (s *IMService) UpdateConfig(cfg IMConfig) error {
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
-		if p.WebhookURL == "" {
-			continue
+		if p.WebhookURL != "" {
+			if _, err := validateIMWebhookURL(p.WebhookURL); err != nil {
+				return fmt.Errorf("provider %s webhook url rejected: %w", p.Name, err)
+			}
 		}
-		if _, err := validateIMWebhookURL(p.WebhookURL); err != nil {
-			return fmt.Errorf("provider %s webhook url rejected: %w", p.Name, err)
+		// P20 P1-03: reject unknown provider types at save time so a
+		// silently-dead provider (token stored, never sent) cannot persist.
+		// Draft providers with neither webhook nor token stay allowed.
+		if (p.WebhookURL != "" || p.BotToken != "") && !imProviderTypes[p.Type] {
+			return fmt.Errorf("provider %s has unsupported type %q (fail-closed)", p.Name, p.Type)
 		}
 	}
 	// Approval is a backend-owned capability. Renderer DTOs cannot grant it by
@@ -429,6 +446,13 @@ func (s *IMService) buildSendPayload(providerType, channel, text string, attachm
 func (s *IMService) sendToProvider(ctx context.Context, provider *IMProvider, payload map[string]interface{}) error {
 	if provider.WebhookURL == "" {
 		return fmt.Errorf("provider %s has no webhook URL configured: %w", provider.Name, ErrInvalidInput)
+	}
+	// P20 P1-03: fail closed on unknown provider types — covers legacy
+	// persisted configs saved before the UpdateConfig whitelist existed.
+	// Without this, a bot token could be stored but silently never sent,
+	// or a payload shaped for the wrong provider API could leak outbound.
+	if !imProviderTypes[provider.Type] {
+		return fmt.Errorf("provider %s has unsupported type %q (fail-closed): %w", provider.Name, provider.Type, ErrNotAllowed)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

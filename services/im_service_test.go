@@ -457,7 +457,9 @@ func TestIMService_ConcurrentSaveConfigDoesNotMutateProviders(t *testing.T) {
 func TestIMService_ConcurrentCallerMutationIsIsolated(t *testing.T) {
 	svc := newTestIMService(t)
 	cfg := IMConfig{
-		Providers:         []IMProvider{{Name: "stable", BotToken: "stable-token"}},
+		// P20 P1-03：save 现在要求已配置 provider 的 Type 在白名单内，
+		// fixture 相应补全。
+		Providers:         []IMProvider{{Type: "slack", Name: "stable", BotToken: "stable-token"}},
 		NotificationRules: []NotificationRule{{Channel: "stable-channel"}},
 	}
 	if err := svc.UpdateConfig(cfg); err != nil {
@@ -1005,5 +1007,64 @@ func TestIMService_SendMessage_TokenHeaderPerProvider(t *testing.T) {
 		if got[c.providerType] != c.wantAuth {
 			t.Errorf("%s Authorization = %q, want %q", c.providerType, got[c.providerType], c.wantAuth)
 		}
+	}
+}
+
+// --- P20 P1-03: unknown provider Type fail-closed ---
+
+// TestIMService_UpdateConfig_RejectsUnknownProviderType 保存时拒绝未知
+// provider 类型：未知 Type 的 BotToken 曾被加密存储但从不发送（静默死配
+// 置），与 wechat_work 原缺陷同类，必须在 save 时 fail-closed。
+func TestIMService_UpdateConfig_RejectsUnknownProviderType(t *testing.T) {
+	svc := newTestIMService(t)
+	err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "slack", Name: "ok", WebhookURL: "https://hooks.example.com/svc", Enabled: true},
+		{Type: "teams", Name: "unknown", WebhookURL: "https://hooks.example.com/teams", BotToken: "tok", Enabled: true},
+	}})
+	if err == nil {
+		t.Fatal("unknown provider type must be rejected at save")
+	}
+	if !strings.Contains(err.Error(), "unsupported type") || !strings.Contains(err.Error(), "teams") {
+		t.Errorf("error should name the unknown type, got %v", err)
+	}
+	// 空 WebhookURL+BotToken 的草稿 provider 不参与发送，放行（不打扰 UI 草稿流）。
+	if err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "someday", Name: "draft"},
+	}}); err != nil {
+		t.Errorf("empty draft provider must stay allowed, got %v", err)
+	}
+}
+
+// TestIMService_SendMessage_UnknownTypeFailsClosed 覆盖发送路径：即使未知
+// 类型经旧版持久化配置进入内存（绕过新的 UpdateConfig 白名单），发送也必须
+// 返回 ErrNotAllowed，且不产生任何出站请求。
+func TestIMService_SendMessage_UnknownTypeFailsClosed(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	svc := newTestIMService(t)
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	// 直接注入内存配置，模拟"旧版本保存的未知类型 provider"。
+	svc.mu.Lock()
+	svc.config = IMConfig{Approved: true, Providers: []IMProvider{
+		{Type: "teams", Name: "legacy", WebhookURL: server.URL + "/hook", BotToken: "tok", Enabled: true},
+		{Type: "", Name: "empty-type", WebhookURL: server.URL + "/hook2", Enabled: true},
+	}}
+	svc.mu.Unlock()
+
+	for _, name := range []string{"legacy", "empty-type"} {
+		err := svc.SendMessage(context.Background(), name, "", "hello", nil)
+		if !errors.Is(err, ErrNotAllowed) {
+			t.Errorf("provider %s: error = %v, want ErrNotAllowed", name, err)
+		}
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Error("unknown provider types must never produce an outbound request")
 	}
 }
