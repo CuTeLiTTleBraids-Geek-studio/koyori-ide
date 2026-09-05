@@ -69,6 +69,11 @@ type EditTransactionOptions struct {
 	// (temp-file + rename) to minimise partial-write exposure (required).
 	Write func(path, content string) error
 
+	// WriteIfUnchanged is an optional final compare-and-swap writer. When set,
+	// text edits use it for the forward commit with the edit's baseline hash;
+	// rollback deliberately uses Write so it can restore the captured baseline.
+	WriteIfUnchanged func(path, content, baselineHash string) error
+
 	// Rename moves a file. nil = os.Rename.
 	Rename func(oldPath, newPath string) error
 
@@ -155,7 +160,7 @@ func applyEditTransaction(ctx context.Context, txn EditTransaction, opts EditTra
 		if preValidated {
 			return nil
 		}
-		_, err := ValidatePathWithinRoot(opts.Root, path)
+		_, err := ValidateMutatingPathWithinRoot(opts.Root, path)
 		return err
 	}
 
@@ -309,9 +314,15 @@ func applyEditTransaction(ctx context.Context, txn EditTransaction, opts EditTra
 			result.FailureReason = err.Error()
 			break
 		}
-		if err := opts.Write(f.FilePath, f.ModifiedContent); err != nil {
-			result.Err = err
-			result.FailureReason = err.Error()
+		var writeErr error
+		if opts.WriteIfUnchanged != nil {
+			writeErr = opts.WriteIfUnchanged(f.FilePath, f.ModifiedContent, f.BaselineHash)
+		} else {
+			writeErr = opts.Write(f.FilePath, f.ModifiedContent)
+		}
+		if writeErr != nil {
+			result.Err = writeErr
+			result.FailureReason = writeErr.Error()
 			break
 		}
 		applied = append(applied, f.FilePath)

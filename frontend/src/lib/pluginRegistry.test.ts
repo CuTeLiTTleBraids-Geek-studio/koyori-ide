@@ -47,6 +47,7 @@ import {
   setSandboxHost,
   setSandboxMode,
   isSandboxEnabled,
+  isProductionSandboxRequired,
   executePluginCommand,
   createSandboxRpcHandler,
   __setPluginModule,
@@ -176,6 +177,22 @@ describe("syncPlugins", () => {
       const states = listPluginStates();
       expect(states[0].status).toBe("disabled");
     });
+  });
+});
+
+describe("plugin sandbox mode", () => {
+  it("forces sandbox on in production even when settings disable it", () => {
+    setSandboxMode(false, { production: true });
+
+    expect(isSandboxEnabled()).toBe(true);
+    expect(isProductionSandboxRequired({ production: true })).toBe(true);
+  });
+
+  it("allows explicit sandbox disablement outside production", () => {
+    setSandboxMode(true, { production: false });
+    setSandboxMode(false, { production: false });
+
+    expect(isSandboxEnabled()).toBe(false);
   });
 });
 

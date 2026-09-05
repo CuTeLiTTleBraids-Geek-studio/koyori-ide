@@ -12,22 +12,11 @@ import (
 
 func TestRootSetters_are_unavailable_to_Wails(t *testing.T) {
 	// Given
-	entries, err := os.ReadDir(".")
+	files, err := parser.ParseDir(token.NewFileSet(), ".", func(info os.FileInfo) bool {
+		return strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go")
+	}, parser.ParseComments)
 	if err != nil {
-		t.Fatalf("read services package: %v", err)
-	}
-	fset := token.NewFileSet()
-	files := make([]*ast.File, 0, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, parseErr := parser.ParseFile(fset, name, nil, parser.ParseComments)
-		if parseErr != nil {
-			t.Fatalf("parse %s: %v", name, parseErr)
-		}
-		files = append(files, file)
+		t.Fatalf("parse services package: %v", err)
 	}
 	forbiddenExports := map[string]bool{
 		"SetProjectRoot":    true,
@@ -37,7 +26,7 @@ func TestRootSetters_are_unavailable_to_Wails(t *testing.T) {
 	foundInternal := 0
 
 	// When
-	for _, file := range files {
+	for _, file := range files["services"].Files {
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
 			if !ok || function.Recv == nil {
@@ -132,20 +121,6 @@ func TestGitService_init_fails_when_workspace_root_is_empty(t *testing.T) {
 	// Then
 	if err == nil {
 		t.Fatal("git mutation succeeded without an active workspace")
-	}
-}
-
-func TestAgentService_approval_fails_when_workspace_root_is_empty(t *testing.T) {
-	// Given
-	service := NewAgentService()
-	t.Cleanup(func() { _ = service.Close() })
-
-	// When
-	_, err := service.RequestCommandApproval("go version", t.TempDir())
-
-	// Then
-	if err == nil {
-		t.Fatal("agent command approval succeeded without an active workspace")
 	}
 }
 

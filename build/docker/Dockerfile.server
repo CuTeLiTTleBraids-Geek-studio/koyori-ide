@@ -13,23 +13,23 @@
 # the builder and runtime libc compatible (a glibc builder -> a glibc runtime).
 # The Taskfile passes these through: task build:docker CGO_ENABLED=1 GO_IMAGE=... RUNTIME_IMAGE=...
 
-ARG GO_IMAGE=golang:alpine
-ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
+ARG GO_IMAGE=golang:1.25-alpine@sha256:3eb6c2b3db8d55e38537302edb510b4417f8a115efbd5906d131ceba9468e29a
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
 ARG CGO_ENABLED=0
 
 # Build frontend assets from clean source. frontend/dist and frontend/bindings
 # are excluded from the Docker context, so neither a stale local bundle nor a
 # manually modified binding can enter the image.
-FROM golang:1.25-alpine AS bindings-go
+FROM golang:1.25-alpine@sha256:3eb6c2b3db8d55e38537302edb510b4417f8a115efbd5906d131ceba9468e29a AS bindings-go
 
-FROM node:20-alpine AS frontend-builder
+FROM node:20.19-alpine@sha256:658d0f63e501824d6c23e06d4bb95c71e7d704537c9d9272f488ac03a370d448 AS frontend-builder
 COPY --from=bindings-go /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}" \
     GOTOOLCHAIN=local
 RUN apk add --no-cache git
 WORKDIR /app
 COPY . .
-RUN cd frontend && npm ci && npm run build
+RUN cd frontend && npm ci --ignore-scripts && npm run build
 RUN test -s frontend/dist/index.html
 
 # Build stage
@@ -56,18 +56,21 @@ RUN sed -i '/^replace/d' go.mod || true
 # Download dependencies
 RUN go mod tidy
 
-# Build the production server binary.
+# Build the production server binary and its authentication gateway.
 # - server,production tags: HTTP server mode with production code paths (no dev
 #   logger/asset middleware), matching the desktop production build.
 # - CGO_ENABLED defaults to 0 for a fully static binary (distroless/static);
 #   override with --build-arg CGO_ENABLED=1 (see header) for CGO apps.
-RUN CGO_ENABLED=${CGO_ENABLED} go build -tags server,production -trimpath -buildvcs=false -ldflags="-s -w" -o server .
+RUN CGO_ENABLED=${CGO_ENABLED} go build -tags server,production -trimpath -buildvcs=false -ldflags="-s -w" -o server-internal .
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o server-gateway ./build/docker/server-gateway
 
 # Runtime stage - minimal image
 FROM ${RUNTIME_IMAGE}
 
-# Copy the binary
-COPY --from=builder /app/server /server
+# The gateway is the only network-facing process. It launches the Wails server
+# on container loopback and authenticates HTTP RPC and WebSocket traffic.
+COPY --from=builder /app/server-internal /server-internal
+COPY --from=builder /app/server-gateway /server-gateway
 
 # Copy frontend assets
 COPY --from=builder /app/frontend/dist /frontend/dist
@@ -75,13 +78,20 @@ COPY --from=builder /app/frontend/dist /frontend/dist
 # Expose the default port
 EXPOSE 8080
 
-# Bind to all interfaces (required for Docker)
-# Can be overridden at runtime with -e WAILS_SERVER_HOST=...
-ENV WAILS_SERVER_HOST=0.0.0.0
+# The Wails RPC server never listens on a container network interface. The
+# gateway fails closed unless KOYORI_SERVER_TOKEN (at least 32 bytes) or
+# KOYORI_SERVER_TOKEN_FILE is supplied. For non-loopback deployments, terminate
+# TLS at the gateway (KOYORI_TLS_CERT_FILE / KOYORI_TLS_KEY_FILE) or at a trusted
+# reverse proxy.
+ENV WAILS_SERVER_HOST=127.0.0.1 \
+    WAILS_SERVER_PORT=8081 \
+    KOYORI_GATEWAY_HOST=0.0.0.0 \
+    KOYORI_GATEWAY_PORT=8080
 
 # Drop privileges explicitly, including when a compatible runtime image is
 # supplied through RUNTIME_IMAGE.
 USER nonroot:nonroot
 
-# Run the server
-ENTRYPOINT ["/server"]
+# Run the authenticated network gateway. It starts and supervises the internal
+# Wails process after validating the token configuration.
+ENTRYPOINT ["/server-gateway"]

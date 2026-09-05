@@ -12,9 +12,9 @@ package services
 //  2. Untrusted-by-default: newly installed extensions start disabled +
 //     "pending review". The first enable attempt surfaces a popup listing
 //     the requested API permissions (handled by the frontend store).
-//  3. Signature verification: VSIX files are verified via SHA-256 hash
-//     and (when present) a marketplace signature. Unverified extensions
-//     are rejected.
+//  3. Integrity verification: VSIX files are checked against an expected
+//     SHA-256 hash. This detects a mismatched payload but does not authenticate
+//     the publisher. Extensions without a successful check are rejected.
 //  4. Blacklist enforcement: known-malicious extension IDs are blocked
 //     from installation entirely.
 //
@@ -117,7 +117,11 @@ type ExtensionSecurityInfo struct {
 	Permissions []ExtensionPermission `json:"permissions"`
 	// SHA256 is the hex-encoded SHA-256 of the installed VSIX payload.
 	SHA256 string `json:"sha256"`
-	// Verified is true when the signature check passed.
+	// IntegrityChecked is true when the installed VSIX matched the expected
+	// SHA-256 digest. It does not authenticate the publisher.
+	IntegrityChecked bool `json:"integrityChecked"`
+	// Verified is a deprecated compatibility alias for IntegrityChecked. It is
+	// not publisher authentication and must not be presented as such.
 	Verified bool `json:"verified"`
 	// Enabled is the current enabled state. New installs default to
 	// false (G-SEC-12 requirement 2).
@@ -134,14 +138,48 @@ type ExtensionSecurityInfo struct {
 // security state file. Stored under <configDir>/koyori-ide/extension-security.json.
 // This is distinct from the simpler extensionStateEntry in
 // marketplace_service.go (which only tracks Enabled) because the security
-// service tracks classification, permissions, and verification state.
+// service tracks classification, permissions, and integrity-check state.
 type extensionSecurityStateEntry struct {
-	Level         ExtensionSecurityLevel `json:"level"`
-	Permissions   []ExtensionPermission  `json:"permissions"`
-	SHA256        string                 `json:"sha256"`
-	Verified      bool                   `json:"verified"`
-	Enabled       bool                   `json:"enabled"`
-	PendingReview bool                   `json:"pendingReview"`
+	Level            ExtensionSecurityLevel `json:"level"`
+	Permissions      []ExtensionPermission  `json:"permissions"`
+	SHA256           string                 `json:"sha256"`
+	IntegrityChecked bool                   `json:"integrityChecked"`
+	// Verified is retained only so older clients/state readers can consume the
+	// file. New code must use IntegrityChecked for the SHA-256 integrity gate.
+	Verified      bool `json:"verified"`
+	Enabled       bool `json:"enabled"`
+	PendingReview bool `json:"pendingReview"`
+}
+
+// UnmarshalJSON migrates the legacy verified field without allowing it to
+// override an explicitly present integrityChecked=false value. The old field
+// represented the same SHA-256 comparison; it never represented publisher
+// authentication.
+func (e *extensionSecurityStateEntry) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Level            ExtensionSecurityLevel `json:"level"`
+		Permissions      []ExtensionPermission  `json:"permissions"`
+		SHA256           string                 `json:"sha256"`
+		IntegrityChecked *bool                  `json:"integrityChecked"`
+		Verified         bool                   `json:"verified"`
+		Enabled          bool                   `json:"enabled"`
+		PendingReview    bool                   `json:"pendingReview"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	e.Level = raw.Level
+	e.Permissions = raw.Permissions
+	e.SHA256 = raw.SHA256
+	if raw.IntegrityChecked != nil {
+		e.IntegrityChecked = *raw.IntegrityChecked
+	} else {
+		e.IntegrityChecked = raw.Verified
+	}
+	e.Verified = e.IntegrityChecked
+	e.Enabled = raw.Enabled
+	e.PendingReview = raw.PendingReview
+	return nil
 }
 
 type extensionSecurityStateFile struct {
@@ -161,17 +199,25 @@ const extensionEnableAction = "enable"
 // blocked: known malicious extension".
 var ErrBlacklisted = errors.New("extension is on the known-malicious blacklist")
 
-// ErrSignatureMismatch is returned when a VSIX's computed SHA-256 does
-// not match the expected hash.
-var ErrSignatureMismatch = errors.New("extension signature verification failed: SHA-256 mismatch")
+// ErrIntegrityMismatch is returned when a VSIX's computed SHA-256 does not
+// match the expected hash.
+var ErrIntegrityMismatch = errors.New("extension SHA-256 integrity check failed: digest mismatch")
+
+// ErrSignatureMismatch is a deprecated compatibility alias for the SHA-256
+// integrity error.
+var ErrSignatureMismatch = ErrIntegrityMismatch
 
 // ErrRestrictedRequiresApproval is returned when a Restricted extension is
 // enabled without a valid backend-issued approval capability.
 var ErrRestrictedRequiresApproval = errors.New("restricted extensions require explicit user approval to enable")
 
-// ErrNotVerified is returned when an extension that has not passed
-// signature verification is enabled.
-var ErrNotVerified = errors.New("extension has not passed signature verification")
+// ErrIntegrityNotChecked is returned when an extension that has not passed the
+// expected SHA-256 integrity check is enabled.
+var ErrIntegrityNotChecked = errors.New("extension has not passed the SHA-256 integrity check")
+
+// ErrNotVerified is a deprecated compatibility alias for callers compiled
+// against the old name. It does not indicate publisher authentication.
+var ErrNotVerified = ErrIntegrityNotChecked
 
 // ExtensionSecurityService implements G-VSC-03 / G-SEC-12. It is
 // thread-safe (mu guards the in-memory state and the blacklist).
@@ -285,34 +331,36 @@ func (s *ExtensionSecurityService) ClassifyExtension(permissions []ExtensionPerm
 	return SecurityTrusted
 }
 
-// VerifyExtensionSignature verifies the SHA-256 hash of a downloaded
-// VSIX file against the expected hash (G-SEC-12 requirement 3).
+// VerifyExtensionIntegrity verifies the SHA-256 hash of a downloaded VSIX file
+// against the expected hash (G-SEC-12 requirement 3). This is an integrity
+// check only; it does not authenticate the publisher.
 //
 // expectedSHA256 is the hex-encoded hash published by the marketplace
 // (or supplied out-of-band for self-hosted extensions). An empty
 // expectedSHA256 is rejected — verification requires a hash to compare
-// against. Returns ErrSignatureMismatch on mismatch.
-//
-// The marketplace-signature check is represented by the `Verified`
-// flag on ExtensionSecurityInfo: when the SHA-256 matches we treat the
-// extension as verified (the marketplace signature is what produced the
-// expected hash). A future implementation can layer an additional
-// detached-signature check here without changing the call sites.
-func (s *ExtensionSecurityService) VerifyExtensionSignature(vsixPath string, expectedSHA256 string) error {
+// against. Returns ErrIntegrityMismatch on mismatch.
+func (s *ExtensionSecurityService) VerifyExtensionIntegrity(vsixPath string, expectedSHA256 string) error {
 	if expectedSHA256 == "" {
-		return errors.New("signature verification requires a non-empty expected SHA-256")
+		return errors.New("SHA-256 integrity check requires a non-empty expected digest")
 	}
 	// M-10: stream the file instead of reading it all into memory.
 	// This reduces peak memory for large VSIX files.
 	actual, err := computeFileSHA256(vsixPath)
 	if err != nil {
-		return fmt.Errorf("read vsix for verification: %w", err)
+		return fmt.Errorf("read VSIX for SHA-256 integrity check: %w", err)
 	}
 	// Lowercase + trim for a robust comparison.
 	if !strings.EqualFold(strings.TrimSpace(actual), strings.TrimSpace(expectedSHA256)) {
-		return ErrSignatureMismatch
+		return ErrIntegrityMismatch
 	}
 	return nil
+}
+
+// VerifyExtensionSignature is a deprecated compatibility wrapper. The method
+// performs only a SHA-256 integrity check.
+// Deprecated: use VerifyExtensionIntegrity.
+func (s *ExtensionSecurityService) VerifyExtensionSignature(vsixPath string, expectedSHA256 string) error {
+	return s.VerifyExtensionIntegrity(vsixPath, expectedSHA256)
 }
 
 // ComputeSHA256 returns the hex-encoded SHA-256 of a file. Used to
@@ -333,7 +381,7 @@ func computeFileSHA256(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open file for sha256: %w", err)
 	}
-	defer func() { _ = file.Close() }()
+	defer file.Close()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", fmt.Errorf("hash file: %w", err)
@@ -429,16 +477,18 @@ func (s *ExtensionSecurityService) RegisterInstallFromFile(
 		PendingReview: true,  // G-SEC-12: pending review
 	}
 
-	// Signature verification. When expectedSHA256 is empty we record
-	// Verified=false and the extension cannot be enabled (ErrNotVerified).
+	// SHA-256 integrity check. When expectedSHA256 is empty we record an
+	// unchecked extension and fail closed on enable (ErrIntegrityNotChecked).
 	if expectedSHA256 != "" {
-		if err := s.VerifyExtensionSignature(vsixPath, expectedSHA256); err != nil {
-			return nil, fmt.Errorf("verify signature: %w", err)
+		if err := s.VerifyExtensionIntegrity(vsixPath, expectedSHA256); err != nil {
+			return nil, fmt.Errorf("check VSIX integrity: %w", err)
 		}
-		info.Verified = true
+		info.IntegrityChecked = true
+		info.Verified = true // Deprecated compatibility alias only.
 		info.SHA256 = expectedSHA256
 	} else if vsixPath != "" {
-		// Compute the hash for record-keeping but mark unverified.
+		// Compute the hash for record-keeping but do not claim it was checked
+		// against an expected digest.
 		if hash, err := s.ComputeSHA256(vsixPath); err == nil {
 			info.SHA256 = hash
 		}
@@ -525,14 +575,15 @@ func (s *ExtensionSecurityService) GetSecurityInfo(extensionID string) (*Extensi
 		blacklisted = s.IsBlacklisted(publisher, name)
 	}
 	return &ExtensionSecurityInfo{
-		ExtensionID:   extensionID,
-		Level:         entry.Level,
-		Permissions:   append([]ExtensionPermission{}, entry.Permissions...),
-		SHA256:        entry.SHA256,
-		Verified:      entry.Verified,
-		Enabled:       entry.Enabled,
-		Blacklisted:   blacklisted,
-		PendingReview: entry.PendingReview,
+		ExtensionID:      extensionID,
+		Level:            entry.Level,
+		Permissions:      append([]ExtensionPermission{}, entry.Permissions...),
+		SHA256:           entry.SHA256,
+		IntegrityChecked: entry.IntegrityChecked,
+		Verified:         entry.IntegrityChecked, // Deprecated compatibility alias.
+		Enabled:          entry.Enabled,
+		Blacklisted:      blacklisted,
+		PendingReview:    entry.PendingReview,
 	}, nil
 }
 
@@ -540,7 +591,8 @@ func (s *ExtensionSecurityService) GetSecurityInfo(extensionID string) (*Extensi
 // backend-owned approval capability. The legacy renderer approval boolean is
 // intentionally ignored: Restricted extensions must use the token flow below.
 //
-// Enabling an unverified extension is rejected with ErrNotVerified.
+// Enabling an extension without a successful SHA-256 integrity check is
+// rejected with ErrIntegrityNotChecked.
 // Enabling a blacklisted extension is rejected with ErrBlacklisted.
 //
 //wails:ignore
@@ -559,8 +611,8 @@ func (s *ExtensionSecurityService) RequestExtensionEnableApproval(extensionID st
 	if info.Blacklisted {
 		return "", ErrBlacklisted
 	}
-	if !info.Verified {
-		return "", ErrNotVerified
+	if !info.IntegrityChecked {
+		return "", ErrIntegrityNotChecked
 	}
 	if info.Level != SecurityRestricted {
 		return "", fmt.Errorf("extension enable approval is only available for restricted extensions")
@@ -673,9 +725,10 @@ func (s *ExtensionSecurityService) setExtensionEnabled(extensionID string, enabl
 	}
 
 	if enabled {
-		// Signature gate: unverified extensions cannot be enabled.
-		if !entry.Verified {
-			return ErrNotVerified
+		// Integrity gate: extensions whose VSIX was not checked against an
+		// expected SHA-256 digest cannot be enabled.
+		if !entry.IntegrityChecked {
+			return ErrIntegrityNotChecked
 		}
 		// Restricted gate: requires explicit approval.
 		if entry.Level == SecurityRestricted && !approved {
@@ -688,6 +741,7 @@ func (s *ExtensionSecurityService) setExtensionEnabled(extensionID string, enabl
 		// because network access is the highest-risk capability.
 		entry.PendingReview = false
 	}
+	// Disabling always succeeds (subject to blacklist above).
 	entry.Enabled = enabled
 
 	state.Extensions[extensionID] = entry
@@ -705,14 +759,15 @@ func (s *ExtensionSecurityService) ListSecurityInfo() []ExtensionSecurityInfo {
 			blacklisted = s.IsBlacklisted(publisher, name)
 		}
 		out = append(out, ExtensionSecurityInfo{
-			ExtensionID:   id,
-			Level:         entry.Level,
-			Permissions:   append([]ExtensionPermission{}, entry.Permissions...),
-			SHA256:        entry.SHA256,
-			Verified:      entry.Verified,
-			Enabled:       entry.Enabled,
-			Blacklisted:   blacklisted,
-			PendingReview: entry.PendingReview,
+			ExtensionID:      id,
+			Level:            entry.Level,
+			Permissions:      append([]ExtensionPermission{}, entry.Permissions...),
+			SHA256:           entry.SHA256,
+			IntegrityChecked: entry.IntegrityChecked,
+			Verified:         entry.IntegrityChecked, // Deprecated compatibility alias.
+			Enabled:          entry.Enabled,
+			Blacklisted:      blacklisted,
+			PendingReview:    entry.PendingReview,
 		})
 	}
 	return out
@@ -738,12 +793,13 @@ func (s *ExtensionSecurityService) saveSecurityInfo(info *ExtensionSecurityInfo)
 		state.Extensions = make(map[string]extensionSecurityStateEntry)
 	}
 	state.Extensions[info.ExtensionID] = extensionSecurityStateEntry{
-		Level:         info.Level,
-		Permissions:   append([]ExtensionPermission{}, info.Permissions...),
-		SHA256:        info.SHA256,
-		Verified:      info.Verified,
-		Enabled:       info.Enabled,
-		PendingReview: info.PendingReview,
+		Level:            info.Level,
+		Permissions:      append([]ExtensionPermission{}, info.Permissions...),
+		SHA256:           info.SHA256,
+		IntegrityChecked: info.IntegrityChecked,
+		Verified:         info.IntegrityChecked, // Deprecated compatibility alias.
+		Enabled:          info.Enabled,
+		PendingReview:    info.PendingReview,
 	}
 	return s.saveExtensionState(state)
 }

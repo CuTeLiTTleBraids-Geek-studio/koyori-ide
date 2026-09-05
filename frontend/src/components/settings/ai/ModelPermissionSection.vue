@@ -57,6 +57,8 @@ const editForm = ref<ModelAssignment>({
   operation: "chat",
   providerId: "",
   model: "",
+  reasoningEffort: "",
+  fallbackReasoningEffort: "",
   temperature: 0,
   maxTokens: 0,
   fallbackProviderId: "",
@@ -185,6 +187,15 @@ const maxDayCost = computed(() => {
           <input type="text" v-model="editForm.model" class="mp-input" :placeholder="t('modelPermission.placeholderModel')" />
         </div>
         <div class="mp-form-row">
+          <label class="mp-label">{{ t("modelPermission.propReasoningEffort") }}</label>
+          <select v-model="editForm.reasoningEffort" class="mp-input">
+            <option value="">{{ t("modelPermission.reasoningDefault") }}</option>
+            <option value="low">{{ t("modelPermission.reasoningLow") }}</option>
+            <option value="medium">{{ t("modelPermission.reasoningMedium") }}</option>
+            <option value="high">{{ t("modelPermission.reasoningHigh") }}</option>
+          </select>
+        </div>
+        <div class="mp-form-row">
           <label class="mp-label">{{ t("modelPermission.propTemperature") }}</label>
           <input type="number" v-model.number="editForm.temperature" step="0.1" min="0" max="2" class="mp-input" />
         </div>
@@ -199,6 +210,15 @@ const maxDayCost = computed(() => {
         <div class="mp-form-row">
           <label class="mp-label">{{ t("modelPermission.propFallbackModel") }}</label>
           <input type="text" v-model="editForm.fallbackModel" class="mp-input" :placeholder="t('modelPermission.placeholderFallbackModel')" />
+        </div>
+        <div class="mp-form-row">
+          <label class="mp-label">{{ t("modelPermission.propFallbackReasoningEffort") }}</label>
+          <select v-model="editForm.fallbackReasoningEffort" class="mp-input">
+            <option value="">{{ t("modelPermission.reasoningDefault") }}</option>
+            <option value="low">{{ t("modelPermission.reasoningLow") }}</option>
+            <option value="medium">{{ t("modelPermission.reasoningMedium") }}</option>
+            <option value="high">{{ t("modelPermission.reasoningHigh") }}</option>
+          </select>
         </div>
         <div class="mp-form-row">
           <label class="mp-label">{{ t("modelPermission.propDisabled") }}</label>

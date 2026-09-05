@@ -8,9 +8,9 @@ import (
 )
 
 func TestG12MultiRootCoordinatesFileLSPSearchSymbolAndGeneration(t *testing.T) {
-	initial := t.TempDir()
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	initial := canonicalTestPath(t, t.TempDir())
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	secondaryFile := filepath.Join(rootB, "secondary.go")
 	if err := os.WriteFile(secondaryFile, []byte("package secondary\n\nfunc SecondarySymbol() {}\n// needle-secondary\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -72,8 +72,8 @@ func TestG12MultiRootCoordinatesFileLSPSearchSymbolAndGeneration(t *testing.T) {
 }
 
 func TestG12MultiRootRejectsInvalidRootWithoutPartialSwitch(t *testing.T) {
-	initial := t.TempDir()
-	valid := t.TempDir()
+	initial := canonicalTestPath(t, t.TempDir())
+	valid := canonicalTestPath(t, t.TempDir())
 	invalid := filepath.Join(t.TempDir(), "missing")
 	ctx := NewWorkspaceContext()
 	if err := ctx.Set(initial); err != nil {
@@ -114,9 +114,9 @@ func TestG12MultiRootRejectsInvalidRootWithoutPartialSwitch(t *testing.T) {
 }
 
 func TestG12MultiRootPersistenceFailureRestoresGenerationAndRootLists(t *testing.T) {
-	initial := t.TempDir()
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	initial := canonicalTestPath(t, t.TempDir())
+	rootA := canonicalTestPath(t, t.TempDir())
+	rootB := canonicalTestPath(t, t.TempDir())
 	ctx := NewWorkspaceContext()
 	if err := ctx.Set(initial); err != nil {
 		t.Fatal(err)

@@ -37,6 +37,7 @@ import {
 import {
   applyMonacoTheme,
   applyMonacoThemeForMode,
+  clearVscodeExtensionTheme,
   registerAllThemes,
   registerCustomTheme,
 } from "@/lib/monaco-themes";
@@ -88,6 +89,7 @@ export function resolveSystemMode(): "dark" | "light" {
 }
 
 export function applyAccentTheme(accent: AccentTheme): void {
+  clearVscodeExtensionTheme();
   appState.accentTheme = accent;
   if (accent === "custom" && appState.customAccent) {
     applyCustomAccentTokens(appState.customAccent);
@@ -149,6 +151,7 @@ export function initThemes(): void {
 }
 
 export function setCustomAccent(custom: CustomAccentTheme): void {
+  clearVscodeExtensionTheme();
   appState.customAccent = custom;
   appState.accentTheme = "custom";
   applyCustomAccentTokens(custom);
@@ -230,7 +233,6 @@ function migrateLegacyAIConfig(settings: Settings): AIProviderConfig {
     model: settings.aiModel ?? "",
     temperature: settings.temperature ?? 0.7,
     maxTokens: settings.maxTokens ?? 4096,
-    systemPrompt: settings.aiSystemPrompt ?? "",
   };
 }
 
@@ -285,7 +287,7 @@ export async function loadSettings(
     appState.customShortcuts = { ...custom };
     appState.aiChatPosition = settings.aiChatPosition === "left" ? "left" : "right";
     appState.activityBarVisible = settings.activityBarVisible !== false;
-    appState.toolApprovalConfig = { ...(settings.toolApprovalConfig ?? {}) };
+    appState.agentPermissionMode = settings.agentPermissionMode ?? "always-ask";
     if (settings.accentTheme) {
       appState.accentTheme = settings.accentTheme as AccentTheme;
     }
@@ -303,6 +305,8 @@ export async function loadSettings(
       appState.aiProviderConfigs = [migrated];
       appState.activeAIConfigId = migrated.id;
     }
+    const activeConfig = appState.aiProviderConfigs.find((cfg) => cfg.id === appState.activeAIConfigId);
+    appState.reasoningEffort = activeConfig?.reasoningEffort ?? "";
     appState.aiApiKey = "";
     appState.toolPaths = { ...(settings.toolPaths ?? {}) };
     if (settings.personalization) {
@@ -381,7 +385,7 @@ export function saveSettings(): void {
       customShortcuts: getCustomShortcuts(),
       aiChatPosition: appState.aiChatPosition,
       activityBarVisible: appState.activityBarVisible,
-      toolApprovalConfig: { ...appState.toolApprovalConfig },
+      agentPermissionMode: appState.agentPermissionMode,
       accentTheme: appState.accentTheme,
       customAccent: appState.customAccent,
       enablePluginSandbox: appState.enablePluginSandbox,
@@ -451,6 +455,7 @@ export async function flushSettingsSave(): Promise<void> {
     aiBaseUrl: appState.aiBaseUrl,
     aiModel: appState.aiModel,
     aiSystemPrompt: appState.aiSystemPrompt,
+    aiProvider: appState.aiProvider,
     aiAgentSystemPrompt: appState.aiAgentSystemPrompt,
     aiConversationTitlePrompt: appState.aiConversationTitlePrompt,
     aiInlineCompletionPrompt: appState.aiInlineCompletionPrompt,
@@ -459,7 +464,6 @@ export async function flushSettingsSave(): Promise<void> {
     bracketColorization: appState.bracketColorization,
     autoSave: appState.autoSave,
     autoSaveDelay: appState.autoSaveDelay,
-    aiProvider: appState.aiProvider,
     temperature: appState.temperature,
     maxTokens: appState.maxTokens,
     defaultShell: appState.defaultShell,
@@ -479,7 +483,7 @@ export async function flushSettingsSave(): Promise<void> {
     customShortcuts: getCustomShortcuts(),
     aiChatPosition: appState.aiChatPosition,
     activityBarVisible: appState.activityBarVisible,
-    toolApprovalConfig: { ...appState.toolApprovalConfig },
+    agentPermissionMode: appState.agentPermissionMode,
     accentTheme: appState.accentTheme,
     customAccent: appState.customAccent,
     enablePluginSandbox: appState.enablePluginSandbox,
@@ -628,8 +632,8 @@ export function activateAIConfig(id: string): void {
   appState.aiApiKeyConfigured = !!cfg.apiKeyConfigured;
   appState.aiBaseUrl = cfg.baseUrl;
   appState.aiModel = cfg.model;
-  appState.aiProvider = cfg.provider;
   appState.temperature = cfg.temperature ?? 0.7;
+  appState.reasoningEffort = cfg.reasoningEffort ?? "";
   appState.maxTokens = cfg.maxTokens ?? 4096;
   appState.aiSystemPrompt = cfg.systemPrompt ?? "";
   saveSettings();
@@ -672,8 +676,9 @@ export function createNewAIConfig(provider: string = "openai"): AIProviderConfig
     protocol: preset?.protocol ?? "openai",
     apiKey: "",
     baseUrl: preset?.baseUrl ?? "",
-    model: preset?.models[0] ?? "",
+    model: preset?.models?.[0] ?? "",
     temperature: 0.7,
+    reasoningEffort: "",
     maxTokens: 4096,
     systemPrompt: "",
   };

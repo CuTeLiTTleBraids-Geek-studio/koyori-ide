@@ -736,7 +736,7 @@ func TestSnapshotService_M3_IDHasRandomSuffix(t *testing.T) {
 	}
 	// Verify the suffix is valid hex.
 	for _, c := range parts[2] {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			t.Errorf("random suffix should be lowercase hex, found %q in %q", c, parts[2])
 		}
 	}

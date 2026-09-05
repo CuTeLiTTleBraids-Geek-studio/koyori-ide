@@ -1364,8 +1364,7 @@ func TestDebugThreadsService_Validation(t *testing.T) {
 	if _, err := svc.GetThreadStackTrace(context.Background(), "default", 1, 0, -1); err == nil {
 		t.Fatal("negative levels should fail")
 	}
-	var nilContext context.Context
-	if _, err := svc.ListThreads(nilContext, "default"); err == nil {
+	if _, err := svc.ListThreads(nil, "default"); err == nil { //nolint:staticcheck // SA1012: intentionally nil, asserts fail-closed
 		t.Fatal("nil context should fail")
 	}
 	if err := svc.StepThread(context.Background(), "default", 1, "sideways"); err == nil {

@@ -21,7 +21,13 @@ const graphRoot = computed(() => {
   return zoomID.value ? findFlameNode(props.root, zoomID.value) ?? props.root : props.root;
 });
 const layout = computed(() => graphRoot.value ? layoutFlameGraph(graphRoot.value) : null);
-const zoomableFrames = computed(() => layout.value?.frames.filter((frame) => frame.node.children.length > 0) ?? []);
+// BUG2: the backend can serialize a nil children slice as `null`, and
+// frames keep the original node, so a frame may have `node.children === null`.
+// Guard every children.length read instead of crashing the view.
+function hasChildren(frame: FlameGraphFrame): boolean {
+  return (frame.node.children?.length ?? 0) > 0;
+}
+const zoomableFrames = computed(() => layout.value?.frames.filter(hasChildren) ?? []);
 const normalizedQuery = computed(() => query.value.trim().toLowerCase());
 const focusedID = ref("");
 
@@ -35,7 +41,7 @@ watch(graphRoot, () => {
 });
 
 function zoom(frame: FlameGraphFrame): void {
-  if (frame.node.children.length > 0) zoomID.value = frame.node.id;
+  if (hasChildren(frame)) zoomID.value = frame.node.id;
 }
 
 function handleFrameKey(event: KeyboardEvent, frame: FlameGraphFrame): void {
@@ -125,11 +131,11 @@ function frameLabel(frame: FlameGraphFrame): string {
           v-for="frame in layout.frames"
           :key="frame.node.id"
           class="flame-graph__frame"
-          :class="{ 'flame-graph__frame--interactive': frame.node.children.length > 0, 'flame-graph__frame--match': isMatch(frame) }"
+          :class="{ 'flame-graph__frame--interactive': hasChildren(frame), 'flame-graph__frame--match': isMatch(frame) }"
           :data-frame-id="frame.node.id"
-          :role="frame.node.children.length > 0 ? 'button' : undefined"
-          :tabindex="frame.node.children.length > 0 ? frameTabIndex(frame) : undefined"
-          :aria-label="frame.node.children.length > 0 ? frameLabel(frame) : undefined"
+          :role="hasChildren(frame) ? 'button' : undefined"
+          :tabindex="hasChildren(frame) ? frameTabIndex(frame) : undefined"
+          :aria-label="hasChildren(frame) ? frameLabel(frame) : undefined"
           @click="zoom(frame)"
           @keydown="handleFrameKey($event, frame)"
         >

@@ -1,4 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { nextTick, watchEffect } from "vue";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
+import type { AgentToolCatalog } from "@/api/automation";
+
+const { aiStreamingState } = vi.hoisted(() => ({
+  aiStreamingState: { streaming: false, globalStreamBusy: false },
+}));
 
 vi.mock("@wailsio/runtime", () => ({
   Events: { On: vi.fn() },
@@ -13,15 +19,17 @@ vi.mock("@/api/services", () => ({
     search: vi.fn(),
   },
   agentService: {
-    requestCommandApproval: vi.fn().mockResolvedValue("approval-token"),
-    executeApprovedCommand: vi.fn(),
+		getToolCatalog: vi.fn(),
+		executeAgentTool: vi.fn().mockResolvedValue({
+			observation: "backend observation",
+			metadata: {},
+			usage: { unitId: "u1", sessionId: "chat-test", unitKind: "tool", operation: "read", cost: 0, costBasis: "not-applicable", estimated: false, success: true },
+		}),
     checkCommand: vi.fn(),
     // GOAL-P1-02: budget methods added to the facade — mock so refreshToolBudget
     // does not throw during tests that set toolCallCount directly.
     getToolBudget: vi.fn().mockResolvedValue({ spent: 0, limit: 20, remaining: 20, exhausted: false, timedOut: false, epoch: 1, startedAt: "", expiresAt: "" }),
     startNewToolBudgetEpoch: vi.fn(),
-    requestWriteApproval: vi.fn().mockResolvedValue("write-token"),
-    executeApprovedWrite: vi.fn(),
   },
   aiService: {
     getAgentSystemPrompt: vi.fn(),
@@ -31,7 +39,7 @@ vi.mock("@/api/services", () => ({
 vi.mock("@/stores/app", () => ({
   appState: {
     currentProject: "/proj",
-    toolApprovalConfig: {} as Record<string, string>,
+    workspaceGeneration: 0,
     // Plan 54: agent prompt override (empty = use built-in).
     aiAgentSystemPrompt: "",
   },
@@ -48,7 +56,9 @@ vi.mock("@/lib/notifications", () => ({
 }));
 
 vi.mock("@/stores/ai", () => ({
+  aiState: aiStreamingState,
   sendMessage: vi.fn().mockResolvedValue(undefined),
+  sendNativeToolResults: vi.fn().mockResolvedValue(undefined),
 }));
 
 import {
@@ -63,6 +73,8 @@ import {
   approveToolCall,
   rejectToolCall,
   clearPendingToolCalls,
+	ensureAgentSession,
+	resetAgentSession,
   onAssistantFinished,
   getAgentSystemPrompt,
   approveAndFeed,
@@ -71,12 +83,10 @@ import {
   registerTool,
   unregisterTool,
   getRegisteredTools,
-  getToolSchemaList,
   maxIterationsReached,
-  getApprovalPolicy,
-  shouldAutoApprove,
-  applyApprovalPolicy,
   __resetAgentPromptCacheForTests,
+	__setAgentToolCatalogForTests,
+	refreshAgentToolCatalog,
   parseNativeToolCalls,
   buildNativeToolDefs,
   onNativeToolCalls,
@@ -89,24 +99,63 @@ import { Events } from "@wailsio/runtime";
 import { fileService, searchService, agentService, aiService } from "@/api/services";
 import { appState } from "@/stores/app";
 import { pushOutput } from "@/stores/output";
-import { notifyWarning } from "@/lib/notifications";
+import { notifyError, notifyWarning } from "@/lib/notifications";
+
+function builtinCatalog(revision = 1): AgentToolCatalog {
+	return {
+		revision,
+		tools: [
+			{ id: "read", wireName: "read", description: "Read a file", inputSchema: { type: "object", properties: { path: { type: "string", minLength: 1 } }, required: ["path"], additionalProperties: false }, source: "builtin" as const, risk: "read-only" as const, approval: "backend-policy" as const, mutation: "none" as const },
+			{ id: "write", wireName: "write", description: "Write a file", inputSchema: { type: "object", properties: { path: { type: "string", minLength: 1 }, content: { type: "string" }, selectedHunks: { type: "array", items: { type: "integer" } } }, required: ["path", "content"], additionalProperties: false }, source: "builtin" as const, risk: "elevated" as const, approval: "manual" as const, mutation: "workspace-transaction" as const },
+			{ id: "run", wireName: "run", description: "Run a command", inputSchema: { type: "object", properties: { command: { type: "string", minLength: 1 }, cwd: { type: "string" } }, required: ["command"], additionalProperties: false }, source: "builtin" as const, risk: "elevated" as const, approval: "manual" as const, mutation: "external" as const },
+			{ id: "search", wireName: "search", description: "Search files", inputSchema: { type: "object", properties: { query: { type: "string", minLength: 1 }, ignoreCase: { type: "boolean" } }, required: ["query"], additionalProperties: false }, source: "builtin" as const, risk: "read-only" as const, approval: "backend-policy" as const, mutation: "none" as const },
+			{ id: "codebase", wireName: "codebase", description: "Search the workspace", inputSchema: { type: "object", properties: { query: { type: "string", minLength: 1 }, ignoreCase: { type: "boolean" } }, required: ["query"], additionalProperties: false }, source: "builtin" as const, risk: "read-only" as const, approval: "backend-policy" as const, mutation: "none" as const },
+			{ id: "git.status", wireName: "git.status", description: "Read Git status", inputSchema: { type: "object", properties: {}, additionalProperties: false }, source: "builtin" as const, risk: "read-only" as const, approval: "backend-policy" as const, mutation: "none" as const },
+			{ id: "git.diff", wireName: "git.diff", description: "Read a Git diff", inputSchema: { type: "object", properties: { path: { type: "string", minLength: 1 } }, required: ["path"], additionalProperties: false }, source: "builtin" as const, risk: "read-only" as const, approval: "backend-policy" as const, mutation: "none" as const },
+			{ id: "plan", wireName: "plan", description: "Create a plan", inputSchema: { type: "object", properties: { goal: { type: "string", minLength: 1 }, constraints: { type: "string" } }, required: ["goal"], additionalProperties: false }, source: "builtin" as const, risk: "read-only" as const, approval: "backend-policy" as const, mutation: "none" as const },
+		],
+	};
+}
+
+function backendExecutionResult(observation: string) {
+	return {
+		observation,
+		metadata: {},
+		usage: {
+			unitId: "u-test",
+			sessionId: "chat-test",
+			unitKind: "tool",
+			operation: "test",
+			cost: 0,
+			costBasis: "not-applicable",
+			estimated: false,
+			success: true,
+		},
+	};
+}
 
 describe("agent store", () => {
   beforeEach(() => {
     cleanupAgentPendingSyncListener();
     vi.clearAllMocks();
+		(agentService as any).createSession = undefined;
+		(agentService as any).closeSession = undefined;
+		resetAgentSession();
     agentState.mode = "chat";
     agentState.pendingToolCalls = [];
     agentState.toolCallCount = 0;
+    agentState.budget = null;
     // GOAL-P1-02: the backend budget status must be reset too. Leaving a status
     // from a previous test makes `maxIterationsReached` read that instead of the
     // local counter these tests set, which silently breaks their premise.
-    agentState.budget = null;
-    // Reset approval policy config between tests (Plan 47).
-    appState.toolApprovalConfig = {};
+    appState.agentPermissionMode = "always-ask";
+    appState.workspaceGeneration = 0;
     // Plan 54: reset the agent prompt override between tests.
     appState.aiAgentSystemPrompt = "";
+		aiStreamingState.streaming = false;
+		aiStreamingState.globalStreamBusy = false;
     __resetAgentPromptCacheForTests();
+		__setAgentToolCatalogForTests(builtinCatalog());
   });
 
   afterEach(cleanupAgentPendingSyncListener);
@@ -178,7 +227,65 @@ describe("agent store", () => {
       toggleMode();
       expect(agentState.pendingToolCalls).toEqual([]);
     });
+
+    it("setMode burns a queued auto-approval before it can execute", async () => {
+      setMode("agent");
+      appState.agentPermissionMode = "assist";
+      aiStreamingState.streaming = true;
+      onNativeToolCalls([{
+        id: "queued-before-mode-switch",
+        name: "read",
+        arguments: '{"path":"README.md"}',
+      }]);
+
+      setMode("chat");
+      aiStreamingState.streaming = false;
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+      expect(agentState.pendingToolCalls).toEqual([]);
+      expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendNativeToolResults).not.toHaveBeenCalled();
+    });
   });
+
+	describe("workspace-bound backend session", () => {
+		it("rotates the cached chat session when workspace generation changes", async () => {
+			(agentService as any).createSession = vi.fn();
+			(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+			const createSession = vi.mocked((agentService as any).createSession);
+			createSession.mockResolvedValueOnce("chat:workspace-a").mockResolvedValueOnce("chat:workspace-b");
+			expect(await ensureAgentSession()).toBe("chat:workspace-a");
+			appState.workspaceGeneration = 1;
+			expect(await ensureAgentSession()).toBe("chat:workspace-b");
+			expect(agentService.closeSession).toHaveBeenCalledWith("chat:workspace-a");
+		});
+
+		it("does not publish a session created across a workspace change", async () => {
+			(agentService as any).createSession = vi.fn();
+			(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+			const createSession = vi.mocked((agentService as any).createSession);
+			let resolve!: (id: string) => void;
+			createSession.mockReturnValueOnce(new Promise<string>((done) => { resolve = done; }));
+			const pending = ensureAgentSession();
+			appState.workspaceGeneration = 2;
+			resolve("chat:stale");
+			await expect(pending).rejects.toThrow(/session changed/);
+			expect(agentService.closeSession).toHaveBeenCalledWith("chat:stale");
+		});
+
+		it("reset clears the backend authority cache", async () => {
+			(agentService as any).createSession = vi.fn();
+			(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+			const createSession = vi.mocked((agentService as any).createSession);
+			createSession.mockResolvedValueOnce("chat:reset-a").mockResolvedValueOnce("chat:reset-b");
+			expect(await ensureAgentSession()).toBe("chat:reset-a");
+			resetAgentSession();
+			expect(await ensureAgentSession()).toBe("chat:reset-b");
+		});
+	});
 
   describe("hasPendingToolCalls computed", () => {
     it("is false when no pending calls", () => {
@@ -234,6 +341,7 @@ describe("agent store", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0].kind).toBe("run");
       expect(calls[0].target).toBe("go test ./...");
+      expect(calls[0].source).toBe("fence");
     });
 
     it("parses a search tool call", () => {
@@ -322,11 +430,48 @@ describe("agent store", () => {
       expect(toolCalls).toEqual([]);
       expect(cleanedMessage).toBe("Just a normal message.");
     });
+
+    it("keeps a schema-invalid tool block visible instead of silently deleting it", () => {
+      const msg = "Before\n```\nread: {\"bad\"\n```\nAfter";
+      const { toolCalls, cleanedMessage } = extractToolCallBlocks(msg);
+      expect(toolCalls).toHaveLength(0);
+      expect(cleanedMessage).toContain("read:");
+      expect(cleanedMessage).toContain("Before");
+      expect(cleanedMessage).toContain("After");
+    });
   });
 
   describe("executeToolCall", () => {
+    it("retains the typed backend receipt and the session used for execution", async () => {
+			const executionResult = backendExecutionResult("Read a.ts: receipt body");
+			executionResult.usage.operation = "read";
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(executionResult);
+			const tc: ToolCall = {
+				id: "receipt-1",
+				kind: "read",
+				target: "a.ts",
+				sessionId: "chat-test",
+				status: "pending",
+			};
+
+			await executeToolCall(tc);
+
+			expect(tc.execution).toEqual({
+				requestSessionId: "chat-test",
+				result: executionResult,
+			});
+			expect(tc.execution?.result.usage).toMatchObject({
+				unitId: "u-test",
+				sessionId: "chat-test",
+				operation: "read",
+				success: true,
+			});
+		});
+
     it("reads a file and returns its content", async () => {
-      (fileService.readFile as any).mockResolvedValue("file content");
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Read a.ts:\nfile content"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -334,14 +479,19 @@ describe("agent store", () => {
         status: "pending",
       };
       const out = await executeToolCall(tc);
-      expect(fileService.readFile).toHaveBeenCalledWith("/proj/a.ts");
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				toolId: "read", arguments: { path: "a.ts" },
+			}));
+			expect(fileService.readFile).not.toHaveBeenCalled();
       expect(out).toContain("Read a.ts:");
       expect(out).toContain("file content");
     });
 
     it("truncates very large file content", async () => {
       const big = "x".repeat(10000);
-      (fileService.readFile as any).mockResolvedValue(big);
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult(`Read big.txt:\n${big.slice(0, 8000)}\n... [truncated, 10000 total chars]`),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -354,6 +504,9 @@ describe("agent store", () => {
     });
 
     it("requests a bound capability before writing a file", async () => {
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Wrote out.ts (18 bytes)."),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "write",
@@ -362,22 +515,16 @@ describe("agent store", () => {
         status: "pending",
       };
       const out = await executeToolCall(tc);
-      expect(agentService.requestWriteApproval).toHaveBeenCalledWith(
-        "/proj/out.ts",
-        "57b43dfc3c26aaf74f190e1dcba9dc34cb03e7686f9aeaad2d22747cae8c76bf",
-        18,
-      );
-      expect(agentService.executeApprovedWrite).toHaveBeenCalledWith(
-        "/proj/out.ts",
-        "console.log('hi');",
-        "write-token",
-      );
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				toolId: "write",
+				arguments: { path: "out.ts", content: "console.log('hi');" },
+			}));
       expect(fileService.writeFile).not.toHaveBeenCalled();
       expect(out).toContain("Wrote out.ts");
     });
 
     it("does not execute a write when backend approval is refused", async () => {
-      vi.mocked(agentService.requestWriteApproval).mockRejectedValueOnce(
+			(agentService.executeAgentTool as Mock).mockRejectedValueOnce(
         new Error("file write was not approved"),
       );
       const tc: ToolCall = {
@@ -389,11 +536,11 @@ describe("agent store", () => {
       };
 
       await expect(executeToolCall(tc)).rejects.toThrow(/not approved/);
-      expect(agentService.executeApprovedWrite).not.toHaveBeenCalled();
+			expect(agentService.executeAgentTool).toHaveBeenCalledTimes(1);
       expect(fileService.writeFile).not.toHaveBeenCalled();
     });
 
-    it("reports UTF-8 byte size when requesting write approval", async () => {
+    it("sends exact UTF-8 content for backend byte accounting", async () => {
       const tc: ToolCall = {
         id: "1",
         kind: "write",
@@ -404,15 +551,13 @@ describe("agent store", () => {
 
       await executeToolCall(tc);
 
-      expect(agentService.requestWriteApproval).toHaveBeenCalledWith(
-        "/proj/unicode.txt",
-        expect.any(String),
-        3,
-      );
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				arguments: { path: "unicode.txt", content: "猫" },
+			}));
     });
 
     it("surfaces an expired write token without falling back to direct write", async () => {
-      vi.mocked(agentService.executeApprovedWrite).mockRejectedValueOnce(
+			(agentService.executeAgentTool as Mock).mockRejectedValueOnce(
         new Error("invalid or expired write approval token"),
       );
       const tc: ToolCall = {
@@ -427,19 +572,27 @@ describe("agent store", () => {
       expect(fileService.writeFile).not.toHaveBeenCalled();
     });
 
-    it("throws when write has no content", async () => {
+    it("rejects a structured write that omits required content", async () => {
       const tc: ToolCall = {
         id: "1",
         kind: "write",
         target: "out.ts",
+				arguments: { path: "out.ts" },
+				catalogRevision: 1,
+				wireName: "write",
+				sessionId: "chat-test",
         status: "pending",
       };
       await expect(executeToolCall(tc)).rejects.toThrow(
-        /missing file content/,
+				/missing its backend catalog binding/,
       );
+			expect(agentService.executeAgentTool).not.toHaveBeenCalled();
     });
 
     it("rejects absolute paths in read tool (N-3 path validation)", async () => {
+			(agentService.executeAgentTool as Mock).mockRejectedValueOnce(
+				new Error("Absolute paths are not allowed"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -451,6 +604,9 @@ describe("agent store", () => {
     });
 
     it("rejects Windows absolute paths in read tool", async () => {
+			(agentService.executeAgentTool as Mock).mockRejectedValueOnce(
+				new Error("Absolute paths are not allowed"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -461,6 +617,9 @@ describe("agent store", () => {
     });
 
     it("rejects parent traversal in write tool", async () => {
+			(agentService.executeAgentTool as Mock).mockRejectedValueOnce(
+				new Error("path escapes project root"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "write",
@@ -473,7 +632,9 @@ describe("agent store", () => {
     });
 
     it("allows relative paths within project", async () => {
-      (fileService.readFile as any).mockResolvedValue("ok");
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Read src/sub/file.ts: ok"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -481,12 +642,14 @@ describe("agent store", () => {
         status: "pending",
       };
       const out = await executeToolCall(tc);
-      expect(fileService.readFile).toHaveBeenCalledWith("/proj/src/sub/file.ts");
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				arguments: { path: "src/sub/file.ts" },
+			}));
+			expect(fileService.readFile).not.toHaveBeenCalled();
       expect(out).toContain("Read src/sub/file.ts");
     });
 
     it("normalizes ./ prefix in paths", async () => {
-      (fileService.readFile as any).mockResolvedValue("ok");
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -494,11 +657,12 @@ describe("agent store", () => {
         status: "pending",
       };
       await executeToolCall(tc);
-      expect(fileService.readFile).toHaveBeenCalledWith("/proj/src/a.ts");
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				arguments: { path: "./src/a.ts" },
+			}));
     });
 
     it("allows .. within project bounds (src/../lib/b.ts → lib/b.ts)", async () => {
-      (fileService.readFile as any).mockResolvedValue("ok");
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -506,7 +670,9 @@ describe("agent store", () => {
         status: "pending",
       };
       await executeToolCall(tc);
-      expect(fileService.readFile).toHaveBeenCalledWith("/proj/lib/b.ts");
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				arguments: { path: "src/../lib/b.ts" },
+			}));
     });
 
     it("listRegisteredTools returns all built-in tool kinds", () => {
@@ -518,13 +684,9 @@ describe("agent store", () => {
     });
 
     it("runs a command and returns the result summary", async () => {
-      (agentService.executeApprovedCommand as any).mockResolvedValue({
-        command: "go test",
-        stdout: "ok",
-        stderr: "",
-        exitCode: 0,
-        durationMs: 100,
-      });
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Ran: go test\nExit code: 0 (100ms)\nstdout:\nok"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "run",
@@ -532,15 +694,9 @@ describe("agent store", () => {
         status: "pending",
       };
       const out = await executeToolCall(tc);
-      expect(agentService.requestCommandApproval).toHaveBeenCalledWith(
-        "go test",
-        "/proj",
-      );
-      expect(agentService.executeApprovedCommand).toHaveBeenCalledWith(
-        "go test",
-        "/proj",
-        "approval-token",
-      );
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				toolId: "run", arguments: { command: "go test" },
+			}));
       expect(out).toContain("Ran: go test");
       expect(out).toContain("Exit code: 0");
       expect(out).toContain("stdout:");
@@ -548,9 +704,9 @@ describe("agent store", () => {
     });
 
     it("searches and returns match summary", async () => {
-      (searchService.search as any).mockResolvedValue([
-        { path: "a.ts", matches: [{ line: 1, column: 0, preview: "TODO: fix" }] },
-      ]);
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Found 1 match for TODO: a.ts:1:0 TODO: fix"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "search",
@@ -558,17 +714,18 @@ describe("agent store", () => {
         status: "pending",
       };
       const out = await executeToolCall(tc);
-      expect(searchService.search).toHaveBeenCalledWith(
-        "/proj",
-        "TODO",
-        true,
-      );
+			expect(agentService.executeAgentTool).toHaveBeenCalledWith(expect.objectContaining({
+				toolId: "search", arguments: { query: "TODO", ignoreCase: true },
+			}));
+			expect(searchService.search).not.toHaveBeenCalled();
       expect(out).toContain("Found 1 match");
       expect(out).toContain("a.ts:1:0");
     });
 
     it("returns no-matches message when search finds nothing", async () => {
-      (searchService.search as any).mockResolvedValue([]);
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("No matches for nothing"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "search",
@@ -582,7 +739,9 @@ describe("agent store", () => {
 
   describe("approveToolCall", () => {
     it("executes and marks tool call as executed", async () => {
-      (fileService.readFile as any).mockResolvedValue("content");
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Read a.ts: content"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -596,7 +755,7 @@ describe("agent store", () => {
     });
 
     it("marks tool call as error on failure and returns error message", async () => {
-      (fileService.readFile as any).mockRejectedValue(
+			(agentService.executeAgentTool as Mock).mockRejectedValueOnce(
         new Error("not found"),
       );
       const tc: ToolCall = {
@@ -646,10 +805,10 @@ describe("agent store", () => {
       const result = await getAgentSystemPrompt();
       expect(aiService.getAgentSystemPrompt).toHaveBeenCalledTimes(1);
       expect(result).toContain("AGENT PROMPT");
-      // N-16: the tool list is appended to the system prompt.
       expect(result).toContain("Available tools:");
-      expect(result).toContain("`read:`");
-      expect(result).toContain("`write:`");
+      expect(result).toContain("`read`");
+      expect(result).toContain("`write`");
+      expect(result).not.toContain("`read:`");
     });
 
     it("caches the prompt on subsequent calls", async () => {
@@ -793,8 +952,149 @@ describe("agent store", () => {
   });
 
   describe("approveAndFeed", () => {
+    it("does not execute a stale tool-call object after its conversation authority is reset", async () => {
+      onNativeToolCalls([{
+        id: "stale-after-reset",
+        name: "read",
+        arguments: '{"path":"README.md"}',
+      }]);
+      const staleCall = agentState.pendingToolCalls[0];
+      clearPendingToolCalls();
+      vi.clearAllMocks();
+
+      await approveAndFeed(staleCall);
+
+      const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+      expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendNativeToolResults).not.toHaveBeenCalled();
+      expect(staleCall.status).toBe("pending");
+    });
+
+    it("waits for the busy terminal event after done before sending one observation", async () => {
+      vi.useFakeTimers();
+      try {
+        // ai:done clears streaming first; ai:stream-busy=false is dispatched
+        // afterward by the backend cleanup defer.
+        aiStreamingState.streaming = false;
+        aiStreamingState.globalStreamBusy = true;
+        (agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+          backendExecutionResult("Read a.ts: terminal barrier"),
+        );
+        const tc: ToolCall = {
+          id: "done-before-busy-false",
+          kind: "read",
+          target: "a.ts",
+          status: "pending",
+        };
+        const { sendMessage } = await import("@/stores/ai");
+
+        const approval = approveAndFeed(tc);
+        await vi.advanceTimersByTimeAsync(64);
+
+        expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        aiStreamingState.globalStreamBusy = false;
+        await vi.advanceTimersByTimeAsync(16);
+        await approval;
+
+        expect(agentService.executeAgentTool).toHaveBeenCalledTimes(1);
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+        expect(sendMessage).toHaveBeenCalledWith(
+          "[Observation]\nRead a.ts: terminal barrier",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("fails visibly instead of waiting forever when the busy terminal event is lost", async () => {
+      vi.useFakeTimers();
+      try {
+        aiStreamingState.streaming = false;
+        aiStreamingState.globalStreamBusy = true;
+        const tc: ToolCall = {
+          id: "lost-busy-false",
+          kind: "read",
+          target: "a.ts",
+          status: "pending",
+        };
+        const { sendMessage } = await import("@/stores/ai");
+
+        const approval = approveAndFeed(tc);
+        await vi.advanceTimersByTimeAsync(5_100);
+        await approval;
+
+        expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(tc.status).toBe("pending");
+        expect(notifyError).toHaveBeenCalledWith(
+          expect.stringContaining("stream cleanup did not complete"),
+          "Agent Error",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not lose a manual observation while the previous stream is active", async () => {
+      aiStreamingState.streaming = true;
+      (agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+        backendExecutionResult("Read a.ts: manual body"),
+      );
+      const tc: ToolCall = {
+        id: "manual-active-turn",
+        kind: "read",
+        target: "a.ts",
+        status: "pending",
+      };
+      const { sendMessage } = await import("@/stores/ai");
+      const approval = approveAndFeed(tc);
+      await Promise.resolve();
+      expect(tc.status).toBe("pending");
+      expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+
+      aiStreamingState.streaming = false;
+      await approval;
+
+      expect(tc.status).toBe("executed");
+      expect(tc.result).toBe("Read a.ts: manual body");
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(sendMessage).toHaveBeenCalledWith(
+        "[Observation]\nRead a.ts: manual body",
+      );
+    });
+
+    it("drops a queued observation when the agent turn is reset", async () => {
+      aiStreamingState.streaming = true;
+      const tc: ToolCall = {
+        id: "stale-turn",
+        kind: "read",
+        target: "old.ts",
+        status: "pending",
+      };
+      const { sendMessage } = await import("@/stores/ai");
+      const approval = approveAndFeed(tc);
+      await Promise.resolve();
+
+      // Switching conversation/workspace invalidates queued work. The old
+      // task may still be waiting for the provider's terminal event, but it
+      // must not execute or feed its result into the new turn.
+      resetAgentSession();
+      aiStreamingState.streaming = false;
+      await approval;
+
+      expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(tc.status).toBe("pending");
+    });
+
     it("executes the tool call and feeds the observation back to AI", async () => {
-      (fileService.readFile as any).mockResolvedValue("file body");
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Read a.ts: file body"),
+			);
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -813,7 +1113,7 @@ describe("agent store", () => {
     it("feeds the error observation back to AI when execution fails", async () => {
       // approveToolCall returns a non-null error string even on failure,
       // so we expect sendMessage to be called with the error observation.
-      (fileService.readFile as any).mockRejectedValue(new Error("boom"));
+			(agentService.executeAgentTool as Mock).mockRejectedValueOnce(new Error("boom"));
       const tc: ToolCall = {
         id: "1",
         kind: "read",
@@ -948,234 +1248,91 @@ describe("agent store", () => {
     });
   });
 
-  describe("N-16 ToolRegistry", () => {
-    it("built-in tools are registered with schemas", () => {
+  describe("G33 backend ToolDef catalog", () => {
+    it("projects built-in definitions and schemas from one backend snapshot", () => {
       const tools = getRegisteredTools();
-      const kinds = tools.map((t) => t.kind);
-      expect(kinds).toContain("read");
-      expect(kinds).toContain("write");
-      expect(kinds).toContain("run");
-      expect(kinds).toContain("search");
-      const readTool = tools.find((t) => t.kind === "read")!;
-      expect(readTool.schema.description).toBeTruthy();
-      expect(readTool.schema.dangerLevel).toBe("safe");
-      const runTool = tools.find((t) => t.kind === "run")!;
-      expect(runTool.schema.dangerLevel).toBe("elevated");
-    });
-
-    it("registerTool adds a custom tool and it appears in listRegisteredTools", () => {
-      registerTool({
-        kind: "edit",
-        schema: { description: "Edit a file with search/replace", dangerLevel: "elevated" },
-        execute: async () => "edited",
+      expect(tools.map((tool) => tool.kind)).toEqual(["read", "write", "run", "search", "codebase", "git.status", "git.diff", "plan"]);
+      expect(tools.find((tool) => tool.kind === "read")?.schema).toMatchObject({
+        dangerLevel: "safe",
+        approval: "backend-policy",
+        mutation: "none",
       });
-      const kinds = listRegisteredTools();
-      expect(kinds).toContain("edit");
-      // Clean up
-      unregisterTool("edit");
+      expect(buildNativeToolDefs().find((tool) => tool.function.name === "write")?.function.parameters)
+        .toEqual(tools.find((tool) => tool.kind === "write")?.schema.inputSchema);
     });
 
-    it("custom tool is recognized by parseToolCalls (dynamic regex)", () => {
-      registerTool({
-        kind: "lint",
-        schema: { description: "Run linter", dangerLevel: "safe" },
-        execute: async () => "lint ok",
+    it("forbids renderer registration and replacement", () => {
+      expect(() => registerTool({ kind: "read", schema: { description: "forged" } }))
+        .toThrow(/renderer tool registration is forbidden/);
+      expect(() => unregisterTool("read")).toThrow(/renderer tool unregistration is forbidden/);
+      expect(listRegisteredTools()).toEqual(["read", "write", "run", "search", "codebase", "git.status", "git.diff", "plan"]);
+    });
+
+    it("uses the same nested schema for native and JSON fence calls", () => {
+      const catalog = builtinCatalog(9);
+      catalog.tools.push({
+        id: "mcp.server.echo.tool",
+        wireName: "mcp_server_echo_abcd",
+        description: "Echo nested payload",
+        inputSchema: {
+          type: "object",
+          properties: {
+            payload: {
+              type: "object",
+              properties: { text: { type: "string" } },
+              required: ["text"],
+              additionalProperties: false,
+            },
+          },
+          required: ["payload"],
+          additionalProperties: false,
+        },
+        source: "mcp",
+        risk: "elevated",
+        approval: "manual",
+        mutation: "external",
       });
-      const msg = "```\nlint: src/\n```";
-      const calls = parseToolCalls(msg);
-      expect(calls).toHaveLength(1);
-      expect(calls[0].kind).toBe("lint");
-      expect(calls[0].target).toBe("src/");
-      // Clean up
-      unregisterTool("lint");
+      __setAgentToolCatalogForTests(catalog);
+      const native = buildNativeToolDefs().find((tool) => tool.function.name === "mcp_server_echo_abcd");
+      expect(native?.function.parameters).toEqual(catalog.tools.find((tool) => tool.id === "mcp.server.echo.tool")?.inputSchema);
+      const [fence] = parseToolCalls("```tool\nmcp_server_echo_abcd: {\"payload\":{\"text\":\"hello\"}}\n```");
+      const [nativeCall] = parseNativeToolCalls([{ id: "mcp-call", name: "mcp_server_echo_abcd", arguments: "{\"payload\":{\"text\":\"hello\"}}" }]);
+      expect(fence.arguments).toEqual(nativeCall.arguments);
+      expect(fence.kind).toBe("mcp.server.echo.tool");
+      expect(fence.catalogRevision).toBe(9);
     });
 
-    it("after unregistering a custom tool, it is no longer parsed", () => {
-      registerTool({
-        kind: "temp",
-        schema: { description: "Temporary tool", dangerLevel: "safe" },
-        execute: async () => "temp",
+    it("rejects unknown, malformed, and schema-invalid native calls", () => {
+      expect(parseNativeToolCalls([{ id: "unknown", name: "missing", arguments: "{}" }])).toEqual([]);
+      expect(parseNativeToolCalls([{ id: "malformed", name: "read", arguments: "{" }])).toEqual([]);
+      expect(parseNativeToolCalls([{ id: "missing-path", name: "read", arguments: "{}" }])).toEqual([]);
+      expect(parseNativeToolCalls([{ id: "extra", name: "read", arguments: "{\"path\":\"a\",\"extra\":true}" }])).toEqual([]);
+      expect(parseNativeToolCalls([{ name: "read", arguments: "{\"path\":\"a\"}" }])).toEqual([]);
+    });
+
+    it("dispatches only through the unified backend facade", async () => {
+      const [call] = parseNativeToolCalls([{ id: "readme-call", name: "read", arguments: "{\"path\":\"README.md\"}" }]);
+      const output = await executeToolCall(call);
+      expect(output).toBe("backend observation");
+      expect(agentService.executeAgentTool).toHaveBeenCalledWith({
+        sessionId: agentState.sessionId,
+        catalogRevision: 1,
+        toolId: "read",
+        arguments: { path: "README.md" },
       });
-      expect(parseToolCalls("```\ntemp: x\n```")).toHaveLength(1);
-      unregisterTool("temp");
-      expect(parseToolCalls("```\ntemp: x\n```")).toHaveLength(0);
+      expect(fileService.readFile).not.toHaveBeenCalled();
+      expect(searchService.search).not.toHaveBeenCalled();
     });
 
-    it("unregisterTool returns false for unknown kind", () => {
-      expect(unregisterTool("nonexistent")).toBe(false);
-    });
-
-    it("getToolSchemaList includes all registered tools with descriptions", () => {
-      const list = getToolSchemaList();
-      expect(list).toContain("Available tools:");
-      expect(list).toContain("`read:`");
-      expect(list).toContain("`write:`");
-      expect(list).toContain("`run:`");
-      expect(list).toContain("`search:`");
-      expect(list).toContain("risk: safe");
-      expect(list).toContain("risk: elevated");
-    });
-
-    it("getToolSchemaList includes custom tools after registration", () => {
-      registerTool({
-        kind: "migrate",
-        schema: { description: "Run database migration", dangerLevel: "dangerous" },
-        execute: async () => "migrated",
-      });
-      const list = getToolSchemaList();
-      expect(list).toContain("`migrate:`");
-      expect(list).toContain("risk: dangerous");
-      unregisterTool("migrate");
-    });
-
-    it("custom tool executor is dispatched via executeToolCall", async () => {
-      registerTool({
-        kind: "echo",
-        schema: { description: "Echo tool", dangerLevel: "safe" },
-        execute: async (tc) => `echoed: ${tc.target}`,
-      });
-      const tc: ToolCall = {
-        id: "1",
-        kind: "echo",
-        target: "hello",
-        status: "pending",
-      };
-      const out = await executeToolCall(tc);
-      expect(out).toBe("echoed: hello");
-      unregisterTool("echo");
-    });
-
-    it("registerTool invalidates the prompt cache so new tools appear", async () => {
-      // First fetch populates the cache with the current tool list.
-      (aiService.getAgentSystemPrompt as any).mockResolvedValue("BASE");
-      const first = await getAgentSystemPrompt();
-      expect(first).toContain("`read:`");
-      expect(first).not.toContain("`custom2:`");
-
-      // Register a new tool — cache should be invalidated.
-      registerTool({
-        kind: "custom2",
-        schema: { description: "Custom 2", dangerLevel: "safe" },
-        execute: async () => "ok",
-      });
-      const second = await getAgentSystemPrompt();
-      expect(second).toContain("`custom2:`");
-      unregisterTool("custom2");
+    it("clears the projection when catalog refresh fails", async () => {
+      (agentService.getToolCatalog as Mock).mockRejectedValueOnce(new Error("offline"));
+      await expect(refreshAgentToolCatalog()).rejects.toThrow("offline");
+      expect(listRegisteredTools()).toEqual([]);
+      expect(agentState.catalogLoaded).toBe(false);
     });
   });
 
-  describe("Plan 47 approval policy", () => {
-    describe("getApprovalPolicy", () => {
-      it("returns 'always-ask' by default when no config is set", () => {
-        expect(getApprovalPolicy("read")).toBe("always-ask");
-        expect(getApprovalPolicy("write")).toBe("always-ask");
-        expect(getApprovalPolicy("run")).toBe("always-ask");
-        expect(getApprovalPolicy("search")).toBe("always-ask");
-      });
-
-      it("returns 'auto-approve' when configured", () => {
-        appState.toolApprovalConfig = { read: "auto-approve" };
-        expect(getApprovalPolicy("read")).toBe("auto-approve");
-      });
-
-      it("returns 'never-approve' when configured", () => {
-        appState.toolApprovalConfig = { write: "never-approve" };
-        expect(getApprovalPolicy("write")).toBe("never-approve");
-      });
-
-      it("returns 'always-ask' for unknown kinds without config", () => {
-        expect(getApprovalPolicy("custom-tool")).toBe("always-ask");
-      });
-
-      it("returns 'always-ask' when config has an invalid value", () => {
-        appState.toolApprovalConfig = { read: "invalid-policy" as any };
-        expect(getApprovalPolicy("read")).toBe("always-ask");
-      });
-
-      it("returns configured policy for custom tool kinds", () => {
-        appState.toolApprovalConfig = { lint: "auto-approve" };
-        expect(getApprovalPolicy("lint")).toBe("auto-approve");
-      });
-
-      it("does not leak policy between kinds", () => {
-        appState.toolApprovalConfig = { read: "auto-approve" };
-        expect(getApprovalPolicy("read")).toBe("auto-approve");
-        expect(getApprovalPolicy("write")).toBe("always-ask");
-      });
-    });
-
-    describe("shouldAutoApprove", () => {
-      it("returns false for 'always-ask' policy", () => {
-        const tc: ToolCall = {
-          id: "1",
-          kind: "read",
-          target: "a.ts",
-          status: "pending",
-        };
-        expect(shouldAutoApprove(tc)).toBe(false);
-      });
-
-      it("returns true for 'auto-approve' policy on non-run tool", () => {
-        appState.toolApprovalConfig = { read: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "read",
-          target: "a.ts",
-          status: "pending",
-        };
-        expect(shouldAutoApprove(tc)).toBe(true);
-      });
-
-      it("returns false for 'never-approve' policy", () => {
-        appState.toolApprovalConfig = { write: "never-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "write",
-          target: "out.ts",
-          status: "pending",
-        };
-        expect(shouldAutoApprove(tc)).toBe(false);
-      });
-
-      it("G-SEC-02: returns false for 'auto-approve' run tool without blockReason (never auto-approve commands)", () => {
-        appState.toolApprovalConfig = { run: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "run",
-          target: "ls",
-          status: "pending",
-        };
-        // G-SEC-02: run tools are never auto-approved, even with auto-approve
-        // policy and no blockReason. All commands require manual approval.
-        expect(shouldAutoApprove(tc)).toBe(false);
-      });
-
-      it("prompt-5 Task E: returns false for 'auto-approve' write tool (never auto-approve writes)", () => {
-        appState.toolApprovalConfig = { write: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "write",
-          target: "out.ts",
-          content: "x",
-          status: "pending",
-        };
-        expect(shouldAutoApprove(tc)).toBe(false);
-      });
-
-      it("G-SEC-02: returns false for 'auto-approve' run tool with blockReason (denylist)", () => {
-        appState.toolApprovalConfig = { run: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "run",
-          target: "rm -rf /",
-          status: "pending",
-          blockReason: "rm -rf (recursive force delete)",
-        };
-        expect(shouldAutoApprove(tc)).toBe(false);
-      });
-    });
-
-    describe("native tool protocol (prompt-5 Task H)", () => {
+  describe("native tool protocol (prompt-5 Task H)", () => {
       it("buildNativeToolDefs includes builtin tools with schemas", () => {
         const defs = buildNativeToolDefs();
         const names = defs.map((d) => d.function.name);
@@ -1193,178 +1350,281 @@ describe("agent store", () => {
           { id: "c3", name: "run", arguments: JSON.stringify({ command: "go test" }) },
         ]);
         expect(calls).toHaveLength(3);
-        expect(calls[0]).toMatchObject({ kind: "read", target: "main.go", status: "pending" });
-        expect(calls[1]).toMatchObject({ kind: "write", target: "a.ts", content: "x" });
-        expect(calls[2]).toMatchObject({ kind: "run", target: "go test" });
+        expect(calls[0]).toMatchObject({ kind: "read", target: "main.go", status: "pending", source: "native" });
+        expect(calls[1]).toMatchObject({ kind: "write", target: "a.ts", content: "x", source: "native" });
+        expect(calls[2]).toMatchObject({ kind: "run", target: "go test", source: "native" });
       });
 
       it("onNativeToolCalls enqueues pending tools", () => {
         agentState.mode = "agent";
         const n = onNativeToolCalls([
-          { name: "search", arguments: JSON.stringify({ query: "TODO" }) },
+          { id: "search-call", name: "search", arguments: JSON.stringify({ query: "TODO" }) },
         ]);
         expect(n).toBe(1);
         expect(agentState.pendingToolCalls).toHaveLength(1);
         expect(agentState.pendingToolCalls[0].kind).toBe("search");
         expect(agentState.toolCallCount).toBe(1);
       });
-    });
 
-    describe("applyApprovalPolicy", () => {
-      it("auto-approves and feeds observation for auto-approve policy", async () => {
-        (fileService.readFile as any).mockResolvedValue("content");
-        appState.toolApprovalConfig = { read: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "read",
-          target: "a.ts",
-          status: "pending",
-        };
-        const { sendMessage } = await import("@/stores/ai");
-        await applyApprovalPolicy(tc);
-        expect(tc.status).toBe("executed");
-        expect(pushOutput).toHaveBeenCalledWith(
-          "agent",
-          "info",
-          expect.stringContaining("Auto-approving"),
+      it("treats an exact native event replay as idempotent", () => {
+        agentState.mode = "agent";
+        const payload = [
+          { id: "replayed-call", name: "read", arguments: JSON.stringify({ path: "README.md" }) },
+        ];
+
+        expect(onNativeToolCalls(payload)).toBe(1);
+        expect(onNativeToolCalls(payload)).toBe(0);
+        expect(agentState.pendingToolCalls).toHaveLength(1);
+        expect(agentState.pendingToolCalls[0].source).toBe("native");
+        expect(agentState.toolCallCount).toBe(1);
+      });
+
+      it("fails closed when a provider reuses a native call ID", () => {
+        agentState.mode = "agent";
+        expect(onNativeToolCalls([
+          { id: "conflicting-call", name: "read", arguments: JSON.stringify({ path: "a.ts" }) },
+        ])).toBe(1);
+
+        expect(onNativeToolCalls([
+          { id: "conflicting-call", name: "read", arguments: JSON.stringify({ path: "b.ts" }) },
+        ])).toBe(-1);
+        expect(agentState.pendingToolCalls).toHaveLength(1);
+        expect(agentState.pendingToolCalls[0].target).toBe("a.ts");
+        expect(agentState.toolCallCount).toBe(1);
+      });
+
+      it("does not parse fenced compatibility calls after a native event", () => {
+        const count = onAssistantFinished("```\nread: duplicate.ts\n```", true);
+        expect(count).toBe(0);
+        expect(agentState.pendingToolCalls).toEqual([]);
+      });
+
+      it("holds native auto-approval until the AI turn is done and feeds once", async () => {
+        agentState.mode = "agent";
+        appState.agentPermissionMode = "assist";
+        aiStreamingState.streaming = true;
+
+        let resolveExecution!: (value: ReturnType<typeof backendExecutionResult>) => void;
+        (agentService.executeAgentTool as Mock).mockImplementationOnce(
+          () => new Promise((resolve) => { resolveExecution = resolve; }),
         );
-        expect(sendMessage).toHaveBeenCalledTimes(1);
-      });
-
-      it("auto-rejects and feeds rejection for never-approve policy", async () => {
-        appState.toolApprovalConfig = { write: "never-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "write",
-          target: "out.ts",
-          status: "pending",
-        };
-        const { sendMessage } = await import("@/stores/ai");
-        await applyApprovalPolicy(tc);
-        expect(tc.status).toBe("rejected");
-        expect(pushOutput).toHaveBeenCalledWith(
-          "agent",
-          "info",
-          expect.stringContaining("Auto-rejecting"),
-        );
-        expect(sendMessage).toHaveBeenCalledTimes(1);
-        const sentArg = (sendMessage as any).mock.calls[0][0] as string;
-        expect(sentArg).toContain("[Rejection]");
-      });
-
-      it("is a no-op for 'always-ask' policy (call stays pending)", async () => {
-        const tc: ToolCall = {
-          id: "1",
-          kind: "read",
-          target: "a.ts",
-          status: "pending",
-        };
-        const { sendMessage } = await import("@/stores/ai");
-        await applyApprovalPolicy(tc);
-        expect(tc.status).toBe("pending");
-        expect(sendMessage).not.toHaveBeenCalled();
-      });
-
-      it("G-SEC-02: does not auto-approve blocked run commands (respects denylist)", async () => {
-        appState.toolApprovalConfig = { run: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "run",
-          target: "rm -rf /",
-          status: "pending",
-          blockReason: "rm -rf (recursive force delete)",
-        };
-        const { sendMessage } = await import("@/stores/ai");
-        await applyApprovalPolicy(tc);
-        // Should stay pending so the user sees the block reason.
-        expect(tc.status).toBe("pending");
-        expect(sendMessage).not.toHaveBeenCalled();
-      });
-
-      it("G-SEC-02: does not auto-approve non-blocked run commands (always manual approval)", async () => {
-        // G-SEC-02: even non-blocked run commands with auto-approve policy
-        // must stay pending for manual approval. The denylist is not a
-        // security boundary, so no command bypasses approval.
-        appState.toolApprovalConfig = { run: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "run",
-          target: "ls -la",
-          status: "pending",
-          // No blockReason — command is not on the denylist.
-        };
-        const { sendMessage } = await import("@/stores/ai");
-        await applyApprovalPolicy(tc);
-        expect(tc.status).toBe("pending");
-        expect(sendMessage).not.toHaveBeenCalled();
-      });
-
-      it("G-SEC-02: awaits _riskCheckPromise for run tools but never auto-approves", async () => {
-        appState.toolApprovalConfig = { run: "auto-approve" };
-        (agentService.executeApprovedCommand as any).mockResolvedValue({
-          command: "ls",
-          stdout: "ok",
-          stderr: "",
-          exitCode: 0,
-          durationMs: 10,
+        const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+        const observedStates: string[] = [];
+        const stopWatching = watchEffect(() => {
+          const call = agentState.pendingToolCalls[0];
+          if (call) observedStates.push(`${call.status}:${call.result ?? ""}`);
         });
-        let resolveRisk!: () => void;
-        const riskPromise = new Promise<void>((resolve) => {
-          resolveRisk = resolve;
-        });
-        const tc: ToolCall = {
-          id: "1",
-          kind: "run",
-          target: "ls",
-          status: "pending",
-          _riskCheckPromise: riskPromise,
-        };
-        const { sendMessage } = await import("@/stores/ai");
-        // applyApprovalPolicy should not complete until riskPromise resolves.
-        let completed = false;
-        const promise = applyApprovalPolicy(tc).then(() => {
-          completed = true;
-        });
-        // Yield to the event loop — the function should still be waiting.
-        await Promise.resolve();
-        await Promise.resolve();
-        expect(completed).toBe(false);
-        expect(tc.status).toBe("pending");
-        // Now resolve the risk check — G-SEC-02: the policy must NOT
-        // auto-approve. The call stays pending for manual approval.
-        resolveRisk();
-        await promise;
-        expect(tc.status).toBe("pending");
+
+        expect(onNativeToolCalls([
+          { id: "native-1", name: "read", arguments: JSON.stringify({ path: "a.ts" }) },
+        ])).toBe(1);
+        await nextTick();
+        expect(agentState.pendingToolCalls[0].status).toBe("pending");
+        expect(agentService.executeAgentTool).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
+
+        aiStreamingState.streaming = false;
+        await vi.waitFor(() => {
+          expect(agentState.pendingToolCalls[0].status).toBe("approved");
+        });
+        expect(agentService.executeAgentTool).toHaveBeenCalledTimes(1);
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(observedStates).toContain("approved:");
+
+        resolveExecution(backendExecutionResult("Read a.ts: file body"));
+        await vi.waitFor(() => {
+          expect(agentState.pendingToolCalls[0].status).toBe("executed");
+        });
+        await vi.waitFor(() => expect(sendNativeToolResults).toHaveBeenCalledTimes(1));
+        expect(agentState.pendingToolCalls[0].result).toBe("Read a.ts: file body");
+        expect(sendNativeToolResults).toHaveBeenCalledWith([{
+          toolCallId: "native-1",
+          content: "Read a.ts: file body",
+          isError: false,
+        }]);
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(observedStates.some((state) => state.startsWith("executed:Read a.ts"))).toBe(true);
+        stopWatching();
       });
 
-      it("is a no-op when status is not pending (already handled)", async () => {
-        appState.toolApprovalConfig = { read: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "read",
-          target: "a.ts",
-          status: "executed",
-        };
-        const { sendMessage } = await import("@/stores/ai");
-        await applyApprovalPolicy(tc);
-        expect(tc.status).toBe("executed");
+		it("batches one native turn into one ordered call-id observation", async () => {
+			agentState.mode = "agent";
+            appState.agentPermissionMode = "assist";
+			aiStreamingState.streaming = true;
+			const order: string[] = [];
+			(agentService.executeAgentTool as Mock)
+				.mockImplementationOnce(async (request: { toolId: string }) => {
+					order.push(`execute:${request.toolId}`);
+					return backendExecutionResult("Read a.ts: alpha");
+				})
+				.mockImplementationOnce(async (request: { toolId: string }) => {
+					order.push(`execute:${request.toolId}`);
+					return backendExecutionResult("Search TODO: beta");
+				});
+			const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+			(sendNativeToolResults as Mock).mockImplementationOnce(async () => {
+				order.push("send");
+			});
+
+			expect(onNativeToolCalls([
+				{ id: "multi-read", name: "read", arguments: JSON.stringify({ path: "a.ts" }) },
+				{ id: "multi-search", name: "search", arguments: JSON.stringify({ query: "TODO", ignoreCase: true }) },
+			])).toBe(2);
+			await nextTick();
+			expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+			expect(sendMessage).not.toHaveBeenCalled();
+
+			aiStreamingState.streaming = false;
+			await vi.waitFor(() => expect(agentService.executeAgentTool).toHaveBeenCalledTimes(2));
+			await vi.waitFor(() => expect(sendNativeToolResults).toHaveBeenCalledTimes(1));
+
+			expect(order).toEqual(["execute:read", "execute:search", "send"]);
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(sendNativeToolResults).toHaveBeenCalledWith([
+				{ toolCallId: "multi-read", content: "Read a.ts: alpha", isError: false },
+				{ toolCallId: "multi-search", content: "Search TODO: beta", isError: false },
+			]);
+		});
+
+		it("waits for manual calls before feeding a mixed native batch", async () => {
+			agentState.mode = "agent";
+            appState.agentPermissionMode = "assist";
+			(agentService.executeAgentTool as Mock)
+				.mockResolvedValueOnce(backendExecutionResult("Read a.ts: before"))
+				.mockResolvedValueOnce(backendExecutionResult("Wrote a.ts"));
+			const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+
+			expect(onNativeToolCalls([
+				{ id: "mixed-read", name: "read", arguments: JSON.stringify({ path: "a.ts" }) },
+				{ id: "mixed-write", name: "write", arguments: JSON.stringify({ path: "a.ts", content: "after" }) },
+			])).toBe(2);
+			await vi.waitFor(() => expect(agentState.pendingToolCalls[0].status).toBe("executed"));
+			expect(agentState.pendingToolCalls[1].status).toBe("pending");
+			expect(agentService.executeAgentTool).toHaveBeenCalledTimes(1);
+			expect(sendMessage).not.toHaveBeenCalled();
+
+			await approveAndFeed(agentState.pendingToolCalls[1]);
+
+			expect(agentState.pendingToolCalls[1].status).toBe("executed");
+			expect(agentService.executeAgentTool).toHaveBeenCalledTimes(2);
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(sendNativeToolResults).toHaveBeenCalledWith([
+				{ toolCallId: "mixed-read", content: "Read a.ts: before", isError: false },
+				{ toolCallId: "mixed-write", content: "Wrote a.ts", isError: false },
+			]);
+		});
+
+		it("includes a manual rejection in the single batched observation", async () => {
+			agentState.mode = "agent";
+            appState.agentPermissionMode = "assist";
+			(agentService.executeAgentTool as Mock).mockResolvedValueOnce(
+				backendExecutionResult("Read a.ts: unchanged"),
+			);
+			const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+
+			expect(onNativeToolCalls([
+				{ id: "reject-read", name: "read", arguments: JSON.stringify({ path: "a.ts" }) },
+				{ id: "reject-write", name: "write", arguments: JSON.stringify({ path: "a.ts", content: "unsafe" }) },
+			])).toBe(2);
+			await vi.waitFor(() => expect(agentState.pendingToolCalls[0].status).toBe("executed"));
+			expect(sendMessage).not.toHaveBeenCalled();
+
+			await rejectAndFeed(agentState.pendingToolCalls[1]);
+
+			expect(agentState.pendingToolCalls[1].status).toBe("rejected");
+			expect(agentService.executeAgentTool).toHaveBeenCalledTimes(1);
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(sendNativeToolResults).toHaveBeenCalledWith([
+				{ toolCallId: "reject-read", content: "Read a.ts: unchanged", isError: false },
+				expect.objectContaining({
+					toolCallId: "reject-write",
+					content: expect.stringContaining("User rejected the write action"),
+					isError: true,
+				}),
+			]);
+		});
+      it("rejects a single native write into an error result without fallback messaging", async () => {
+        agentState.mode = "agent";
+        appState.agentPermissionMode = "always-ask";
+        const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+
+        expect(onNativeToolCalls([
+          { id: "native-reject-write", name: "write", arguments: JSON.stringify({ path: "a.ts", content: "unsafe" }) },
+        ])).toBe(1);
+        await rejectAndFeed(agentState.pendingToolCalls[0]);
+
+        expect(agentState.pendingToolCalls[0].status).toBe("rejected");
+        expect(agentService.executeAgentTool).not.toHaveBeenCalled();
         expect(sendMessage).not.toHaveBeenCalled();
+        expect(sendNativeToolResults).toHaveBeenCalledWith([expect.objectContaining({
+          toolCallId: "native-reject-write",
+          content: expect.stringContaining("User rejected the write action"),
+          isError: true,
+        })]);
       });
 
-      it("auto-approves non-run tools without _riskCheckPromise", async () => {
-        (fileService.readFile as any).mockResolvedValue("content");
-        appState.toolApprovalConfig = { read: "auto-approve" };
-        const tc: ToolCall = {
-          id: "1",
-          kind: "read",
-          target: "a.ts",
-          status: "pending",
-          // Note: no _riskCheckPromise — only run tools set this.
-        };
-        await applyApprovalPolicy(tc);
-        expect(tc.status).toBe("executed");
+      it("feeds a backend execution error for a single native read without fallback messaging", async () => {
+        agentState.mode = "agent";
+        appState.agentPermissionMode = "assist";
+        (agentService.executeAgentTool as Mock).mockRejectedValueOnce(new Error("backend read failed"));
+        const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+
+        expect(onNativeToolCalls([
+          { id: "native-error-read", name: "read", arguments: JSON.stringify({ path: "missing.ts" }) },
+        ])).toBe(1);
+        await vi.waitFor(() => expect(agentState.pendingToolCalls[0].status).toBe("error"));
+        await vi.waitFor(() => expect(sendNativeToolResults).toHaveBeenCalledTimes(1));
+
+        expect(agentService.executeAgentTool).toHaveBeenCalledTimes(1);
+        expect(agentState.pendingToolCalls[0].error).toContain("backend read failed");
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(sendNativeToolResults).toHaveBeenCalledWith([expect.objectContaining({
+          toolCallId: "native-error-read",
+          content: expect.stringContaining("Error executing read"),
+          isError: true,
+        })]);
       });
-    });
+
+      it("drops a native call waiting for stream idle after the agent session is reset", async () => {
+        vi.useFakeTimers();
+        try {
+          agentState.mode = "agent";
+          appState.agentPermissionMode = "assist";
+          aiStreamingState.streaming = true;
+          const { sendMessage, sendNativeToolResults } = await import("@/stores/ai");
+
+          expect(onNativeToolCalls([
+            { id: "native-reset-read", name: "read", arguments: JSON.stringify({ path: "stale.ts" }) },
+          ])).toBe(1);
+          await nextTick();
+          expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+
+          resetAgentSession();
+          aiStreamingState.streaming = false;
+          await vi.advanceTimersByTimeAsync(100);
+
+          expect(agentService.executeAgentTool).not.toHaveBeenCalled();
+          expect(sendMessage).not.toHaveBeenCalled();
+          expect(sendNativeToolResults).not.toHaveBeenCalled();
+          expect(agentState.pendingToolCalls[0].status).toBe("pending");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+     });
+
+
+  it("allows a completed tool to be proposed again in a later turn", async () => {
+    __setAgentToolCatalogForTests(builtinCatalog());
+    const first = onAssistantFinished("```\nread: a.ts\n```");
+    expect(first).toBe(1);
+    const completed = agentState.pendingToolCalls[0];
+    expect(completed).toBeDefined();
+    completed.status = "executed";
+    completed.result = "same file, refreshed contents";
+
+    const second = onAssistantFinished("```\nread: a.ts\n```");
+    expect(second).toBe(1);
+    expect(agentState.pendingToolCalls).toHaveLength(2);
   });
 });

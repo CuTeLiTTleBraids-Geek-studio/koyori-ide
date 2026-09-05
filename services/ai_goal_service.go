@@ -17,9 +17,12 @@ package services
 //   - 安全边界：禁删工作区外文件/禁 git push --force/禁 RiskDangerous（Step 8）
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 )
 
 // ---------------------------------------------------------------------------
@@ -166,6 +169,30 @@ func isPrototypeExecutor(exec GoalExecutor) (bool, string) {
 	return true, proto.PrototypeLimitation()
 }
 
+func isLLMGoalExecutor(exec GoalExecutor) bool {
+	_, ok := exec.(*defaultGoalExecutor)
+	return ok
+}
+
+const goalLLMOptInLimitation = "Goal LLM execution is experimental and disabled by default. Opt in to run plan→execute→evaluate with catalog tools; write/run still require approval."
+
+func (s *AIGoalService) requireGoalExecutionOptIn(exec GoalExecutor) error {
+	proto, limitation := isPrototypeExecutor(exec)
+	if !proto && !isLLMGoalExecutor(exec) {
+		return nil
+	}
+	s.mu.RLock()
+	allowed := s.prototypeExecutionEnabled
+	s.mu.RUnlock()
+	if allowed {
+		return nil
+	}
+	if limitation == "" {
+		limitation = goalLLMOptInLimitation
+	}
+	return fmt.Errorf("%s: %w", limitation, ErrGoalPrototypeDisabled)
+}
+
 // ---------------------------------------------------------------------------
 // AIGoalService
 // ---------------------------------------------------------------------------
@@ -195,6 +222,7 @@ type AIGoalService struct {
 	// 恒不达成）。默认运行它会向用户展示一串看似自治的迭代，而这些迭代在结构上
 	// 不可能完成用户的目标。用户必须显式 opt-in 才能运行 prototype。
 	prototypeExecutionEnabled bool
+	lifecycle                 *AgentLifecycle
 }
 
 // NewAIGoalService 创建服务。
@@ -252,6 +280,9 @@ func (s *AIGoalService) GetExecutorCapability() GoalExecutorCapability {
 		}
 	}
 	proto, limitation := isPrototypeExecutor(exec)
+	if !proto && isLLMGoalExecutor(exec) {
+		limitation = goalLLMOptInLimitation
+	}
 	return GoalExecutorCapability{
 		Prototype:      proto,
 		Limitation:     limitation,
@@ -359,6 +390,18 @@ func (s *AIGoalService) CreateGoal(id, description, successCriteria string, maxI
 	if _, exists := s.goals[id]; exists {
 		return nil, fmt.Errorf("goal %q: %w", id, ErrAlreadyExists)
 	}
+	if s.lifecycle != nil {
+		if _, err := s.lifecycle.Begin(agentcore.SessionGoal, id); err != nil {
+			return nil, err
+		}
+		if _, err := s.lifecycle.Checkpoint(agentcore.SessionGoal, id, "goal-created", map[string]interface{}{
+			"phase":     "goal-created",
+			"iteration": 0,
+		}); err != nil {
+			_ = s.lifecycle.Fail(agentcore.SessionGoal, id, err)
+			return nil, err
+		}
+	}
 	g := &Goal{
 		ID:              id,
 		Description:     description,
@@ -433,19 +476,27 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 		return fmt.Errorf("executor required (inject via SetInternalExecutor): %w", ErrInvalidInput)
 	}
 
-	// GOAL-P0-04A: refuse to drive a prototype executor unless the user opted in.
-	//
-	// The gate is here rather than in the loop because the goal's status must not
-	// change: entering "running" and then failing would render as "the agent tried
-	// and could not do it", which is a lie about capability. The goal stays in its
-	// current status and the caller gets a distinguishable sentinel error so the UI
-	// can explain the boundary instead of reporting a run.
-	if proto, limitation := isPrototypeExecutor(executor); proto {
-		s.mu.RLock()
-		allowed := s.prototypeExecutionEnabled
-		s.mu.RUnlock()
-		if !allowed {
-			return fmt.Errorf("%s: %w", limitation, ErrGoalPrototypeDisabled)
+	// Dangerous-surface opt-in: LLM Goal loops and leftover prototype
+	// scaffolding both stay disabled until the user enables them. The goal's
+	// status must not change on refusal.
+	if err := s.requireGoalExecutionOptIn(executor); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	status := g.Status
+	g.mu.Unlock()
+	if status != GoalStatusCreated && status != GoalStatusPaused {
+		return fmt.Errorf("goal %q cannot run (status=%s): %w", id, status, ErrNotAllowed)
+	}
+	if s.lifecycle != nil {
+		session, err := s.lifecycle.Get(agentcore.SessionGoal, id)
+		if err != nil {
+			return err
+		}
+		if session.Status == agentcore.SessionPaused || session.Status == agentcore.SessionFailed {
+			if err := s.lifecycle.ResumeLatest(agentcore.SessionGoal, id); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -480,6 +531,9 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 			g.FinishedAt = &finished
 			g.LastError = fmt.Sprintf("max iterations (%d) reached", g.MaxIterations)
 			g.mu.Unlock()
+			if s.lifecycle != nil {
+				_ = s.lifecycle.Fail(agentcore.SessionGoal, id, fmt.Errorf("goal iteration budget exhausted"))
+			}
 			return nil
 		}
 		// 终止条件 2：MaxCost（Step 4/6）。
@@ -489,6 +543,9 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 			g.FinishedAt = &finished
 			g.LastError = fmt.Sprintf("max cost ($%.4f) reached", g.MaxCost)
 			g.mu.Unlock()
+			if s.lifecycle != nil {
+				_ = s.lifecycle.Fail(agentcore.SessionGoal, id, fmt.Errorf("goal cost budget exhausted"))
+			}
 			return nil
 		}
 		// 终止条件 3：MaxDuration（Step 4）。
@@ -498,6 +555,9 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 			g.FinishedAt = &finished
 			g.LastError = fmt.Sprintf("max duration (%v) reached", g.MaxDuration)
 			g.mu.Unlock()
+			if s.lifecycle != nil {
+				_ = s.lifecycle.Fail(agentcore.SessionGoal, id, fmt.Errorf("goal duration budget exhausted"))
+			}
 			return nil
 		}
 		// 终止条件 4：连续 3 次错误（Step 4）。
@@ -507,14 +567,43 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 			g.FinishedAt = &finished
 			g.LastError = fmt.Sprintf("consecutive errors (%d) reached", maxConsecutiveErrors)
 			g.mu.Unlock()
+			if s.lifecycle != nil {
+				_ = s.lifecycle.Fail(agentcore.SessionGoal, id, fmt.Errorf("goal consecutive error limit reached"))
+			}
 			return nil
 		}
 		g.Iteration++
+		iteration := g.Iteration
 		g.mu.Unlock()
+		roundStarted := time.Now()
+		if checkpointErr := s.checkpointGoalExecution(id, "iteration-started", iteration); checkpointErr != nil {
+			// The iteration was admitted but could not be checkpointed. Keep a
+			// durable failed usage row so the ledger reflects the attempted unit.
+			meterErr := s.recordGoalExecution(id, iteration, GoalRoundResult{}, roundStarted, time.Now(), checkpointErr)
+			g.mu.Lock()
+			g.Status = GoalStatusFailed
+			g.LastError = checkpointErr.Error()
+			finished := time.Now()
+			g.FinishedAt = &finished
+			g.mu.Unlock()
+			var lifecycleErr error
+			if s.lifecycle != nil {
+				lifecycleErr = s.lifecycle.Fail(agentcore.SessionGoal, id, checkpointErr)
+			}
+			return errors.Join(checkpointErr, meterErr, lifecycleErr)
+		}
+		usageReceipt, receiptErr := s.beginGoalExecution(id, iteration, roundStarted)
+		if receiptErr != nil {
+			return s.failGoalExecution(id, receiptErr)
+		}
 
 		// 规划（Step 3）。
-		_, planErr := executor.Plan(g)
+		plannedSteps, planErr := executor.Plan(g)
 		if planErr != nil {
+			meterErr := s.completeGoalExecution(usageReceipt, id, iteration, GoalRoundResult{}, roundStarted, time.Now(), planErr)
+			if meterErr != nil {
+				return s.failGoalExecution(id, errors.Join(planErr, meterErr))
+			}
 			g.mu.Lock()
 			g.consecutiveErrs++
 			g.LastError = fmt.Sprintf("plan error (iter %d): %v", g.Iteration, planErr)
@@ -523,8 +612,12 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 		}
 
 		// 执行（Step 3）。
-		result, execErr := executor.Execute(g, "")
+		result, execErr := executor.Execute(g, plannedSteps)
 		if execErr != nil {
+			meterErr := s.completeGoalExecution(usageReceipt, id, iteration, GoalRoundResult{}, roundStarted, time.Now(), execErr)
+			if meterErr != nil {
+				return s.failGoalExecution(id, errors.Join(execErr, meterErr))
+			}
 			g.mu.Lock()
 			g.consecutiveErrs++
 			g.LastError = fmt.Sprintf("execute error (iter %d): %v", g.Iteration, execErr)
@@ -538,7 +631,6 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 		g.TotalTokens += result.Tokens
 		g.consecutiveErrs = 0 // 成功执行重置错误计数
 		g.mu.Unlock()
-
 		// 检查点创建（Step 5）。
 		if g.Iteration%defaultCheckpointInterval == 0 {
 			s.createCheckpoint(g, result.Snapshot, result.Note)
@@ -547,10 +639,17 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 		// 评估（Step 3）。
 		achieved, evalErr := executor.Evaluate(g)
 		if evalErr != nil {
+			meterErr := s.completeGoalExecution(usageReceipt, id, iteration, result, roundStarted, time.Now(), evalErr)
 			g.mu.Lock()
 			g.LastError = fmt.Sprintf("evaluate error (iter %d): %v", g.Iteration, evalErr)
 			g.mu.Unlock()
+			if meterErr != nil {
+				return s.failGoalExecution(id, errors.Join(evalErr, meterErr))
+			}
 			continue
+		}
+		if err := s.completeGoalExecution(usageReceipt, id, iteration, result, roundStarted, time.Now(), nil); err != nil {
+			return s.failGoalExecution(id, err)
 		}
 		// 终止条件 0：成功标准达成（Step 4）。
 		if achieved {
@@ -559,12 +658,44 @@ func (s *AIGoalService) RunGoal(id string, executor GoalExecutor, checker Securi
 			finished := time.Now()
 			g.FinishedAt = &finished
 			g.mu.Unlock()
+			if s.lifecycle != nil {
+				if err := s.lifecycle.Complete(agentcore.SessionGoal, id); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 	}
 }
 
 // PauseGoal 暂停运行（Step 2）。
+// failGoalExecution makes a trusted metering failure terminal. Continuing a
+// Goal after its usage row could not be persisted would make later summaries
+// under-count real work and would invite a retry of an already-applied side
+// effect.
+func (s *AIGoalService) failGoalExecution(id string, cause error) error {
+	if cause == nil {
+		cause = fmt.Errorf("goal execution failed: %w", ErrNotAllowed)
+	}
+	s.mu.RLock()
+	g := s.goals[id]
+	s.mu.RUnlock()
+	if g == nil {
+		return cause
+	}
+	g.mu.Lock()
+	g.Status = GoalStatusFailed
+	g.LastError = cause.Error()
+	finished := time.Now()
+	g.FinishedAt = &finished
+	g.mu.Unlock()
+	var lifecycleErr error
+	if s.lifecycle != nil {
+		lifecycleErr = s.lifecycle.Fail(agentcore.SessionGoal, id, cause)
+	}
+	return errors.Join(cause, lifecycleErr)
+}
+
 func (s *AIGoalService) PauseGoal(id string) error {
 	s.mu.RLock()
 	g, ok := s.goals[id]
@@ -576,6 +707,11 @@ func (s *AIGoalService) PauseGoal(id string) error {
 	defer g.mu.Unlock()
 	if g.Status != GoalStatusRunning {
 		return fmt.Errorf("goal %q not running (status=%s): %w", id, g.Status, ErrNotAllowed)
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.Pause(agentcore.SessionGoal, id); err != nil {
+			return err
+		}
 	}
 	g.Status = GoalStatusPaused
 	return nil
@@ -599,16 +735,10 @@ func (s *AIGoalService) ResumeGoal(id string, executor GoalExecutor, checker Sec
 		return fmt.Errorf("executor required (inject via SetInternalExecutor): %w", ErrInvalidInput)
 	}
 
-	// GOAL-P0-04A: gate before the status mutation below. RunGoal gates too, but
-	// this function flips the goal to "running" first, so relying only on RunGoal's
-	// gate would leave the goal stuck in "running" with no loop driving it.
-	if proto, limitation := isPrototypeExecutor(executor); proto {
-		s.mu.RLock()
-		allowed := s.prototypeExecutionEnabled
-		s.mu.RUnlock()
-		if !allowed {
-			return fmt.Errorf("%s: %w", limitation, ErrGoalPrototypeDisabled)
-		}
+	// Gate before the status mutation below. Relying only on RunGoal would
+	// leave the goal stuck in "running" if this resume path flipped status first.
+	if err := s.requireGoalExecutionOptIn(executor); err != nil {
+		return err
 	}
 
 	g.mu.Lock()
@@ -616,9 +746,9 @@ func (s *AIGoalService) ResumeGoal(id string, executor GoalExecutor, checker Sec
 		g.mu.Unlock()
 		return fmt.Errorf("goal %q not paused (status=%s): %w", id, g.Status, ErrNotAllowed)
 	}
-	g.Status = GoalStatusRunning
 	g.mu.Unlock()
-	// 重新进入自治循环。
+	// RunGoal performs the shared SessionStore resume before changing the
+	// domain status, so both state machines advance atomically.
 	return s.RunGoal(id, executor, checker)
 }
 
@@ -637,6 +767,9 @@ func (s *AIGoalService) AbortGoal(id string) error {
 	g.FinishedAt = &now
 	if s.active == g {
 		s.active = nil
+	}
+	if s.lifecycle != nil {
+		return s.lifecycle.Abort(agentcore.SessionGoal, id)
 	}
 	return nil
 }
@@ -681,6 +814,12 @@ func (s *AIGoalService) CreateCheckpoint(id, snapshot, note string) error {
 		snapID = snapshot
 	}
 	s.createCheckpoint(g, snapID, note)
+	g.mu.Lock()
+	iteration := g.Iteration
+	g.mu.Unlock()
+	if err := s.checkpointGoalExecution(id, "manual-checkpoint", iteration); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -727,7 +866,7 @@ func (s *AIGoalService) ListCheckpoints(id string) ([]Checkpoint, error) {
 // 成本控制（Step 6）
 // ---------------------------------------------------------------------------
 
-// CostReport 描述目标执行的成本和令牌用量。
+// GetCostReport 返回成本报告。
 type CostReport struct {
 	TotalCost     float64 `json:"totalCost"`
 	MaxCost       float64 `json:"maxCost"`

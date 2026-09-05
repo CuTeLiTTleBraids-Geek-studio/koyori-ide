@@ -15,6 +15,8 @@ export interface GitState {
   error: string | null;
   /** prompt-7 Task L: status list was capped for UI. */
   truncated: boolean;
+  /** P1-04: total status rows; `changes` is the visible window of it. */
+  totalChanges: number;
 }
 
 /** Cap Git status list in UI to avoid jank on huge dirty trees (prompt-7 Task L). */
@@ -24,9 +26,35 @@ export const MAX_GIT_UI_CHANGES = 1000;
  * 无需 repoPath 参数的操作在完成后刷新 git 状态使用。 */
 let _lastRepoPath = "";
 
+/** P1-01 stale 守卫：并发刷新/加载时只有最新一次调用允许回写状态，
+ * 快速切换仓库（或重复触发）后迟到的旧响应一律丢弃，不覆盖新数据。 */
+let _refreshGitGeneration = 0;
+let _conflictsGeneration = 0;
+let _stashGeneration = 0;
+let _tagGeneration = 0;
+let _submoduleGeneration = 0;
+
 /** currentRepoPath 返回最近一次 refreshGit 使用的仓库路径。 */
 function currentRepoPath(): string {
   return _lastRepoPath;
+}
+
+/** P1-04 截断续读：完整状态保留在此，`gitState.changes` 只是可见窗口。 */
+let _allChanges: GitFileChange[] = [];
+
+function applyVisibleGitChanges(): void {
+  gitState.changes = _allChanges.slice(0, MAX_GIT_UI_CHANGES);
+  gitState.truncated = _allChanges.length > gitState.changes.length;
+  gitState.totalChanges = _allChanges.length;
+}
+
+/** P1-04 续读：把可见窗口扩大一页，返回仍隐藏的行数（0 表示已全部可见）。 */
+export function loadMoreGitChanges(): number {
+  if (_allChanges.length <= gitState.changes.length) return 0;
+  const pages = Math.floor(gitState.changes.length / MAX_GIT_UI_CHANGES) + 1;
+  gitState.changes = _allChanges.slice(0, pages * MAX_GIT_UI_CHANGES);
+  gitState.truncated = _allChanges.length > gitState.changes.length;
+  return _allChanges.length - gitState.changes.length;
 }
 
 export const gitState = reactive<GitState>({
@@ -37,6 +65,7 @@ export const gitState = reactive<GitState>({
   loading: false,
   error: null,
   truncated: false,
+  totalChanges: 0,
 });
 
 /**
@@ -45,7 +74,7 @@ export const gitState = reactive<GitState>({
  * 会产生混合分隔符（"C:\repo/src/file.txt"）。将两部分都统一为正斜杠
  * 后再拼接，确保跨平台一致性。
  */
-function joinWorkspacePath(repoPath: string, file: string): string {
+export function joinWorkspacePath(repoPath: string, file: string): string {
   const normalizedRepo = repoPath.replace(/\\/g, "/");
   const normalizedFile = file.replace(/\\/g, "/");
   return `${normalizedRepo}/${normalizedFile}`;
@@ -85,6 +114,7 @@ export const rebaseState = reactive<RebaseState>({
 });
 
 export async function refreshGit(repoPath: string): Promise<void> {
+  const generation = ++_refreshGitGeneration;
   gitState.loading = true;
   gitState.error = null;
   _lastRepoPath = repoPath;
@@ -93,20 +123,19 @@ export async function refreshGit(repoPath: string): Promise<void> {
       gitService.getStatus(repoPath),
       gitService.getBranchInfo(repoPath),
     ]);
-    if (changes.length > MAX_GIT_UI_CHANGES) {
-      gitState.changes = changes.slice(0, MAX_GIT_UI_CHANGES);
-      gitState.truncated = true;
-    } else {
-      gitState.changes = changes;
-      gitState.truncated = false;
-    }
+    if (generation !== _refreshGitGeneration) return;
+    _allChanges = changes;
+    applyVisibleGitChanges();
     gitState.branchName = info.name;
     gitState.ahead = info.ahead;
     gitState.behind = info.behind;
   } catch (e: unknown) {
+    if (generation !== _refreshGitGeneration) return;
     gitState.error = errorMessage(e);
   } finally {
-    gitState.loading = false;
+    if (generation === _refreshGitGeneration) {
+      gitState.loading = false;
+    }
   }
 }
 
@@ -169,12 +198,15 @@ export async function commitChanges(repoPath: string, message: string): Promise<
 }
 
 export function clearGitState(): void {
+  _allChanges = [];
   gitState.changes = [];
   gitState.branchName = "";
   gitState.ahead = 0;
   gitState.behind = 0;
   gitState.loading = false;
   gitState.error = null;
+  gitState.truncated = false;
+  gitState.totalChanges = 0;
 }
 
 export async function loadBranches(repoPath: string) {
@@ -236,14 +268,20 @@ export async function pullChanges(repoPath: string, remoteName = ""): Promise<vo
 // ---------------------------------------------------------------------------
 
 export async function loadConflicts(): Promise<void> {
+  const generation = ++_conflictsGeneration;
   conflictState.loading = true;
   conflictState.error = null;
   try {
-    conflictState.conflicts = await gitService.listMergeConflicts();
+    const conflicts = await gitService.listMergeConflicts();
+    if (generation !== _conflictsGeneration) return;
+    conflictState.conflicts = conflicts;
   } catch (e: unknown) {
+    if (generation !== _conflictsGeneration) return;
     conflictState.error = errorMessage(e);
   } finally {
-    conflictState.loading = false;
+    if (generation === _conflictsGeneration) {
+      conflictState.loading = false;
+    }
   }
 }
 
@@ -426,14 +464,20 @@ export const tagState = reactive<TagState>({
 
 /** 加载 stash 列表。 */
 export async function loadStashes(): Promise<void> {
+  const generation = ++_stashGeneration;
   stashState.loading = true;
   stashState.error = null;
   try {
-    stashState.stashes = await gitService.stashList(currentRepoPath());
+    const stashes = await gitService.stashList(currentRepoPath());
+    if (generation !== _stashGeneration) return;
+    stashState.stashes = stashes;
   } catch (e: unknown) {
+    if (generation !== _stashGeneration) return;
     stashState.error = errorMessage(e);
   } finally {
-    stashState.loading = false;
+    if (generation === _stashGeneration) {
+      stashState.loading = false;
+    }
   }
 }
 
@@ -490,14 +534,20 @@ export async function stashDrop(stashRef: string): Promise<void> {
 
 /** 加载 tag 列表。 */
 export async function loadTags(): Promise<void> {
+  const generation = ++_tagGeneration;
   tagState.loading = true;
   tagState.error = null;
   try {
-    tagState.tags = await gitService.listTags();
+    const tags = await gitService.listTags();
+    if (generation !== _tagGeneration) return;
+    tagState.tags = tags;
   } catch (e: unknown) {
+    if (generation !== _tagGeneration) return;
     tagState.error = errorMessage(e);
   } finally {
-    tagState.loading = false;
+    if (generation === _tagGeneration) {
+      tagState.loading = false;
+    }
   }
 }
 
@@ -593,14 +643,20 @@ export const bisectState = reactive<BisectState>({
 
 /** 加载子模块列表。 */
 export async function loadSubmodules(): Promise<void> {
+  const generation = ++_submoduleGeneration;
   submoduleState.loading = true;
   submoduleState.error = null;
   try {
-    submoduleState.submodules = await gitService.submoduleList();
+    const submodules = await gitService.submoduleList();
+    if (generation !== _submoduleGeneration) return;
+    submoduleState.submodules = submodules;
   } catch (e: unknown) {
+    if (generation !== _submoduleGeneration) return;
     submoduleState.error = errorMessage(e);
   } finally {
-    submoduleState.loading = false;
+    if (generation === _submoduleGeneration) {
+      submoduleState.loading = false;
+    }
   }
 }
 

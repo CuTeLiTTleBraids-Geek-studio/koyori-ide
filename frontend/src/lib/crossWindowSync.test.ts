@@ -38,7 +38,9 @@ const mocks = vi.hoisted(() => {
     handleAIErrorEvent: vi.fn(),
     handleAIStreamBusyEvent: vi.fn(),
     handleAIToolCallsEvent: vi.fn(),
+    handleAIReasoningEvent: vi.fn(),
     handleConversationSavedEvent: vi.fn(),
+    handleAIConversationTargetAckEvent: vi.fn(),
     initAgentPendingSyncListener: vi.fn(),
     cleanupAgentPendingSyncListener: vi.fn(),
     handleAgentPendingUpdatedEvent: vi.fn(),
@@ -92,6 +94,7 @@ vi.doMock("@/stores/ai", () => ({
   handleAIErrorEvent: mocks.handleAIErrorEvent,
   handleAIStreamBusyEvent: mocks.handleAIStreamBusyEvent,
   handleAIToolCallsEvent: mocks.handleAIToolCallsEvent,
+  handleAIReasoningEvent: mocks.handleAIReasoningEvent,
   handleConversationSavedEvent: mocks.handleConversationSavedEvent,
 }));
 
@@ -99,6 +102,10 @@ vi.doMock("@/stores/agent", () => ({
   initAgentPendingSyncListener: mocks.initAgentPendingSyncListener,
   cleanupAgentPendingSyncListener: mocks.cleanupAgentPendingSyncListener,
   handleAgentPendingUpdatedEvent: mocks.handleAgentPendingUpdatedEvent,
+}));
+
+vi.doMock("@/stores/aiAssistant", () => ({
+  handleAIConversationTargetAckEvent: mocks.handleAIConversationTargetAckEvent,
 }));
 
 vi.doMock("@/stores/editor", () => ({
@@ -151,6 +158,7 @@ afterAll(() => {
   vi.doUnmock("@/stores/app");
   vi.doUnmock("@/stores/ai");
   vi.doUnmock("@/stores/agent");
+  vi.doUnmock("@/stores/aiAssistant");
   vi.doUnmock("@/stores/editor");
   vi.doUnmock("@/lib/notifications");
   vi.doUnmock("@/lib/i18n");
@@ -221,6 +229,7 @@ describe("crossWindowSync — init / teardown 生命周期", () => {
     mocks.unregisterAppListeners.mockClear();
     mocks.requestApplyToEditor.mockClear();
     mocks.handleAIChunkEvent.mockClear();
+    mocks.handleAIConversationTargetAckEvent.mockClear();
     mocks.applyToEditorCancels.length = 0;
     mocks.eventCancels.length = 0;
     mocks.registeredEvents.length = 0;
@@ -356,6 +365,41 @@ describe("crossWindowSync — init / teardown 生命周期", () => {
     selection.cb({ data: { code: "after unmount" } });
 
     expect(subscriber).toHaveBeenCalledTimes(1);
+  });
+
+  it("将 desktop conversation target 只分发给当前本地订阅者", () => {
+    const subscriber = vi.fn();
+    const unsubscribe = subscribeCrossWindowEvent("ai:open-conversation", subscriber);
+    initCrossWindowSync();
+    const registration = mocks.registeredEvents.find(
+      (candidate) => candidate.name === "ai:open-conversation",
+    );
+    expect(registration).toBeDefined();
+    const event = {
+      data: { conversationId: "conv-2", mode: "agent", sequence: 2, createdAt: Date.now() },
+    };
+
+    registration?.cb(event);
+    unsubscribe();
+    registration?.cb({ data: { ...event.data, sequence: 3 } });
+
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    expect(subscriber).toHaveBeenCalledWith(event);
+  });
+
+  it("forwards desktop conversation acknowledgements to local subscribers", () => {
+    const subscriber = vi.fn();
+    subscribeCrossWindowEvent("ai:open-conversation-ack", subscriber);
+    initCrossWindowSync();
+    const registration = mocks.registeredEvents.find(
+      (candidate) => candidate.name === "ai:open-conversation-ack",
+    );
+    const event = { data: { requestId: "request_ack_1", receiverEpoch: "receiver_epoch_1" } };
+
+    registration?.cb(event);
+
+    expect(mocks.handleAIConversationTargetAckEvent).toHaveBeenCalledWith(event);
+    expect(subscriber).toHaveBeenCalledWith(event);
   });
 
   it("注册中途失败时回滚已注册监听器和 store 处理器", () => {

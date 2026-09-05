@@ -344,9 +344,9 @@ func (s *UpdateService) DownloadUpdate(downloadURL string, destPath string) erro
 		return fmt.Errorf("create temporary update file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
+	defer os.Remove(tmpPath)
 	if _, err := tmp.Write(resp); err != nil {
-		_ = tmp.Close()
+		tmp.Close()
 		return fmt.Errorf("write update file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -372,7 +372,7 @@ func (s *UpdateService) VerifyUpdate(filePath string, expectedChecksum string) e
 	if err != nil {
 		return fmt.Errorf("read update file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, f); err != nil {
 		return fmt.Errorf("read update file: %w", err)
@@ -460,7 +460,7 @@ func (s *UpdateService) httpGet(reqURL, accept string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("github returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

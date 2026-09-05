@@ -17,10 +17,33 @@ export const editor = {
   }),
 };
 
+const providerDisposable = () => ({ dispose: () => undefined });
+
 export const languages = {
   register: () => undefined,
   setMonarchTokensProvider: () => undefined,
-  registerCompletionItemProvider: () => ({ dispose: () => undefined }),
+  registerCompletionItemProvider: providerDisposable,
+  registerHoverProvider: providerDisposable,
+  registerDefinitionProvider: providerDisposable,
+  registerCodeActionProvider: providerDisposable,
+  registerReferenceProvider: providerDisposable,
+  registerCodeLensProvider: providerDisposable,
+  registerDocumentFormattingEditProvider: providerDisposable,
+  registerDocumentRangeFormattingEditProvider: providerDisposable,
+  registerOnTypeFormattingEditProvider: providerDisposable,
+  registerSignatureHelpProvider: providerDisposable,
+  registerDocumentSymbolProvider: providerDisposable,
+  registerLinkProvider: providerDisposable,
+  registerColorProvider: providerDisposable,
+  registerFoldingRangeProvider: providerDisposable,
+  registerDeclarationProvider: providerDisposable,
+  registerImplementationProvider: providerDisposable,
+  registerTypeDefinitionProvider: providerDisposable,
+  registerRenameProvider: providerDisposable,
+  registerDocumentSemanticTokensProvider: providerDisposable,
+  registerDocumentRangeSemanticTokensProvider: providerDisposable,
+  registerDocumentHighlightProvider: providerDisposable,
+  registerInlayHintsProvider: providerDisposable,
 };
 
 export const KeyMod = {

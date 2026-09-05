@@ -24,10 +24,15 @@ func nativeDebugExecutableApproval(kind, path string) bool {
 	}
 	result := make(chan bool, 1)
 	dialog := app.Dialog.Question().SetTitle("Approve debug launch").SetMessage(
-		fmt.Sprintf("Allow this workspace-provided %s to run?\n\n%s", kind, path),
+		fmt.Sprintf("Allow this workspace-provided %s to run once?\n\n%s", kind, path),
 	)
-	dialog.AddButton("Run once").SetAsDefault().OnClick(func() { result <- true })
-	dialog.AddButton("Cancel").SetAsCancel().OnClick(func() { result <- false })
+	// BUG3: on Windows the Wails dialog maps the native MB_YESNO MessageBox
+	// result to the strings "Yes"/"No" and matches them against the added
+	// button labels. Labels such as "Run once"/"Cancel" never match, so the
+	// callback never fires and approval always times out to "not allowed".
+	// Use "Yes"/"No" like the other approval dialogs so the result is routed.
+	dialog.AddButton("Yes").SetAsDefault().OnClick(func() { result <- true })
+	dialog.AddButton("No").SetAsCancel().OnClick(func() { result <- false })
 	dialog.Show()
 	select {
 	case approved := <-result:

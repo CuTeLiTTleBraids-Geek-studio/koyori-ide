@@ -163,6 +163,14 @@ docs: update README with AI configuration guide
 - [ ] Conventional Commits
 - [ ] 无新增 lint 警告
 
+## VSIX 扩展作者须知 / VSIX Extension Authoring
+
+- 发布格式是标准 VSIX：根内包含 `extension/package.json`、`engines.vscode`（或等价兼容声明）、`contributes` 和 `browser`/`main` 入口。固定 SHA 的安装语料必须同时记录版本、入口与 SHA-256。
+- `koyoriIde.permissions` 是可选元数据，不是安装硬阻。缺失时宿主从 `activationEvents`、`contributes` 和入口中静态出现的 `vscode.*` 引用推导权限；shell、网络、未知来源或推导失败按 Restricted，并默认保持禁用。
+- 扩展应只依赖兼容矩阵中的 API。未知命名空间或 Monaco 缺少对应 provider 方法时，宿主以 `KOYORI_IDE_EXT_API_UNSUPPORTED` fail-closed，不提供空实现冒充成功。
+- `window.showInputBox` / `showQuickPick` 使用真实宿主 UI；取消返回 `undefined`，不能依赖默认值或第一项。写入、shell、网络、debug、tasks 等能力仍受权限与审批约束。
+- 提交扩展兼容改动时，至少运行 `frontend` 的 `vue-tsc`、ExtensionHost/VSIX real-Worker 测试，并更新 [docs/EXTENSION-COMPATIBILITY.md](../docs/EXTENSION-COMPATIBILITY.md) 的证据等级。
+
 ## 项目结构 / Project Structure
 
 ```

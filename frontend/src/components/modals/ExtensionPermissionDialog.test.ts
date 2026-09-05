@@ -8,7 +8,7 @@
  *   - Enables directly for Reviewed extensions (no checkbox).
  *   - Emits "approve" with the extension ID on confirm.
  *   - Emits "close" on cancel / overlay click / Escape.
- *   - Disables the Enable button for unverified extensions.
+ *   - Disables the Enable button for extensions without a SHA-256 integrity check.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -38,6 +38,7 @@ function makeInfo(overrides?: Partial<ExtensionSecurityInfo>): ExtensionSecurity
     level: "reviewed",
     permissions: ["fs.read", "fs.write"],
     sha256: "abc123",
+    integrityChecked: true,
     verified: true,
     enabled: false,
     blacklisted: false,
@@ -106,7 +107,7 @@ describe("ExtensionPermissionDialog (G-VSC-03 / G-SEC-12)", () => {
   });
 
   it("enables directly for reviewed extensions (no checkbox required)", async () => {
-    const info = makeInfo({ level: "reviewed", verified: true });
+    const info = makeInfo({ level: "reviewed", integrityChecked: true });
     const wrapper = mount(ExtensionPermissionDialog, {
       props: { visible: true, info },
     });
@@ -121,7 +122,7 @@ describe("ExtensionPermissionDialog (G-VSC-03 / G-SEC-12)", () => {
     const info = makeInfo({
       level: "restricted",
       permissions: ["network"],
-      verified: true,
+      integrityChecked: true,
     });
     const wrapper = mount(ExtensionPermissionDialog, {
       props: { visible: true, info },
@@ -139,15 +140,19 @@ describe("ExtensionPermissionDialog (G-VSC-03 / G-SEC-12)", () => {
     expect(wrapper.emitted("approve")![0]).toEqual(["pub.test-ext"]);
   });
 
-  it("disables Enable button for unverified extensions", () => {
-    const info = makeInfo({ level: "trusted", verified: false });
+  it("fails closed when integrityChecked is false despite the legacy verified alias", () => {
+    const info = makeInfo({
+      level: "trusted",
+      integrityChecked: false,
+      verified: true,
+    });
     const wrapper = mount(ExtensionPermissionDialog, {
       props: { visible: true, info },
     });
     const enableBtn = wrapper.find(".epd__btn--primary");
     expect(enableBtn.attributes("disabled")).toBeDefined();
-    // Shows the unverified warning.
-    expect(wrapper.find(".epd__unverified").exists()).toBe(true);
+    expect(wrapper.find(".epd__integrity-unchecked").exists()).toBe(true);
+    expect(wrapper.text()).toContain("SHA-256 integrity check");
   });
 
   it("emits close on Cancel button", async () => {
@@ -296,7 +301,7 @@ describe("ExtensionPermissionDialog (G-VSC-03 / G-SEC-12)", () => {
 
   it("shows restricted enable label for restricted extensions", () => {
     appState.language = "en";
-    const info = makeInfo({ level: "restricted", verified: true });
+    const info = makeInfo({ level: "restricted", integrityChecked: true });
     const wrapper = mount(ExtensionPermissionDialog, {
       props: { visible: true, info },
     });

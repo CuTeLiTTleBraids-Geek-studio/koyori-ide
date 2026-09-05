@@ -189,6 +189,9 @@ func TestGitService_Status_detectsNewFile(t *testing.T) {
 	if changes[0].Status != "Untracked" {
 		t.Errorf("expected status 'Untracked', got %q", changes[0].Status)
 	}
+	if changes[0].Staged {
+		t.Error("untracked file must not be marked staged")
+	}
 }
 
 func TestGitService_Status_detectsModifiedFile(t *testing.T) {
@@ -209,6 +212,44 @@ func TestGitService_Status_detectsModifiedFile(t *testing.T) {
 	}
 }
 
+func TestGitService_Status_emitsStagedAndUnstagedRowsSeparately(t *testing.T) {
+	dir := initBareRepo(t)
+	writeFile(t, dir, "a.txt", "hello")
+	commitAll(t, dir, "initial")
+	writeFile(t, dir, "a.txt", "staged")
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	if _, err := wt.Add("a.txt"); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	writeFile(t, dir, "a.txt", "unstaged")
+	svc := &GitService{}
+	changes, err := svc.GetStatus(dir)
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+	var staged, unstaged bool
+	for _, change := range changes {
+		if change.Path != "a.txt" {
+			continue
+		}
+		if change.Staged {
+			staged = true
+		} else {
+			unstaged = true
+		}
+	}
+	if !staged || !unstaged {
+		t.Fatalf("want both staged and unstaged rows, got %+v", changes)
+	}
+}
+
 func TestGitService_Status_detectsDeletedFile(t *testing.T) {
 	dir := initBareRepo(t)
 	writeFile(t, dir, "a.txt", "hello")
@@ -226,6 +267,135 @@ func TestGitService_Status_detectsDeletedFile(t *testing.T) {
 	}
 	if changes[0].Status != "Deleted" {
 		t.Errorf("expected status 'Deleted', got %q", changes[0].Status)
+	}
+}
+
+// stageRemoval stages the deletion of name (worktree file must still exist).
+func stageRemoval(t *testing.T, dir, name string) {
+	t.Helper()
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	if _, err := wt.Remove(name); err != nil {
+		t.Fatalf("stage removal of %s: %v", name, err)
+	}
+}
+
+func TestGitService_Status_projectsProvenStagedRename(t *testing.T) {
+	dir := initBareRepo(t)
+	writeFile(t, dir, "old.txt", "same bytes")
+	commitAll(t, dir, "initial")
+	stageRemoval(t, dir, "old.txt")
+	writeFile(t, dir, "new.txt", "same bytes")
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	if _, err := wt.Add("new.txt"); err != nil {
+		t.Fatalf("stage new.txt: %v", err)
+	}
+	svc := &GitService{}
+	changes, err := svc.GetStatus(dir)
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected the delete+add pair to merge into one row, got %+v", changes)
+	}
+	row := changes[0]
+	if row.Status != "Renamed" || !row.Staged {
+		t.Fatalf("expected staged Renamed row, got %+v", row)
+	}
+	if row.Path != "new.txt" || row.OldPath != "old.txt" {
+		t.Fatalf("expected rename new.txt (oldPath old.txt), got %+v", row)
+	}
+}
+
+func TestGitService_Status_keepsUnprovenDeleteAddPair(t *testing.T) {
+	dir := initBareRepo(t)
+	writeFile(t, dir, "old.txt", "original content")
+	commitAll(t, dir, "initial")
+	stageRemoval(t, dir, "old.txt")
+	writeFile(t, dir, "new.txt", "different content")
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	if _, err := wt.Add("new.txt"); err != nil {
+		t.Fatalf("stage new.txt: %v", err)
+	}
+	svc := &GitService{}
+	changes, err := svc.GetStatus(dir)
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("content-differing delete+add must stay two rows, got %+v", changes)
+	}
+	for _, row := range changes {
+		if row.Status == "Renamed" || row.OldPath != "" {
+			t.Fatalf("rename must not be guessed when blobs differ: %+v", changes)
+		}
+	}
+}
+
+func TestGitService_GetDiffForSide_returnsRowIdentitySide(t *testing.T) {
+	dir := initBareRepo(t)
+	writeFile(t, dir, "a.txt", "v1\n")
+	commitAll(t, dir, "initial")
+	writeFile(t, dir, "a.txt", "v2\n")
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	if _, err := wt.Add("a.txt"); err != nil {
+		t.Fatalf("stage v2: %v", err)
+	}
+	writeFile(t, dir, "a.txt", "v3\n")
+	svc := &GitService{}
+	stagedDiff, err := svc.GetDiffForSide(dir, "a.txt", true)
+	if err != nil {
+		t.Fatalf("staged side failed: %v", err)
+	}
+	if !strings.Contains(stagedDiff, "+v2") || strings.Contains(stagedDiff, "+v3") {
+		t.Fatalf("staged side must diff HEAD vs index, got:\n%s", stagedDiff)
+	}
+	unstagedDiff, err := svc.GetDiffForSide(dir, "a.txt", false)
+	if err != nil {
+		t.Fatalf("unstaged side failed: %v", err)
+	}
+	if !strings.Contains(unstagedDiff, "+v3") || strings.Contains(unstagedDiff, "+v2") {
+		t.Fatalf("unstaged side must diff index vs worktree, got:\n%s", unstagedDiff)
+	}
+}
+
+func TestGitService_GetDiffForSide_untrackedFallsBackToAllAdditions(t *testing.T) {
+	dir := initBareRepo(t)
+	writeFile(t, dir, "u.txt", "hello")
+	svc := &GitService{}
+	diff, err := svc.GetDiffForSide(dir, "u.txt", false)
+	if err != nil {
+		t.Fatalf("untracked side failed: %v", err)
+	}
+	if !strings.Contains(diff, "new file mode") || !strings.Contains(diff, "+hello") {
+		t.Fatalf("untracked side must return all-additions diff, got:\n%s", diff)
 	}
 }
 

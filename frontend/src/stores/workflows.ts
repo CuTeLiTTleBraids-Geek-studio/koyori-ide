@@ -6,12 +6,11 @@
 // 喵，这是 Koyori IDE 的 Workflows 模块（前端实现）~
 import { reactive, computed } from "vue";
 import { Events } from "@wailsio/runtime";
-import { workflowService } from "@/api/services";
+import { taskService, workflowService } from "@/api/services";
 import { appState } from "@/stores/app";
-import { createSession, runCommandInSession, runCommandInSessionCapturing, killSession } from "@/stores/terminal";
 import { pushOutput } from "@/stores/output";
 import { notifyError, notifySuccess } from "@/lib/notifications";
-import type { WorkflowDef, WorkflowStep, WorkflowStepState, FileSavedEvent, WorkflowValidationResult, WorkflowCompletedEvent } from "@/types";
+import type { ExecResult, WorkflowDef, WorkflowStep, WorkflowStepState, FileSavedEvent, WorkflowValidationResult, WorkflowCompletedEvent } from "@/types";
 
 interface WorkflowStoreState {
   workflows: WorkflowDef[];
@@ -47,6 +46,8 @@ export const pendingStartupWorkflows = computed(() =>
   workflowState.workflows.filter((wf) => wf.runOn?.event === "startup"),
 );
 
+let workflowLoadRequest = 0;
+
 // Load workflows for the given project root. A no-op when root is empty.
 // Errors are surfaced to the store and a notification, but do not throw.
 //
@@ -60,24 +61,43 @@ export async function loadWorkflows(
   projectRoot: string,
   shouldApply: () => boolean = () => true,
 ): Promise<void> {
+  const requestId = ++workflowLoadRequest;
+  const requestedRuntimeGeneration = workflowRuntimeGeneration;
+  const requestedWorkspaceGeneration = Number.isSafeInteger(appState.workspaceGeneration)
+    ? appState.workspaceGeneration
+    : null;
+  const isCurrent = (): boolean => {
+    if (requestId !== workflowLoadRequest || requestedRuntimeGeneration !== workflowRuntimeGeneration) return false;
+    if (!shouldApply()) return false;
+    if (
+      requestedWorkspaceGeneration !== null &&
+      appState.workspaceGeneration !== requestedWorkspaceGeneration
+    ) return false;
+    const committedRoot = appState.workspaceRoot || appState.currentProject || "";
+    return !committedRoot || normalizeWorkflowPath(committedRoot) === normalizeWorkflowPath(projectRoot);
+  };
   if (!projectRoot) {
-    workflowState.workflows = [];
-    workflowState.errorMessage = null;
-    workflowState.validation = {};
+    if (isCurrent()) {
+      workflowState.workflows = [];
+      workflowState.errorMessage = null;
+      workflowState.validation = {};
+      workflowState.loading = false;
+    }
     return;
   }
+  if (!isCurrent()) return;
   workflowState.loading = true;
   workflowState.errorMessage = null;
   try {
     const workflows = await workflowService.loadWorkflows(projectRoot);
-    if (!shouldApply()) return;
+    if (!isCurrent()) return;
     workflowState.workflows = workflows;
     // N-55: Validate all workflows at load time so the user sees errors
     // immediately rather than at run time. Errors are stored per-workflow
     // and surfaced in the UI. Validation failures do not block loading.
     try {
       const results = await workflowService.validateAllWorkflows(workflowState.workflows);
-      if (!shouldApply()) return;
+      if (!isCurrent()) return;
       workflowState.validation = {};
       for (const r of results) {
         workflowState.validation[r.workflowName] = r;
@@ -89,16 +109,28 @@ export async function loadWorkflows(
     }
     // Register the file:saved event listener (idempotent) so workflows
     // with runOn triggers auto-run when matching files are saved.
-    if (shouldApply()) initWorkflowTriggers();
+    if (isCurrent()) initWorkflowTriggers();
   } catch (e: unknown) {
-    if (!shouldApply()) return;
+    if (!isCurrent()) return;
     workflowState.workflows = [];
     const msg = e instanceof Error ? e.message : String(e);
     workflowState.errorMessage = msg;
     notifyError(`Failed to load workflows: ${msg}`);
   } finally {
-    if (shouldApply()) workflowState.loading = false;
+    if (isCurrent()) workflowState.loading = false;
   }
+}
+
+function normalizeWorkflowPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+  // POSIX paths are case-sensitive; only Windows drive/UNC identities fold
+  // case for workspace authority comparisons.
+  const windowsPath = /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//");
+  return windowsPath ? normalized.toLowerCase() : normalized;
+}
+
+function currentWorkflowRoot(): string {
+  return appState.workspaceRoot || appState.currentProject || "";
 }
 
 // N-55: Returns the validation result for a workflow, or null if not yet
@@ -111,7 +143,7 @@ export function getWorkflowValidation(name: string): WorkflowValidationResult | 
 
 /** 在当前项目创建新工作流并刷新列表。 */
 export async function createWorkflow(name: string, def: WorkflowDef): Promise<boolean> {
-  const root = appState.currentProject;
+  const root = currentWorkflowRoot();
   if (!root) {
     notifyError("No project open");
     return false;
@@ -130,7 +162,7 @@ export async function createWorkflow(name: string, def: WorkflowDef): Promise<bo
 
 /** 保存（覆盖）工作流定义。 */
 export async function saveWorkflow(name: string, def: WorkflowDef): Promise<boolean> {
-  const root = appState.currentProject;
+  const root = currentWorkflowRoot();
   if (!root) {
     notifyError("No project open");
     return false;
@@ -149,7 +181,7 @@ export async function saveWorkflow(name: string, def: WorkflowDef): Promise<bool
 
 /** 删除工作流文件。 */
 export async function deleteWorkflow(name: string): Promise<boolean> {
-  const root = appState.currentProject;
+  const root = currentWorkflowRoot();
   if (!root) {
     notifyError("No project open");
     return false;
@@ -168,7 +200,7 @@ export async function deleteWorkflow(name: string): Promise<boolean> {
 
 /** 重命名工作流。 */
 export async function renameWorkflow(oldName: string, newName: string): Promise<boolean> {
-  const root = appState.currentProject;
+  const root = currentWorkflowRoot();
   if (!root) {
     notifyError("No project open");
     return false;
@@ -607,33 +639,87 @@ function initStepStates(wf: WorkflowDef): WorkflowStepState[] {
   return wf.steps.map((s) => ({ name: s.name, status: "pending" }));
 }
 
+function isTypedFileReadStep(step: WorkflowStep): boolean {
+  if (step.type !== "file" || step.tool !== "read" || step.command.trim() !== "") return false;
+  if ((step.args?.length ?? 0) !== 0 || (step.cwd?.trim() ?? "") !== "") return false;
+  const input = step.input;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
+  const keys = Object.keys(input);
+  return keys.length === 1 && keys[0] === "path" &&
+    typeof input.path === "string" && input.path.trim() !== "";
+}
+
+function isTypedFileWriteStep(step: WorkflowStep): boolean {
+  if (step.type !== "file" || step.tool !== "write" || step.command.trim() !== "") return false;
+  if ((step.args?.length ?? 0) !== 0 || (step.cwd?.trim() ?? "") !== "") return false;
+  const input = step.input;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
+  const keys = Object.keys(input).sort();
+  return keys.length === 2 && keys[0] === "content" && keys[1] === "path" &&
+    typeof input.path === "string" && input.path.trim() !== "" && typeof input.content === "string";
+}
+
+function isTypedMCPStep(step: WorkflowStep): boolean {
+  if (step.type !== "mcp" || step.command.trim() !== "") return false;
+  if ((step.args?.length ?? 0) !== 0 || (step.cwd?.trim() ?? "") !== "") return false;
+  if (typeof step.tool !== "string" || step.tool.trim() === "") return false;
+  const input = step.input;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
+  return Object.keys(input).every((key) => key.trim() !== "");
+}
+
+function isTypedGitStatusStep(step: WorkflowStep): boolean {
+  if (step.type !== "git" || step.tool !== "status" || step.command.trim() !== "") return false;
+  if ((step.args?.length ?? 0) !== 0 || (step.cwd?.trim() ?? "") !== "") return false;
+  const input = step.input;
+  if (input === undefined) return true;
+  return typeof input === "object" && input !== null && !Array.isArray(input) && Object.keys(input).length === 0;
+}
+
+function isTypedSkillActivationStep(step: WorkflowStep): boolean {
+  if (step.type !== "skill" || step.tool !== "activate" || step.command.trim() !== "") return false;
+  if ((step.args?.length ?? 0) !== 0 || (step.cwd?.trim() ?? "") !== "") return false;
+  const input = step.input;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
+  const keys = Object.keys(input);
+  if (keys.length !== 1 || keys[0] !== "id" || typeof input.id !== "string") return false;
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.id);
+}
+
+function isTypedAIStep(step: WorkflowStep): boolean {
+  if (step.type !== "ai" || step.command.trim() !== "") return false;
+  if ((step.args?.length ?? 0) !== 0 || (step.cwd?.trim() ?? "") !== "") return false;
+  if (step.tool !== "generate" && step.tool !== "review" && step.tool !== "commit-message") return false;
+  const input = step.input;
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return false;
+  const keys = Object.keys(input);
+  return keys.length === 1 && keys[0] === "prompt" && typeof input.prompt === "string" && input.prompt.trim() !== "";
+}
+
+function isTypedCatalogStep(step: WorkflowStep): boolean {
+  return isTypedFileReadStep(step) || isTypedFileWriteStep(step) || isTypedGitStatusStep(step) || isTypedMCPStep(step) || isTypedSkillActivationStep(step) || isTypedAIStep(step);
+}
+
+function isExecutableWorkflowStep(step: WorkflowStep): boolean {
+  if (step.type === undefined || step.type === "command") {
+    return step.command.trim() !== "";
+  }
+  return isTypedCatalogStep(step);
+}
+
 // N-58 (Proposal R): Maximum chain depth for workflow-completed triggers.
 // Prevents infinite loops (A triggers B, B triggers A, ...). When this
 // limit is reached, the chain trigger is suppressed with a warning.
 const MAX_CHAIN_DEPTH = 5;
-const pendingWorkflowDelays = new Map<
-  ReturnType<typeof setTimeout>,
-  (ready: boolean) => void
->();
 let workflowRuntimeGeneration = 0;
+let workflowExecutionSequence = 0;
+const activeWorkflowExecutions = new Set<string>();
 
-function waitForWorkflowShellReady(generation: number): Promise<boolean> {
-  if (generation !== workflowRuntimeGeneration) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      pendingWorkflowDelays.delete(timer);
-      resolve(generation === workflowRuntimeGeneration);
-    }, 80);
-    pendingWorkflowDelays.set(timer, resolve);
-  });
-}
-
-function settlePendingWorkflowDelays(): void {
-  for (const [timer, resolve] of pendingWorkflowDelays) {
-    clearTimeout(timer);
-    resolve(false);
-  }
-  pendingWorkflowDelays.clear();
+function nextWorkflowExecutionId(workflowName: string, stepName: string): string {
+  workflowExecutionSequence += 1;
+  const safeWorkflow = workflowName.replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 40) || "workflow";
+  const safeStep = stepName.replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 40) || "step";
+  return `workflow:${safeWorkflow}:${safeStep}:${Date.now().toString(36)}:${workflowExecutionSequence}`;
 }
 
 // runWorkflow executes a workflow's steps sequentially in a new terminal
@@ -653,6 +739,18 @@ export async function runWorkflow(
 ): Promise<void> {
   if (workflowState.running[wf.name]) return;
   const runtimeGeneration = workflowRuntimeGeneration;
+  const workspaceGeneration = Number.isSafeInteger(appState.workspaceGeneration)
+    ? appState.workspaceGeneration
+    : null;
+  const authorityRoot = currentWorkflowRoot();
+  const authorityCurrent = (): boolean =>
+    runtimeGeneration === workflowRuntimeGeneration &&
+    (workspaceGeneration === null || appState.workspaceGeneration === workspaceGeneration) &&
+    (!authorityRoot || normalizeWorkflowPath(currentWorkflowRoot()) === normalizeWorkflowPath(authorityRoot));
+  if (authorityRoot && normalizeWorkflowPath(projectRoot) !== normalizeWorkflowPath(authorityRoot)) {
+    notifyError(`Workflow "${wf.name}" belongs to a stale workspace`);
+    return;
+  }
 
   // N-55: Block execution of invalid workflows. The user must fix the
   // validation errors in the .yml file before the workflow can run.
@@ -675,6 +773,14 @@ export async function runWorkflow(
     return;
   }
 
+  const unsupportedStep = ordered.find((step) => !isExecutableWorkflowStep(step));
+  if (unsupportedStep) {
+    const msg = `Workflow "${wf.name}" contains unsupported step definition "${String(unsupportedStep.type ?? "command")}" in step "${unsupportedStep.name}"; only command, typed AI, typed file/read or file/write, typed git/status, typed MCP, and typed Skill/activate steps are executable`;
+    notifyError(msg);
+    pushOutput("workflow", "error", msg);
+    return;
+  }
+
   workflowState.running[wf.name] = true;
   workflowState.stepStates[wf.name] = initStepStates(wf);
   const states = workflowState.stepStates[wf.name];
@@ -683,26 +789,33 @@ export async function runWorkflow(
   const stateByName = new Map<string, WorkflowStepState>();
   for (const s of states) stateByName.set(s.name, s);
 
-  appState.terminalVisible = true;
   pushOutput("workflow", "info", `Starting workflow "${wf.name}"`);
 
-  let sessionId: string | null = null;
-  try {
-    // All steps share one terminal session so that side effects (env
-    // vars, cd, files) persist across steps.
-    sessionId = await createSession(projectRoot);
-    if (!sessionId) {
-      notifyError(`Failed to start terminal for workflow "${wf.name}"`);
-      pushOutput("workflow", "error", `Workflow "${wf.name}": terminal session creation failed`);
+  // Production TaskService owns the workflow session and returns one ID for
+  // the complete run. The catalog step methods below are the authoritative
+  // execution boundary: the backend reloads workflow/step metadata and never
+  // trusts renderer-provided command or cwd values.
+  const hasLifecycleOwner = typeof taskService.beginWorkflowExecution === "function";
+  let workflowSessionId = "";
+  if (hasLifecycleOwner) {
+    try {
+      workflowSessionId = await taskService.beginWorkflowExecution(wf.name);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      workflowState.running[wf.name] = false;
+      notifyError(`Workflow "${wf.name}" could not start: ${msg}`);
+      pushOutput("workflow", "error", `Workflow "${wf.name}" start failed: ${msg}`);
       return;
     }
-    // Small delay to let the shell prompt render before writing commands.
-    // Matches the workaround used by runTask.
-    if (!await waitForWorkflowShellReady(runtimeGeneration)) return;
+  } else {
+    workflowSessionId = nextWorkflowExecutionId(wf.name, "run");
+  }
+  let lifecycleFinalized = false;
 
+  try {
     let failed = false;
     for (const step of ordered) {
-      if (runtimeGeneration !== workflowRuntimeGeneration) return;
+      if (!authorityCurrent()) return;
       const state = stateByName.get(step.name);
       if (!state) continue;
       // Proposal F: pass stepOutputs lookup so conditions can reference
@@ -728,22 +841,47 @@ export async function runWorkflow(
       state.startedAt = Date.now();
       // Proposal F: substitute {{steps.<name>.outputs.<key>}} placeholders
       // in the command with actual output values from previous steps.
-      const rawCmd = composeStepCommandLine(step);
-      const cmd = substituteOutputRefs(rawCmd, stepOutputsLookup);
-      pushOutput("workflow", "info", `Step "${step.name}": ${cmd}`);
-      // Proposal F: Use the capturing variant so we can extract outputs
-      // from stdout. Falls back to the non-capturing variant if the step
-      // has no outputs template (slightly more efficient).
-      let exitCode: number;
-      let output = "";
-      if (step.outputs && Object.keys(step.outputs).length > 0) {
-        const result = await runCommandInSessionCapturing(sessionId, cmd);
-        exitCode = result.exitCode;
-        output = result.output;
-      } else {
-        exitCode = await runCommandInSession(sessionId, cmd);
+      const typedCatalogStep = isTypedCatalogStep(step);
+      const rawCmd = typedCatalogStep ? "" : composeStepCommandLine(step);
+      const cmd = typedCatalogStep ? "" : substituteOutputRefs(rawCmd, stepOutputsLookup);
+      const operation = isTypedAIStep(step) ? `ai.${step.tool}` : isTypedFileReadStep(step) ? "file.read" : isTypedFileWriteStep(step) ? "file.write" : isTypedGitStatusStep(step) ? "git.status" : isTypedMCPStep(step) ? step.tool : isTypedSkillActivationStep(step) ? `skill.activate:${step.input?.id ?? ""}` : cmd;
+      pushOutput("workflow", "info", `Step "${step.name}": ${operation}`);
+      const cwd = typedCatalogStep ? projectRoot : resolveStepCwd(step, projectRoot);
+      const executionId = workflowSessionId;
+      activeWorkflowExecutions.add(executionId);
+      let result: ExecResult;
+      try {
+        const catalogApproval = taskService.requestWorkflowStepApproval;
+        const catalogExecute = taskService.executeApprovedWorkflowStep;
+        let approvalToken: string;
+        if (typeof catalogApproval === "function" && typeof catalogExecute === "function") {
+          approvalToken = await catalogApproval(executionId, wf.name, step.name);
+        } else {
+          // Explicit compatibility adapter for injected test doubles generated
+          // before the catalog workflow bindings existed. A production build
+          // must never fall back to renderer-supplied command/cwd authority.
+          if (import.meta.env.PROD || typedCatalogStep) {
+            throw new Error("workflow catalog execution API is unavailable");
+          }
+          approvalToken = await taskService.requestExecutionApproval(executionId, cmd, cwd);
+        }
+        if (!authorityCurrent()) {
+          await taskService.stop(executionId);
+          return;
+        }
+        if (typeof catalogApproval === "function" && typeof catalogExecute === "function") {
+          result = await catalogExecute(executionId, wf.name, step.name, approvalToken);
+        } else {
+          result = await taskService.executeApproved(executionId, cmd, cwd, approvalToken);
+        }
+      } finally {
+        activeWorkflowExecutions.delete(executionId);
       }
-      if (runtimeGeneration !== workflowRuntimeGeneration) return;
+      const exitCode = result.exitCode;
+      const output = result.stdout ?? "";
+      if (result.stdout) pushOutput("workflow", "info", result.stdout);
+      if (result.stderr) pushOutput("workflow", exitCode === 0 ? "warn" : "error", result.stderr);
+      if (!authorityCurrent()) return;
       state.finishedAt = Date.now();
       if (exitCode === 0) {
         state.status = "success";
@@ -772,15 +910,23 @@ export async function runWorkflow(
       }
     }
 
-    if (runtimeGeneration !== workflowRuntimeGeneration) return;
+    if (!authorityCurrent()) return;
     const anyFailed = states.some((s) => s.status === "failed");
     const success = !anyFailed;
     if (anyFailed) {
       pushOutput("workflow", "error", `Workflow "${wf.name}" failed`);
       notifyError(`Workflow "${wf.name}" failed`);
+		if (hasLifecycleOwner) {
+			await taskService.failWorkflowExecution(workflowSessionId, "one or more workflow steps failed");
+			lifecycleFinalized = true;
+		}
     } else {
       pushOutput("workflow", "success", `Workflow "${wf.name}" completed`);
       notifySuccess(`Workflow "${wf.name}" completed`);
+		if (hasLifecycleOwner) {
+			await taskService.completeWorkflowExecution(workflowSessionId);
+			lifecycleFinalized = true;
+		}
     }
     // N-58 (Proposal R): Emit workflow:completed so downstream workflows
     // with runOn.event "workflow-completed" can chain. The payload includes
@@ -791,7 +937,7 @@ export async function runWorkflow(
       chainDepth,
     });
   } catch (e: unknown) {
-    if (runtimeGeneration !== workflowRuntimeGeneration) return;
+    if (!authorityCurrent()) return;
     const msg = e instanceof Error ? e.message : String(e);
     notifyError(`Workflow "${wf.name}" error: ${msg}`);
     pushOutput("workflow", "error", `Workflow "${wf.name}" error: ${msg}`);
@@ -803,14 +949,9 @@ export async function runWorkflow(
       chainDepth,
     });
   } finally {
-    // N-46: Kill the terminal session created for this workflow run.
-    // Without this, every workflow run leaks a session in
-    // terminalState.sessions and a backend PTY process. killSession is
-    // called after pushOutput so the session's output buffer isn't
-    // destroyed before the final log entry is written.
-    if (sessionId) {
-      await killSession(sessionId);
-    }
+	if (hasLifecycleOwner && workflowSessionId && !lifecycleFinalized) {
+		await taskService.failWorkflowExecution(workflowSessionId, "workflow execution aborted").catch(() => undefined);
+	}
     workflowState.running[wf.name] = false;
   }
 }
@@ -903,10 +1044,13 @@ export function relativizePath(absPath: string, projectRoot: string): string {
   // Normalize both to forward slashes for comparison.
   const normPath = absPath.replace(/\\/g, "/");
   const normRoot = root.replace(/\\/g, "/");
-  if (normPath.startsWith(normRoot + "/")) {
+  const windowsStyle = /^[A-Za-z]:\//.test(normRoot) || normRoot.startsWith("//");
+  const comparablePath = windowsStyle ? normPath.toLowerCase() : normPath;
+  const comparableRoot = windowsStyle ? normRoot.toLowerCase() : normRoot;
+  if (comparablePath.startsWith(comparableRoot + "/")) {
     return normPath.slice(normRoot.length + 1);
   }
-  if (normPath === normRoot) {
+  if (comparablePath === comparableRoot) {
     return "";
   }
   return normPath;
@@ -932,6 +1076,7 @@ export function findTriggeredWorkflows(
   for (const wf of workflows) {
     const trigger = wf.runOn;
     if (!trigger || trigger.event !== "file-saved") continue;
+    if (wf.requiresConfirmation) continue;
     if (running[wf.name]) continue;
     const glob = trigger.glob ?? "**/*";
     if (matchGlob(relPath, glob)) {
@@ -986,6 +1131,7 @@ export function findChainTriggeredWorkflows(
   for (const wf of workflows) {
     const trigger = wf.runOn;
     if (!trigger || trigger.event !== "workflow-completed") continue;
+    if (wf.requiresConfirmation) continue;
     if (running[wf.name]) continue;
     // Don't let a workflow trigger itself (simple cycle prevention).
     if (wf.name === completedName) continue;
@@ -1030,7 +1176,7 @@ export function initWorkflowTriggers(): void {
     Events.On("file:saved", (event: FileSavedEvent) => {
       const absPath: string = event?.data ?? "";
       if (typeof absPath !== "string" || absPath === "") return;
-      const root = appState.currentProject ?? "";
+      const root = currentWorkflowRoot();
       if (!root) return;
       const relPath = relativizePath(absPath, root);
       const triggered = findTriggeredWorkflows(
@@ -1059,7 +1205,7 @@ export function initWorkflowTriggers(): void {
         );
         return;
       }
-      const root = appState.currentProject ?? "";
+      const root = currentWorkflowRoot();
       if (!root) return;
       const triggered = findChainTriggeredWorkflows(
         workflowState.workflows,
@@ -1097,7 +1243,10 @@ export function cleanupWorkflowEventListeners(): void {
 
 export function cleanupWorkflowRuntime(): void {
   workflowRuntimeGeneration += 1;
-  settlePendingWorkflowDelays();
+  workflowLoadRequest += 1;
+  for (const executionId of activeWorkflowExecutions) {
+    void taskService.stop(executionId).catch(() => undefined);
+  }
   cleanupWorkflowEventListeners();
 }
 

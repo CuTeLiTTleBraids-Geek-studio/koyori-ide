@@ -26,12 +26,14 @@ vi.mock("@wailsio/runtime", () => ({
 import { appState } from "./app";
 import {
   inlineCompletionEnabled,
+  inlineCompletionUnavailable,
   requestCompletion,
   toggleInlineCompletion,
   cancelInlineCompletion,
   cleanupInlineCompletion,
   __resetInlineCompletionForTesting,
 } from "./inlineCompletion";
+import { connectivityState } from "@/lib/connectivity";
 import { aiService } from "@/api/services";
 
 describe("inlineCompletion store (N-7)", () => {
@@ -40,6 +42,8 @@ describe("inlineCompletion store (N-7)", () => {
     appState.inlineCompletionEnabled = true;
     // N-43: Reset module-level debounce + in-flight state between tests.
     __resetInlineCompletionForTesting();
+    connectivityState.online = true;
+    connectivityState.aiReachable = true;
   });
 
   describe("inlineCompletionEnabled", () => {
@@ -110,6 +114,21 @@ describe("inlineCompletion store (N-7)", () => {
       (aiService.complete as any).mockResolvedValue(null);
       const result = await requestCompletion("a".repeat(20), "", "ts", "f.ts");
       expect(result).toBe("");
+    });
+
+    it("does not request ghost text when offline", async () => {
+      connectivityState.online = false;
+      const result = await requestCompletion("a".repeat(20), "", "ts", "f.ts");
+      expect(result).toBe("");
+      expect(aiService.complete).not.toHaveBeenCalled();
+      expect(inlineCompletionUnavailable.value).toBe(true);
+    });
+
+    it("marks completion unavailable after provider failure without returning whitespace ghost", async () => {
+      (aiService.complete as any).mockRejectedValue(new Error("provider down"));
+      const result = await requestCompletion("a".repeat(20), "", "ts", "f.ts");
+      expect(result).toBe("");
+      expect(inlineCompletionUnavailable.value).toBe(true);
     });
   });
 

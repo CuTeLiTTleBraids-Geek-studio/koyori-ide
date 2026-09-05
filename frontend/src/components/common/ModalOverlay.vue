@@ -79,7 +79,7 @@ const dialogStyle = computed(() => ({
   width: 100%;
   max-height: 85vh;
   overflow-y: auto;
-  background: var(--color-bg-elevated, #fff);
+  background: var(--color-bg-elevated, #f5f5f7);
   border-radius: var(--radius-md, 11px);
   border: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.08));
   box-shadow: var(--shadow-floating, 0 1px 3px rgba(0, 0, 0, 0.04));

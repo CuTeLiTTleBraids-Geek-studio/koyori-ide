@@ -2,6 +2,8 @@ package services
 
 import (
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -47,14 +49,18 @@ type FileService struct {
 	// rootDirs 是多根工作区列表（Priority 4）。当列表非空时，validatePath
 	// / validateMutatingPath 会优先按多根语义校验：路径在任一根下都通过。
 	// 当 rootDirs 仅含一个元素时，行为等同于 rootDir = rootDirs[0]。
-	rootDirs []string
-	app      *application.App
+	rootDirs        []string
+	secureWorkspace *secureWorkspace
+	rootGeneration  uint64
+	app             *application.App
 	// N-5: gitignore 缓存改为实例字段（原为包级全局 var）。
 	// 每个 FileService 实例拥有独立缓存，项目切换时旧实例释放即自动回收，
 	// 消除包级缓存无界增长问题。懒初始化，首次调用时创建 map。
-	gitignoreMu    sync.Mutex
-	gitignoreCache map[string]gitignoreCacheEntry
-	writeAtomic    atomicFileWriter
+	gitignoreMu       sync.Mutex
+	gitignoreCache    map[string]gitignoreCacheEntry
+	writeAtomic       atomicFileWriter
+	rootOperationHook func(string) error
+	readFileAfterStat func() error
 }
 
 const maxReadableFileBytes int64 = 20 * 1024 * 1024
@@ -104,29 +110,87 @@ func (f *FileService) emitFileSaved(path string) {
 //wails:ignore
 func (f *FileService) setWorkspaceRoot(root string) error {
 	if root == "" {
-		f.mu.Lock()
+		return f.publishSecureWorkspace(nil, nil)
+	}
+	return f.setWorkspaceRoots([]string{root})
+}
+
+func (f *FileService) publishSecureWorkspace(workspace *secureWorkspace, roots []string) error {
+	f.mu.Lock()
+	old := f.secureWorkspace
+	f.rootGeneration++
+	if workspace != nil {
+		workspace.generation = f.rootGeneration
+	}
+	f.secureWorkspace = workspace
+	if len(roots) == 0 {
 		f.rootDir = ""
 		f.rootDirs = nil
-		f.mu.Unlock()
-		return nil
+	} else {
+		f.rootDir = roots[0]
+		if len(roots) == 1 {
+			f.rootDirs = nil
+		} else {
+			f.rootDirs = append([]string(nil), roots...)
+		}
 	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("workspace root is not a directory: %s", abs)
-	}
-	f.mu.Lock()
-	f.rootDir = abs
-	// 单根模式：清空多根列表，避免状态分裂。
-	f.rootDirs = nil
 	f.mu.Unlock()
+	if old != nil {
+		return old.retire()
+	}
 	return nil
+}
+
+// close releases the active workspace handles. It is used by shutdown and
+// tests; switching workspaces retires old handles automatically.
+//
+//wails:ignore
+func (f *FileService) close() error {
+	return f.publishSecureWorkspace(nil, nil)
+}
+
+// ServiceShutdown releases bound workspace handles during application shutdown.
+// Wails treats this lifecycle method as internal rather than a renderer binding.
+func (f *FileService) ServiceShutdown() error {
+	return f.close()
+}
+
+func openSecureWorkspace(roots []string) (*secureWorkspace, []string, error) {
+	if len(roots) == 0 {
+		return nil, nil, nil
+	}
+	absolute := make([]string, 0, len(roots))
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		path, err := canonicalSecureRoot(root)
+		if err != nil {
+			return nil, nil, err
+		}
+		key := filepath.Clean(path)
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		absolute = append(absolute, path)
+	}
+	if len(absolute) == 0 {
+		return nil, nil, nil
+	}
+	workspace, err := newSecureWorkspace(absolute)
+	if err != nil {
+		return nil, nil, err
+	}
+	bound := make([]string, len(workspace.roots))
+	for i := range workspace.roots {
+		bound[i] = workspace.roots[i].absolute
+	}
+	return workspace, bound, nil
 }
 
 // setWorkspaceRoots 设置多根工作区列表（Priority 4 多根工作区）。
@@ -136,46 +200,13 @@ func (f *FileService) setWorkspaceRoot(root string) error {
 //
 //wails:ignore
 func (f *FileService) setWorkspaceRoots(roots []string) error {
-	// 去重 + 复制以避免外部修改。
-	cleaned := make([]string, 0, len(roots))
-	seen := make(map[string]bool, len(roots))
-	for _, r := range roots {
-		if r == "" || seen[r] {
-			continue
-		}
-		seen[r] = true
-		cleaned = append(cleaned, r)
+	workspace, absolute, err := openSecureWorkspace(roots)
+	if err != nil {
+		return err
 	}
-	if len(cleaned) == 0 {
-		return f.setWorkspaceRoot("")
+	if err := f.publishSecureWorkspace(workspace, absolute); err != nil {
+		return err
 	}
-	// 校验每一项都是已存在的目录。
-	absRoots := make([]string, 0, len(cleaned))
-	for _, r := range cleaned {
-		abs, err := filepath.Abs(r)
-		if err != nil {
-			return err
-		}
-		info, err := os.Stat(abs)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("workspace root is not a directory: %s", abs)
-		}
-		absRoots = append(absRoots, abs)
-	}
-	f.mu.Lock()
-	// 单根退化：与 SetWorkspaceRoot 等价 —— rootDirs 清空，仅 rootDir 被设。
-	// 多根模式：rootDirs 保留全部根，rootDir = roots[0] 保持向后兼容。
-	if len(absRoots) == 1 {
-		f.rootDirs = nil
-	} else {
-		f.rootDirs = absRoots
-	}
-	// 主根：第一个根目录，保持向后兼容。
-	f.rootDir = absRoots[0]
-	f.mu.Unlock()
 	return nil
 }
 
@@ -253,27 +284,43 @@ func (f *FileService) validateMutatingPath(path string) (string, error) {
 
 // ListDirectory returns the immediate children of path, directories first.
 func (f *FileService) ListDirectory(path string) ([]DirEntry, error) {
-	abs, err := f.validatePath(path)
+	capability, err := f.acquireCapability(path, false)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(abs)
-	if err != nil {
+	defer capability.releaseCapability()
+	if err := f.runRootOperationHook("ListDirectory"); err != nil {
 		return nil, err
 	}
-	result := make([]DirEntry, 0, len(entries))
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			continue
+	var result []DirEntry
+	err = capability.withCurrent(func() error {
+		resolved, resolveErr := capability.resolvedRelative(true)
+		if resolveErr != nil {
+			return resolveErr
 		}
-		result = append(result, DirEntry{
-			Name:     entry.Name(),
-			Path:     filepath.Join(abs, entry.Name()),
-			IsDir:    entry.IsDir(),
-			Size:     info.Size(),
-			Modified: info.ModTime().UnixMilli(),
-		})
+		entries, readErr := fs.ReadDir(capability.root.root.FS(), resolved)
+		if readErr != nil {
+			return readErr
+		}
+		result = make([]DirEntry, 0, len(entries))
+		for _, entry := range entries {
+			child := cleanRootRelative(filepath.Join(filepath.FromSlash(resolved), entry.Name()))
+			info, statErr := capability.root.root.Stat(child)
+			if statErr != nil {
+				continue
+			}
+			result = append(result, DirEntry{
+				Name:     entry.Name(),
+				Path:     filepath.Join(capability.displayPath(), entry.Name()),
+				IsDir:    info.IsDir(),
+				Size:     info.Size(),
+				Modified: info.ModTime().UnixMilli(),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].IsDir != result[j].IsDir {
@@ -286,23 +333,64 @@ func (f *FileService) ListDirectory(path string) ([]DirEntry, error) {
 
 // ReadFile reads and returns the full text content of a file.
 func (f *FileService) ReadFile(path string) (string, error) {
-	abs, err := f.validatePath(path)
+	capability, err := f.acquireCapability(path, false)
 	if err != nil {
 		return "", err
 	}
-	// BUG6: Return a user-friendly error when the file doesn't exist
-	// instead of the raw OS error ("The system cannot find the file specified").
-	if _, statErr := os.Stat(abs); os.IsNotExist(statErr) {
-		return "", fmt.Errorf("file not found: %s", abs)
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
+	defer capability.releaseCapability()
+	if err := f.runRootOperationHook("ReadFile"); err != nil {
 		return "", err
 	}
-	if info.Size() > maxReadableFileBytes {
-		return "", fmt.Errorf("file is too large to open (%d bytes, limit %d): %w", info.Size(), maxReadableFileBytes, ErrInvalidInput)
-	}
-	data, err := os.ReadFile(abs)
+	var data []byte
+	err = capability.withCurrent(func() error {
+		resolved, resolveErr := capability.resolvedRelative(true)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		file, openErr := capability.root.root.Open(resolved)
+		if os.IsNotExist(openErr) {
+			return fmt.Errorf("file not found: %s", capability.displayPath())
+		}
+		if openErr != nil {
+			return openErr
+		}
+		closed := false
+		defer func() {
+			if !closed {
+				_ = file.Close()
+			}
+		}()
+		info, statErr := file.Stat()
+		if statErr != nil {
+			return statErr
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("path is not a regular file: %s: %w", capability.displayPath(), ErrInvalidInput)
+		}
+		if info.Size() > maxReadableFileBytes {
+			return fmt.Errorf("file is too large to open (%d bytes, limit %d): %w", info.Size(), maxReadableFileBytes, ErrInvalidInput)
+		}
+		if f.readFileAfterStat != nil {
+			if hookErr := f.readFileAfterStat(); hookErr != nil {
+				return hookErr
+			}
+		}
+		var readErr error
+		data, readErr = io.ReadAll(io.LimitReader(file, maxReadableFileBytes+1))
+		closeErr := file.Close()
+		closed = true
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if int64(len(data)) > maxReadableFileBytes {
+			data = nil
+			return fmt.Errorf("file is too large to open (limit %d bytes): %w", maxReadableFileBytes, ErrInvalidInput)
+		}
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
@@ -314,61 +402,112 @@ func (f *FileService) ReadFile(path string) (string, error) {
 // file path so workflow triggers (Proposal B) can match it.
 // prompt-6 Task 4: requires a workspace root (empty root → error).
 func (f *FileService) WriteFile(path string, content string) error {
-	abs, err := f.validateMutatingPath(path)
+	capability, err := f.acquireCapability(path, true)
 	if err != nil {
 		return err
 	}
+	defer capability.releaseCapability()
+	displayPath := capability.displayPath()
 	f.saveMu.Lock()
 	defer f.saveMu.Unlock()
-	return f.writeValidatedFile(abs, content)
+	if err := f.runRootOperationHook("WriteFile"); err != nil {
+		return err
+	}
+	if err := capability.withCurrent(func() error { return f.writeCapabilityFile(capability, content, nil) }); err != nil {
+		return err
+	}
+	f.emitFileSaved(displayPath)
+	return nil
 }
 
 // CreateFile creates an empty file.
 // prompt-6 Task 4: requires a workspace root.
 func (f *FileService) CreateFile(path string) error {
-	abs, err := f.validateMutatingPath(path)
+	capability, err := f.acquireCapability(path, true)
 	if err != nil {
 		return err
 	}
-	file, err := os.Create(abs)
-	if err != nil {
+	defer capability.releaseCapability()
+	if err := f.runRootOperationHook("CreateFile"); err != nil {
 		return err
 	}
-	return file.Close()
+	return capability.withCurrent(func() error {
+		resolved, resolveErr := capability.resolvedRelative(true)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		file, createErr := capability.root.root.Create(resolved)
+		if createErr != nil {
+			return createErr
+		}
+		return file.Close()
+	})
 }
 
 // CreateDirectory creates a directory and any necessary parents.
 // prompt-6 Task 4: requires a workspace root.
 func (f *FileService) CreateDirectory(path string) error {
-	abs, err := f.validateMutatingPath(path)
+	capability, err := f.acquireCapability(path, true)
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(abs, 0755)
+	defer capability.releaseCapability()
+	if err := f.runRootOperationHook("CreateDirectory"); err != nil {
+		return err
+	}
+	return capability.withCurrent(func() error {
+		resolved, resolveErr := capability.resolvedRelative(true)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		return capability.root.root.MkdirAll(resolved, 0755)
+	})
 }
 
 // DeletePath removes a file or directory recursively.
 // prompt-6 Task 4: requires a workspace root.
 func (f *FileService) DeletePath(path string) error {
-	abs, err := f.validateMutatingPath(path)
+	capability, err := f.acquireCapability(path, true)
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(abs)
+	defer capability.releaseCapability()
+	if err := f.runRootOperationHook("DeletePath"); err != nil {
+		return err
+	}
+	return capability.withCurrent(func() error { return capability.root.root.RemoveAll(capability.relative) })
 }
 
 // RenamePath moves or renames a file or directory.
 // prompt-6 Task 4: requires a workspace root.
 func (f *FileService) RenamePath(oldPath, newPath string) error {
-	oldAbs, err := f.validateMutatingPath(oldPath)
+	oldCapability, err := f.acquireCapability(oldPath, true)
 	if err != nil {
 		return err
 	}
-	newAbs, err := f.validateMutatingPath(newPath)
+	defer oldCapability.releaseCapability()
+	newCapability, err := f.acquireCapability(newPath, true)
 	if err != nil {
 		return err
 	}
-	return os.Rename(oldAbs, newAbs)
+	defer newCapability.releaseCapability()
+	if oldCapability.workspace != newCapability.workspace || oldCapability.root != newCapability.root {
+		return fmt.Errorf("cross-root rename is not allowed: %w", ErrNotAllowed)
+	}
+	if err := f.runRootOperationHook("RenamePath"); err != nil {
+		return err
+	}
+	return oldCapability.withCurrent(func() error {
+		oldRelative, resolveErr := oldCapability.resolvedRelative(false)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		newRelative, resolveErr := newCapability.resolvedRelative(false)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		return oldCapability.root.root.Rename(oldRelative, newRelative)
+	})
 }
 
 // PickDirectory opens a native directory-selection dialog and returns the chosen path.
@@ -425,62 +564,64 @@ const maxQuickOpenFiles = 10000
 // The result is sorted lexicographically. If rootPath is not within the
 // workspace root (when sandboxing is active), an error is returned.
 func (f *FileService) ListAllFiles(rootPath string) ([]string, error) {
-	abs, err := f.validatePath(rootPath)
+	capability, err := f.acquireCapability(rootPath, false)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
+	defer capability.releaseCapability()
+	if err := f.runRootOperationHook("ListAllFiles"); err != nil {
 		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("path is not a directory: %s", abs)
-	}
-
-	// Load .gitignore patterns from the root directory.
-	patterns := f.loadGitignorePatterns(abs)
-
 	var result []string
-	err = filepath.WalkDir(abs, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil // skip unreadable entries
+	err = capability.withCurrent(func() error {
+		resolved, resolveErr := capability.resolvedRelative(true)
+		if resolveErr != nil {
+			return resolveErr
 		}
-		name := d.Name()
-		// Skip the root itself.
-		if path == abs {
-			return nil
+		info, statErr := capability.root.root.Stat(resolved)
+		if statErr != nil {
+			return statErr
 		}
-		// Skip hidden entries (starting with ".").
-		if strings.HasPrefix(name, ".") {
-			if d.IsDir() {
-				return filepath.SkipDir
+		if !info.IsDir() {
+			return fmt.Errorf("path is not a directory: %s", capability.displayPath())
+		}
+		patterns := f.loadGitignorePatternsCapability(capability, resolved)
+		return fs.WalkDir(capability.root.root.FS(), resolved, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if path == resolved {
+				return nil
+			}
+			name := d.Name()
+			if strings.HasPrefix(name, ".") {
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if d.IsDir() && quickOpenIgnoreDirs[name] {
+				return fs.SkipDir
+			}
+			rel, relErr := filepath.Rel(filepath.FromSlash(resolved), filepath.FromSlash(path))
+			if relErr != nil {
+				return nil
+			}
+			rel = filepath.ToSlash(rel)
+			if matchGitignore(rel, d.IsDir(), patterns) {
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !d.IsDir() {
+				result = append(result, rel)
+				if len(result) >= maxQuickOpenFiles {
+					return errStopWalk
+				}
 			}
 			return nil
-		}
-		// Skip ignored directories.
-		if d.IsDir() && quickOpenIgnoreDirs[name] {
-			return filepath.SkipDir
-		}
-		// Compute the relative path with forward slashes.
-		rel, rerr := filepath.Rel(abs, path)
-		if rerr != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		// Check .gitignore patterns.
-		if matchGitignore(rel, d.IsDir(), patterns) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.IsDir() {
-			result = append(result, rel)
-			if len(result) >= maxQuickOpenFiles {
-				return errStopWalk
-			}
-		}
-		return nil
+		})
 	})
 	// errStopWalk is a sentinel used to cap the result size; treat it as success.
 	if err != nil && err != errStopWalk {
@@ -530,9 +671,16 @@ type gitignoreCacheEntry struct {
 //   - the rest is split on "/" into segments; "**" is recognised as a
 //     recursive (multi-segment) wildcard, "*" and "?" are handled per
 //     segment by matchSegment at match time
+//
+// loadGitignorePatterns is retained for direct cache tests. Renderer-facing
+// ListAllFiles exclusively uses loadGitignorePatternsCapability.
 func (f *FileService) loadGitignorePatterns(dir string) []gitignorePattern {
-	gitPath := filepath.Join(dir, ".gitignore")
-	info, err := os.Stat(gitPath)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+	info, err := root.Stat(".gitignore")
 	var mtime time.Time
 	if err == nil {
 		mtime = info.ModTime()
@@ -549,12 +697,38 @@ func (f *FileService) loadGitignorePatterns(dir string) []gitignorePattern {
 
 	var patterns []gitignorePattern
 	if err == nil {
-		data, rerr := os.ReadFile(gitPath)
+		data, rerr := root.ReadFile(".gitignore")
 		if rerr == nil {
 			patterns = parseGitignoreContent(string(data))
 		}
 	}
 	f.gitignoreCache[dir] = gitignoreCacheEntry{patterns: patterns, mtime: mtime}
+	return patterns
+}
+
+func (f *FileService) loadGitignorePatternsCapability(capability fileCapability, resolved string) []gitignorePattern {
+	gitPath := cleanRootRelative(filepath.Join(filepath.FromSlash(resolved), ".gitignore"))
+	info, err := capability.root.root.Stat(gitPath)
+	var mtime time.Time
+	if err == nil {
+		mtime = info.ModTime()
+	}
+	cacheKey := fmt.Sprintf("%s:%d:%s", capability.root.absolute, capability.workspace.generation, capability.relative)
+	f.gitignoreMu.Lock()
+	defer f.gitignoreMu.Unlock()
+	if f.gitignoreCache == nil {
+		f.gitignoreCache = make(map[string]gitignoreCacheEntry)
+	}
+	if entry, ok := f.gitignoreCache[cacheKey]; ok && entry.mtime.Equal(mtime) {
+		return entry.patterns
+	}
+	var patterns []gitignorePattern
+	if err == nil {
+		if data, readErr := capability.root.root.ReadFile(gitPath); readErr == nil {
+			patterns = parseGitignoreContent(string(data))
+		}
+	}
+	f.gitignoreCache[cacheKey] = gitignoreCacheEntry{patterns: patterns, mtime: mtime}
 	return patterns
 }
 
@@ -714,38 +888,52 @@ func matchSegment(seg, pattern string) bool {
 // caller still returns immediately (the explorer launch is non-blocking
 // from the user's perspective) but no zombie lingers.
 func (f *FileService) RevealInOS(path string) error {
-	abs, lease, err := f.validatePathWithLease(path)
+	capability, err := f.acquireCapability(path, false)
 	if err != nil {
 		return err
 	}
+	defer capability.releaseCapability()
+	if err := f.runRootOperationHook("RevealInOS"); err != nil {
+		return err
+	}
 	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		// explorer.exe /select, works with both files and directories.
-		cmd = exec.Command("explorer.exe", "/select,", abs)
-	case "darwin":
-		// `open -R` reveals a file in Finder; for a directory, just open it.
-		if info, err := os.Stat(abs); err == nil && info.IsDir() {
-			cmd = exec.Command("open", abs)
-		} else {
-			cmd = exec.Command("open", "-R", abs)
+	var startReveal func(*exec.Cmd) error
+	err = capability.withCurrent(func() error {
+		resolved, resolveErr := capability.resolvedRelative(true)
+		if resolveErr != nil {
+			return resolveErr
 		}
-	default: // linux and other unix-like
-		// xdg-open opens the parent directory; selecting the file is not
-		// universally supported across file managers.
-		dir := abs
-		if info, err := os.Stat(abs); err == nil && !info.IsDir() {
-			dir = filepath.Dir(abs)
+		info, statErr := capability.root.root.Stat(resolved)
+		if statErr != nil {
+			return statErr
 		}
-		cmd = exec.Command("xdg-open", dir)
-	}
-	f.mu.Lock()
-	startReveal := f.startReveal
-	f.mu.Unlock()
-	if startReveal == nil {
-		startReveal = func(command *exec.Cmd) error { return command.Start() }
-	}
-	if err := lease.withCurrent(func() error { return startReveal(cmd) }); err != nil {
+		// U-H1-REVEAL: explorer APIs accept only a pathname, not an os.Root
+		// handle. This action performs no file mutation or content read; the path
+		// is generated only after Root.Stat and while the workspace lease is held.
+		displayPath := capability.displayPath()
+		switch runtime.GOOS {
+		case "windows":
+			cmd = exec.Command("explorer.exe", "/select,", displayPath)
+		case "darwin":
+			if info.IsDir() {
+				cmd = exec.Command("open", displayPath)
+			} else {
+				cmd = exec.Command("open", "-R", displayPath)
+			}
+		default:
+			dir := displayPath
+			if !info.IsDir() {
+				dir = filepath.Dir(displayPath)
+			}
+			cmd = exec.Command("xdg-open", dir)
+		}
+		startReveal = f.startReveal
+		if startReveal == nil {
+			startReveal = func(command *exec.Cmd) error { return command.Start() }
+		}
+		return startReveal(cmd)
+	})
+	if err != nil {
 		return err
 	}
 	// Reap the child process asynchronously so it doesn't become a
@@ -757,5 +945,15 @@ func (f *FileService) RevealInOS(path string) error {
 			slog.Debug("reveal command exited non-zero", "cmd", cmd.Args, "err", werr)
 		}
 	}()
+	return nil
+}
+
+func (f *FileService) runRootOperationHook(operation string) error {
+	f.mu.Lock()
+	hook := f.rootOperationHook
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(operation)
+	}
 	return nil
 }

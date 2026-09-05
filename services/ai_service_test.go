@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 func TestAIService_SendReturnsResponse(t *testing.T) {
@@ -22,7 +25,12 @@ func TestAIService_SendReturnsResponse(t *testing.T) {
 		}
 
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body["reasoning_effort"] != "high" {
+			t.Errorf("reasoning_effort = %v, want high", body["reasoning_effort"])
+		}
 		messages := body["messages"].([]interface{})
 		if len(messages) != 2 {
 			t.Errorf("expected 2 messages (system+user), got %d", len(messages))
@@ -51,9 +59,11 @@ func TestAIService_SendReturnsResponse(t *testing.T) {
 
 	ai := NewAIService()
 	if err := ai.SetConfig(AIConfig{
-		APIKey:  "test-key",
-		BaseURL: server.URL,
-		Model:   "gpt-4o",
+		APIKey:          "test-key",
+		Provider:        "openai",
+		BaseURL:         server.URL,
+		Model:           "gpt-5",
+		ReasoningEffort: "high",
 	}); err != nil {
 		t.Fatalf("SetConfig failed: %v", err)
 	}
@@ -64,6 +74,52 @@ func TestAIService_SendReturnsResponse(t *testing.T) {
 	}
 	if resp.Content != "Hello from AI" {
 		t.Errorf("expected 'Hello from AI', got %q", resp.Content)
+	}
+}
+
+func TestAIService_ReasoningCapability(t *testing.T) {
+	tests := []struct {
+		name         string
+		provider     string
+		model        string
+		protocol     string
+		status       string
+		requestField string
+	}{
+		{name: "openai reasoning model", provider: "openai", model: "gpt-5", protocol: "openai", status: reasoningCapabilitySupported, requestField: "reasoning_effort"},
+		{name: "anthropic thinking model", provider: "anthropic", model: "claude-3-7-sonnet-latest", protocol: "anthropic", status: reasoningCapabilitySupported, requestField: "thinking.budget_tokens"},
+		{name: "known unsupported model", provider: "openai", model: "gpt-4o", protocol: "openai", status: reasoningCapabilityUnsupported},
+		{name: "unknown provider", provider: "custom", model: "model", protocol: "openai", status: reasoningCapabilityUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reasoningCapabilityFor(tt.provider, tt.model, tt.protocol)
+			if got.Status != tt.status || got.RequestField != tt.requestField {
+				t.Fatalf("capability = %#v, want status=%q field=%q", got, tt.status, tt.requestField)
+			}
+		})
+	}
+}
+
+func TestAIService_ReasoningEffortFailsClosedWhenUnsupported(t *testing.T) {
+	ai := NewAIService()
+	err := ai.SetConfig(AIConfig{APIKey: "test-key", BaseURL: "http://127.0.0.1:1", Provider: "openai", Model: "gpt-4o", ReasoningEffort: "high"})
+	if err == nil {
+		t.Fatal("expected unsupported reasoning model to be rejected")
+	}
+	if !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("error = %v, want ErrNotAllowed", err)
+	}
+}
+
+func TestAIService_ReasoningEffortFailsClosedWhenUnknown(t *testing.T) {
+	ai := NewAIService()
+	err := ai.SetConfig(AIConfig{APIKey: "test-key", BaseURL: "http://127.0.0.1:1", Provider: "custom", Model: "model", ReasoningEffort: "medium"})
+	if err == nil {
+		t.Fatal("expected unknown reasoning capability to be rejected")
+	}
+	if !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("error = %v, want ErrNotAllowed", err)
 	}
 }
 
@@ -302,6 +358,45 @@ func TestParseSSEStream_EmitsChunks(t *testing.T) {
 	}
 	if chunks[0] != "hello" || chunks[1] != " world" {
 		t.Errorf("expected ['hello', ' world'], got %v", chunks)
+	}
+}
+
+func TestParseSSEStreamWithReasoning_OnlyExplicitSummary(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"answer\",\"reasoning_summary\":\"checking files\"}}]}\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\" more\"}}]}\n" +
+		"data: [DONE]\n"
+	var chunks, summaries []string
+	_, err := parseSSEStreamWithToolsAndReasoning(strings.NewReader(body), func(value string) { chunks = append(chunks, value) }, func(value string) { summaries = append(summaries, value) })
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if strings.Join(chunks, "") != "answer more" {
+		t.Fatalf("chunks = %v", chunks)
+	}
+	if len(summaries) != 1 || summaries[0] != "checking files" {
+		t.Fatalf("summaries = %v", summaries)
+	}
+}
+
+func TestParseSSEStreamWithReasoning_AcceptsCompactDataAndProviderSummaryFields(t *testing.T) {
+	body := "data:{\"choices\":[{\"delta\":{\"reasoning_content\":\"checking \"}}]}\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning\":\"files\",\"content\":\"answer\"}}]}\n" +
+		"data:{\"choices\":[{\"delta\":{\"content\":\"!\",\"reasoning_details\":[{\"text\":\" done\"}]}}]}\n" +
+		"data:[DONE]\n"
+	var chunks, summaries []string
+	_, err := parseSSEStreamWithToolsAndReasoning(strings.NewReader(body), func(value string) {
+		chunks = append(chunks, value)
+	}, func(value string) {
+		summaries = append(summaries, value)
+	})
+	if err != nil {
+		t.Fatalf("parse compact SSE: %v", err)
+	}
+	if strings.Join(chunks, "") != "answer!" {
+		t.Fatalf("chunks = %v", chunks)
+	}
+	if strings.Join(summaries, "") != "checking files done" {
+		t.Fatalf("summaries = %v", summaries)
 	}
 }
 
@@ -564,19 +659,27 @@ func TestAIService_N52_DeferDoesNotClobberNewerCancel(t *testing.T) {
 	}
 }
 
-// TestAIService_N52_StopStreamClearsCancel verifies StopStream works
-// after the compare-and-swap refactor.
-func TestAIService_N52_StopStreamClearsCancel(t *testing.T) {
+// TestAIService_N52_StopStreamKeepsBusyUntilWorkerCleanup verifies cancellation
+// cannot expose an idle slot before the old worker finishes lifecycle cleanup.
+func TestAIService_N52_StopStreamKeepsBusyUntilWorkerCleanup(t *testing.T) {
 	svc := &AIService{}
 	_, cancel := context.WithCancel(context.Background())
-	svc.cancel = &streamCancel{fn: cancel}
+	callerCtx := testAIStreamCallerContext()
+	owner, ok := agentOwnerForContext(callerCtx)
+	if !ok {
+		t.Fatal("test caller identity is unavailable")
+	}
+	svc.cancel = &streamCancel{fn: cancel, owner: owner}
 
-	err := svc.StopStream()
+	err := svc.StopStream(callerCtx)
 	if err != nil {
 		t.Fatalf("StopStream failed: %v", err)
 	}
-	if svc.cancel != nil {
-		t.Error("StopStream should have cleared a.cancel")
+	if svc.cancel == nil {
+		t.Fatal("StopStream cleared the busy slot before worker cleanup")
+	}
+	if _, err := svc.StartStream(callerCtx, nil); !errors.Is(err, ErrStreamBusy) {
+		t.Fatalf("immediate restart = %v, want ErrStreamBusy", err)
 	}
 }
 
@@ -623,8 +726,257 @@ func TestAIService_Prompt5_ParseSSEStreamWithTools(t *testing.T) {
 	}
 }
 
+func TestParseSSEStreamWithTools_RejectsProviderOutputBudgets(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr string
+		body    func() string
+	}{
+		{
+			name:    "negative tool index",
+			wantErr: "tool index",
+			body: func() string {
+				return "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":-1,\"function\":{\"name\":\"read\"}}]}}]}\n"
+			},
+		},
+		{
+			name:    "sparse tool index",
+			wantErr: "tool index",
+			body: func() string {
+				return fmt.Sprintf("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":%d,\"function\":{\"name\":\"read\"}}]}}]}\n", int(^uint(0)>>1))
+			},
+		},
+		{
+			name:    "tool call count",
+			wantErr: "tool call count",
+			body: func() string {
+				var body strings.Builder
+				for i := 0; i < 65; i++ {
+					fmt.Fprintf(&body, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":%d,\"function\":{\"name\":\"read\"}}]}}]}\n", i)
+				}
+				return body.String()
+			},
+		},
+		{
+			name:    "single tool arguments",
+			wantErr: "tool arguments",
+			body: func() string {
+				return fmt.Sprintf("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read\",\"arguments\":\"%s\"}}]}}]}\n", strings.Repeat("a", (256<<10)+1))
+			},
+		},
+		{
+			name:    "aggregate tool arguments",
+			wantErr: "total tool arguments",
+			body: func() string {
+				var body strings.Builder
+				fragment := strings.Repeat("a", 220<<10)
+				for i := 0; i < 5; i++ {
+					fmt.Fprintf(&body, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":%d,\"function\":{\"name\":\"read\",\"arguments\":\"%s\"}}]}}]}\n", i, fragment)
+				}
+				return body.String()
+			},
+		},
+		{
+			name:    "text bytes",
+			wantErr: "text output",
+			body: func() string {
+				var body strings.Builder
+				chunk := strings.Repeat("a", 700<<10)
+				for i := 0; i < 3; i++ {
+					fmt.Fprintf(&body, "data: {\"choices\":[{\"delta\":{\"content\":\"%s\"}}]}\n", chunk)
+				}
+				return body.String()
+			},
+		},
+		{
+			name:    "reasoning bytes",
+			wantErr: "reasoning summary",
+			body: func() string {
+				return fmt.Sprintf("data: {\"choices\":[{\"delta\":{\"reasoning_summary\":\"%s\"}}]}\n", strings.Repeat("a", (512<<10)+1))
+			},
+		},
+		{
+			name:    "SSE event count",
+			wantErr: "SSE event count",
+			body: func() string {
+				return strings.Repeat(":\n", 32769)
+			},
+		},
+		{
+			name:    "total SSE bytes",
+			wantErr: "total SSE",
+			body: func() string {
+				line := ":" + strings.Repeat("a", 960<<10) + "\n"
+				return strings.Repeat(line, 9)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var emittedText, emittedReasoning int
+			calls, err := parseSSEStreamWithToolsAndReasoning(strings.NewReader(tt.body()), func(value string) {
+				emittedText += len(value)
+			}, func(value string) {
+				emittedReasoning += len(value)
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want provider budget error containing %q", err, tt.wantErr)
+			}
+			if !errors.Is(err, ErrAIProviderOutputBudget) {
+				t.Fatalf("error = %v, want ErrAIProviderOutputBudget", err)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("budget rejection returned executable tool calls: %+v", calls)
+			}
+			if emittedText > maxAIStreamTextBytes {
+				t.Fatalf("emitted %d text bytes past %d-byte budget", emittedText, maxAIStreamTextBytes)
+			}
+			if emittedReasoning > maxAIStreamReasoningBytes {
+				t.Fatalf("emitted %d reasoning bytes past %d-byte budget", emittedReasoning, maxAIStreamReasoningBytes)
+			}
+		})
+	}
+}
+
+func TestAIProviderStreamBudget_ExactBoundaryPassesThenFails(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "text",
+			run: func() error {
+				budget := aiProviderStreamBudget{textBytes: maxAIStreamTextBytes - 1}
+				if err := budget.consumeText("x"); err != nil {
+					t.Fatalf("exact text boundary rejected: %v", err)
+				}
+				return budget.consumeText("x")
+			},
+		},
+		{
+			name: "reasoning",
+			run: func() error {
+				budget := aiProviderStreamBudget{reasoningBytes: maxAIStreamReasoningBytes - 1}
+				if err := budget.consumeReasoning("x"); err != nil {
+					t.Fatalf("exact reasoning boundary rejected: %v", err)
+				}
+				return budget.consumeReasoning("x")
+			},
+		},
+		{
+			name: "per-tool arguments",
+			run: func() error {
+				budget := aiProviderStreamBudget{}
+				if err := budget.consumeToolArguments(maxAIStreamToolArgumentBytes-1, "x"); err != nil {
+					t.Fatalf("exact tool argument boundary rejected: %v", err)
+				}
+				return budget.consumeToolArguments(maxAIStreamToolArgumentBytes, "x")
+			},
+		},
+		{
+			name: "aggregate tool arguments",
+			run: func() error {
+				budget := aiProviderStreamBudget{toolArgumentBytes: maxAIStreamToolArgumentsBytes - 1}
+				if err := budget.consumeToolArguments(0, "x"); err != nil {
+					t.Fatalf("exact aggregate tool argument boundary rejected: %v", err)
+				}
+				return budget.consumeToolArguments(0, "x")
+			},
+		},
+		{
+			name: "tool count",
+			run: func() error {
+				budget := aiProviderStreamBudget{}
+				for i := 0; i < maxAIStreamToolCalls; i++ {
+					if err := budget.registerTool(i); err != nil {
+						t.Fatalf("tool %d within count boundary rejected: %v", i, err)
+					}
+				}
+				return budget.registerTool(maxAIStreamToolCalls)
+			},
+		},
+		{
+			name: "SSE bytes",
+			run: func() error {
+				budget := aiProviderStreamBudget{totalSSEBytes: maxAIStreamTotalBytes - 2}
+				if err := budget.consumeSSELine("x"); err != nil {
+					t.Fatalf("exact SSE byte boundary rejected: %v", err)
+				}
+				return budget.consumeSSELine("")
+			},
+		},
+		{
+			name: "SSE event count",
+			run: func() error {
+				budget := aiProviderStreamBudget{lines: maxAIStreamLines - 1}
+				if err := budget.consumeSSELine(""); err != nil {
+					t.Fatalf("exact SSE event boundary rejected: %v", err)
+				}
+				return budget.consumeSSELine("")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.run()
+			if !errors.Is(err, ErrAIProviderOutputBudget) {
+				t.Fatalf("boundary+1 error = %v, want ErrAIProviderOutputBudget", err)
+			}
+		})
+	}
+}
+
+func TestAIService_StartStream_ProviderBudgetErrorIsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-over-budget\",\"function\":{\"name\":\"write\",\"arguments\":\"%s\"}}]}}]}\n", strings.Repeat("a", maxAIStreamToolArgumentBytes+1))
+		_, _ = fmt.Fprint(w, "data: [DONE]\n")
+	}))
+	defer server.Close()
+
+	ai := NewAIService()
+	ai.setApp(application.New(application.Options{}))
+	if err := ai.SetConfig(AIConfig{APIKey: "test-key", BaseURL: server.URL, Model: "test-model"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	callerCtx, callerWindow := newAIStreamTestCaller(73, "provider-budget")
+	streamID, err := ai.StartStream(callerCtx, []ChatMessage{{Role: "user", Content: "write a file"}})
+	if err != nil {
+		t.Fatalf("StartStream: %v", err)
+	}
+	_ = waitForAIStreamEvent(t, callerWindow, "ai:error")
+	deadline := time.Now().Add(5 * time.Second)
+	for ai.IsStreaming() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ai.IsStreaming() {
+		t.Fatal("provider budget failure did not release the stream slot")
+	}
+	events := callerWindow.eventsSnapshot()
+	var sawBudgetError bool
+	for _, event := range events {
+		payload, _ := event.Data.(map[string]interface{})
+		if payload["streamId"] != streamID {
+			t.Fatalf("event escaped stream identity: %+v", event)
+		}
+		switch event.Name {
+		case "ai:error":
+			message, _ := payload["data"].(string)
+			sawBudgetError = strings.Contains(message, ErrAIProviderOutputBudget.Error())
+		case "ai:chunk", "ai:tool_calls", "ai:done":
+			t.Fatalf("provider budget failure emitted %s: %+v", event.Name, event.Data)
+		}
+	}
+	if !sawBudgetError {
+		t.Fatalf("target window did not receive classified provider budget error: %+v", events)
+	}
+}
+
 // TestAIService_Prompt5_IsStreamingAndStop verifies mutual-exclusion helpers
-// (prompt-5 Task B / BUG-H1): IsStreaming reflects cancel; StopStream clears it.
+// (prompt-5 Task B / BUG-H1): IsStreaming remains true after cancellation until
+// the worker has completed its deferred lifecycle and slot cleanup.
 // Full StartStream→ErrStreamBusy needs a non-nil *application.App (integration).
 func TestAIService_Prompt5_IsStreamingAndStop(t *testing.T) {
 	svc := &AIService{}
@@ -632,18 +984,23 @@ func TestAIService_Prompt5_IsStreamingAndStop(t *testing.T) {
 		t.Fatal("expected not streaming initially")
 	}
 	_, cancel := context.WithCancel(context.Background())
-	svc.cancel = &streamCancel{fn: cancel}
+	callerCtx := testAIStreamCallerContext()
+	owner, ok := agentOwnerForContext(callerCtx)
+	if !ok {
+		t.Fatal("test caller identity is unavailable")
+	}
+	svc.cancel = &streamCancel{fn: cancel, owner: owner}
 	if !svc.IsStreaming() {
 		t.Fatal("expected IsStreaming true when cancel is set")
 	}
 	if ErrStreamBusy == nil || ErrStreamBusy.Error() == "" {
 		t.Fatal("ErrStreamBusy must be a non-empty sentinel")
 	}
-	if err := svc.StopStream(); err != nil {
+	if err := svc.StopStream(callerCtx); err != nil {
 		t.Fatalf("StopStream: %v", err)
 	}
-	if svc.IsStreaming() {
-		t.Fatal("expected not streaming after StopStream")
+	if !svc.IsStreaming() {
+		t.Fatal("expected busy state to remain until worker cleanup")
 	}
 }
 
@@ -651,7 +1008,7 @@ func TestAIService_Prompt5_IsStreamingAndStop(t *testing.T) {
 // safe to call when no stream is active.
 func TestAIService_N52_StopStreamNoopWhenNoStream(t *testing.T) {
 	svc := &AIService{}
-	err := svc.StopStream()
+	err := svc.StopStream(testAIStreamCallerContext())
 	if err != nil {
 		t.Fatalf("StopStream should not error when no stream is active: %v", err)
 	}

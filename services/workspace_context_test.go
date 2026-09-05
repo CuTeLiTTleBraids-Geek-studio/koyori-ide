@@ -28,7 +28,7 @@ func TestWorkspaceContext_SetCanonicalizesAndBumpsGeneration(t *testing.T) {
 		t.Fatalf("fresh context generation = %d, want 0", gen)
 	}
 
-	dir := t.TempDir()
+	dir := canonicalTestPath(t, t.TempDir())
 	// Feed a non-canonical form to prove Set normalizes rather than storing raw input.
 	if err := ctx.Set(filepath.Join(dir, "sub", "..")); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -178,7 +178,7 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 	}
 
 	// Open workspace A through the real entry point.
-	workspaceA := t.TempDir()
+	workspaceA := canonicalTestPath(t, t.TempDir())
 	if _, err := g.project.AddProject(workspaceA); err != nil {
 		t.Fatalf("AddProject(A): %v", err)
 	}
@@ -188,10 +188,6 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 		t.Fatalf("abs: %v", err)
 	}
 	wantA = filepath.Clean(wantA)
-	// G-CI-10: on macOS t.TempDir() lives under /var/folders (a symlink to
-	// /private/var/folders); the services resolve symlinks, so normalize the
-	// expected root the same way or the comparison fails only on macOS.
-	wantA = resolveSymlinks(wantA)
 
 	// AC: Plan / Goal / Diff / Snapshot / executor all read A's canonical root
 	// under the same generation.
@@ -238,7 +234,7 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 	}
 
 	// AC: switching to B replaces the root everywhere and invalidates generation A.
-	workspaceB := t.TempDir()
+	workspaceB := canonicalTestPath(t, t.TempDir())
 	if _, err := g.project.AddProject(workspaceB); err != nil {
 		t.Fatalf("AddProject(B): %v", err)
 	}
@@ -273,7 +269,7 @@ func TestBootstrapWorkspaceSnapshotIntegration(t *testing.T) {
 func TestWorkspaceContextRollbackKeepsSingleWorkspace(t *testing.T) {
 	g := newWorkspaceIntegrationGraph(t)
 
-	workspaceA := t.TempDir()
+	workspaceA := canonicalTestPath(t, t.TempDir())
 	if _, err := g.project.AddProject(workspaceA); err != nil {
 		t.Fatalf("AddProject(A): %v", err)
 	}
@@ -282,7 +278,6 @@ func TestWorkspaceContextRollbackKeepsSingleWorkspace(t *testing.T) {
 		t.Fatalf("abs: %v", err)
 	}
 	wantA = filepath.Clean(wantA)
-	wantA = resolveSymlinks(wantA)
 	genA := g.ctx.Generation()
 
 	// A regular file is not a valid workspace: FileService.SetWorkspaceRoot
@@ -347,14 +342,4 @@ func TestWorkspaceContextSettersAreHiddenFromRenderer(t *testing.T) {
 			}
 		})
 	}
-}
-
-// resolveSymlinks normalizes a path by resolving symlinks (macOS resolves
-// /var -> /private/var, which would otherwise make path comparisons fail on
-// that platform only).
-func resolveSymlinks(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
-	}
-	return path
 }

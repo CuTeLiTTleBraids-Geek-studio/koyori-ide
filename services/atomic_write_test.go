@@ -65,3 +65,57 @@ func TestAtomicWriteJSON_NoTempFilesLeft(t *testing.T) {
 		}
 	}
 }
+
+func TestAtomicWriteFile_WindowsReplacementSemantics(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows MoveFileEx replacement semantics cannot be verified on non-Windows")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.txt")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(path, []byte("new"), 0600); err != nil {
+		t.Fatalf("replace existing file: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("expected replaced content %q, got %q", "new", got)
+	}
+
+	readOnlyPath := filepath.Join(dir, "read-only.txt")
+	if err := os.WriteFile(readOnlyPath, []byte("protected"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnlyPath, 0444); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(readOnlyPath, 0600)
+	if err := atomicWriteFile(readOnlyPath, []byte("must fail"), 0600); err == nil {
+		t.Fatal("expected replacement of a read-only file to fail")
+	}
+	got, err = os.ReadFile(readOnlyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "protected" {
+		t.Fatalf("read-only target content changed: got %q", got)
+	}
+
+	targetDir := filepath.Join(dir, "target-dir")
+	if err := os.Mkdir(targetDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(targetDir, []byte("must fail"), 0600); err == nil {
+		t.Fatal("expected replacement of a directory to fail")
+	}
+	if info, err := os.Stat(targetDir); err != nil {
+		t.Fatalf("target directory was not preserved: %v", err)
+	} else if !info.IsDir() {
+		t.Fatal("target path was replaced instead of remaining a directory")
+	}
+}

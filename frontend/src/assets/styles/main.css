@@ -46,8 +46,8 @@
 
   /* ── App chrome 表面 ── */
   --color-bg-base: #ffffff;
-  --color-bg-surface: #ffffff;
-  --color-bg-elevated: #ffffff;
+  --color-bg-surface: #fafafc;
+  --color-bg-elevated: #f5f5f7;
   --color-bg-overlay: #ffffff;
   --color-bg-surface-container: #f5f5f7;
   --color-bg-surface-container-low: #fafafc;
@@ -275,6 +275,18 @@ html {
 
 [data-mode="light"] {
   color-scheme: light;
+
+  /* Explicit Apple light surfaces. Keep these separate from @theme's
+     compatibility defaults so a light renderer never collapses every panel
+     to the same white surface. */
+  --color-bg-base: #ffffff;
+  --color-bg-surface: #fafafc;
+  --color-bg-elevated: #f5f5f7;
+  --color-bg-overlay: #ffffff;
+  --color-bg-surface-container: #f5f5f7;
+  --color-bg-surface-container-low: #fafafc;
+  --color-bg-surface-container-high: #f0f0f0;
+  --color-bg-surface-container-highest: #e0e0e0;
 }
 
 body {
@@ -807,6 +819,19 @@ h1, h2, h3, h4, h5, h6 {
   --shadow-product: 0 1px 3px rgba(20, 20, 19, 0.08), 0 1px 2px rgba(20, 20, 19, 0.04);
   /* P3-23: --shadow-floating 改为更弱，恢复与 --shadow-product 的语义区分 */
   --shadow-floating: 0 1px 2px rgba(20, 20, 19, 0.04);
+}
+
+/* Claude light surfaces retain the warm palette while preserving the same
+   base → surface → elevated hierarchy as Apple light mode. */
+[data-design-language="claude"][data-mode="light"] {
+  --color-bg-base: #faf9f5;
+  --color-bg-surface: #fffdf8;
+  --color-bg-elevated: #efe9de;
+  --color-bg-overlay: #f5f0e8;
+  --color-bg-surface-container: #f5f0e8;
+  --color-bg-surface-container-low: #fffdf8;
+  --color-bg-surface-container-high: #efe9de;
+  --color-bg-surface-container-highest: #e8e0d2;
 }
 
 /* Claude 主题 — 暗色模式覆盖（暖深色 surface-dark 系列） */

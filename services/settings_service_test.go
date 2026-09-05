@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 )
 
 func TestSettingsService_LoadSettings_returnsDefaultsWhenNoFile(t *testing.T) {
@@ -279,8 +281,8 @@ func TestSettingsService_MigratesLegacySchemaWithoutLosingAIConfiguration(t *tes
 	if len(loaded.AIProviderConfigs) != 1 || loaded.ActiveAIConfigID != "preset-1" {
 		t.Fatalf("provider preset was lost during migration: %#v", loaded.AIProviderConfigs)
 	}
-	if loaded.ToolApprovalConfig["run"] != "never-approve" {
-		t.Fatalf("tool permission was lost during migration: %#v", loaded.ToolApprovalConfig)
+	if loaded.AgentPermissionMode != string(agentcore.SessionPermissionAlwaysAsk) {
+		t.Fatalf("legacy tool permission migrated to %q, want conservative always-ask", loaded.AgentPermissionMode)
 	}
 	encoded, err := json.Marshal(loaded)
 	if err != nil {
@@ -933,6 +935,55 @@ func TestSettingsService_SaveSettingsPreservesUndecryptableKeys(t *testing.T) {
 			t.Fatal("SaveSettings modified settings after provider key decryption failure")
 		}
 	})
+}
+
+func TestSettingsService_SaveSettingsRejectsEncryptionFailure(t *testing.T) {
+	encryptErr := errors.New("injected encryption failure")
+	previous := encryptSecretForSettingsForTest
+	encryptSecretForSettingsForTest = func(account, plaintext string) (string, error) {
+		if plaintext == "" {
+			return "", nil
+		}
+		return "", encryptErr
+	}
+	t.Cleanup(func() {
+		encryptSecretForSettingsForTest = previous
+	})
+
+	tests := []struct {
+		name     string
+		settings func() Settings
+	}{
+		{
+			name: "legacy API key",
+			settings: func() Settings {
+				settings := defaultSettings()
+				settings.AIApiKey = "sk-legacy"
+				return settings
+			},
+		},
+		{
+			name: "provider API key",
+			settings: func() Settings {
+				settings := defaultSettings()
+				settings.AIProviderConfigs = []AIProviderConfig{{ID: "cfg-a", APIKey: "sk-provider"}}
+				return settings
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "settings.json")
+			err := (&SettingsService{configPath: configPath}).SaveSettings(tt.settings())
+			if !errors.Is(err, encryptErr) {
+				t.Fatalf("SaveSettings error = %v, want wrapped %v", err, encryptErr)
+			}
+			if _, statErr := os.Stat(configPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("settings file exists after encryption failure, stat error = %v", statErr)
+			}
+		})
+	}
 }
 
 func TestSettingsService_SecretBridgeEncryptedPersistence(t *testing.T) {

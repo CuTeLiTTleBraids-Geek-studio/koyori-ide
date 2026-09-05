@@ -43,16 +43,15 @@ export interface Uri {
   fragment?: string;
 }
 
-/**
- * Language filter that selects which documents a provider applies to.
- * Mirrors `vscode.DocumentSelector` (single-filter form). The bridge
- * extracts `language` and passes it to Monaco.
- */
-export interface DocumentSelector {
+/** One VS Code-compatible document filter. */
+export interface DocumentFilter {
   language: string;
   scheme?: string;
   pattern?: string;
 }
+
+/** A single document filter or an ordered list of filters. */
+export type DocumentSelector = DocumentFilter | readonly DocumentFilter[];
 
 /** A completion item returned by a CompletionItemProvider. */
 export interface CompletionItem {
@@ -361,6 +360,15 @@ export interface DocumentSemanticTokensProvider {
   ): SemanticTokens | { edits: Array<{ start: number; deleteCount: number; data?: number[] }> } | Thenable<SemanticTokens | { edits: Array<{ start: number; deleteCount: number; data?: number[] }> } | null> | null;
 }
 
+/** Provides semantic tokens for a requested document range. */
+export interface DocumentRangeSemanticTokensProvider {
+  provideDocumentRangeSemanticTokens(
+    document: TextDocument,
+    range: Range,
+    token?: unknown,
+  ): SemanticTokens | Thenable<SemanticTokens | null> | null;
+}
+
 /** Provides document highlights (mark all occurrences of a symbol). */
 export interface DocumentHighlightProvider {
   provideDocumentHighlights(
@@ -547,6 +555,33 @@ export interface QuickPickOptions {
   canPickMany?: boolean;
 }
 
+/** Options for window.withProgress. */
+export interface ProgressOptions {
+  title?: string;
+  cancellable?: boolean;
+}
+
+/** Progress reporter passed to a withProgress callback. */
+export interface Progress<T> {
+  report(value: T): void;
+}
+
+/** A visible status bar item owned by an extension. */
+export interface StatusBarItem extends Disposable {
+  text: string;
+  tooltip?: string;
+  command?: string;
+  show(): void;
+  hide(): void;
+}
+
+/** A workspace file watcher. */
+export interface FileSystemWatcher extends Disposable {
+  readonly onDidCreate: Event<Uri>;
+  readonly onDidChange: Event<Uri>;
+  readonly onDidDelete: Event<Uri>;
+}
+
 /** An output channel (writable log stream). */
 export interface OutputChannel {
   readonly name: string;
@@ -606,28 +641,164 @@ export interface WebviewViewProvider {
   resolveWebviewView(view: WebviewView): void | Thenable<void>;
 }
 
-/** A text range (line/column pair). */
-export interface Range {
-  start: Position;
-  end: Position;
+/** A 0-based line/character position. */
+export class Position {
+  readonly line: number;
+  readonly character: number;
+
+  constructor(line: number, character: number) {
+    if (!Number.isInteger(line) || line < 0 || !Number.isInteger(character) || character < 0) {
+      throw new Error("Position requires non-negative integer coordinates");
+    }
+    this.line = line;
+    this.character = character;
+  }
+
+  isEqual(other: Position): boolean {
+    return this.line === other.line && this.character === other.character;
+  }
 }
 
-/** A 0-based line/character position. */
-export interface Position {
-  line: number;
-  character: number;
+/** A text range (line/column pair). */
+export class Range {
+  readonly start: Position;
+  readonly end: Position;
+
+  constructor(start: Position, end: Position);
+  constructor(startLine: number, startCharacter: number, endLine: number, endCharacter: number);
+  constructor(
+    startOrLine: Position | number,
+    endOrStartCharacter: Position | number,
+    endLine?: number,
+    endCharacter?: number,
+  ) {
+    if (typeof startOrLine === "number") {
+      if (typeof endOrStartCharacter !== "number" || endLine === undefined || endCharacter === undefined) {
+        throw new Error("Range requires four numeric coordinates");
+      }
+      this.start = new Position(startOrLine, endOrStartCharacter);
+      this.end = new Position(endLine, endCharacter);
+      return;
+    }
+    if (typeof endOrStartCharacter === "number") {
+      throw new Error("Range requires two Position values");
+    }
+    this.start = startOrLine;
+    this.end = endOrStartCharacter;
+  }
+
+  get isEmpty(): boolean {
+    return this.start.line === this.end.line && this.start.character === this.end.character;
+  }
+}
+
+/** A VS Code-compatible directional selection. */
+export class Selection extends Range {
+  readonly anchor: Position;
+  readonly active: Position;
+
+  constructor(anchor: Position, active: Position);
+  constructor(anchorLine: number, anchorCharacter: number, activeLine: number, activeCharacter: number);
+  constructor(
+    anchorOrLine: Position | number,
+    activeOrAnchorCharacter: Position | number,
+    activeLine?: number,
+    activeCharacter?: number,
+  ) {
+    const anchor = typeof anchorOrLine === "number"
+      ? new Position(anchorOrLine, activeOrAnchorCharacter as number)
+      : anchorOrLine;
+    const active = typeof anchorOrLine === "number"
+      ? new Position(activeLine as number, activeCharacter as number)
+      : activeOrAnchorCharacter as Position;
+    const start = anchor.line < active.line
+      || (anchor.line === active.line && anchor.character <= active.character)
+      ? anchor
+      : active;
+    const end = start === anchor ? active : anchor;
+    super(start, end);
+    this.anchor = anchor;
+    this.active = active;
+  }
+
+  get isReversed(): boolean {
+    return this.start !== this.anchor;
+  }
+
+  isEqual(other: Selection): boolean {
+    return this.anchor.isEqual(other.anchor) && this.active.isEqual(other.active);
+  }
+}
+
+/** A theme color token resolved by the host editor theme. */
+export class ThemeColor {
+  readonly id: string;
+
+  constructor(id: string) {
+    if (typeof id !== "string" || id.trim().length === 0) {
+      throw new Error("ThemeColor requires a non-empty id");
+    }
+    this.id = id;
+  }
 }
 
 /** A text document exposed to providers. */
 export interface TextDocument {
   uri: Uri;
+  /** Absolute document path used by VS Code extensions. */
+  fileName?: string;
   languageId: string;
+  /** Number of logical lines in the document. */
+  lineCount?: number;
+  /** Return the requested logical line. */
+  lineAt?: (line: number) => { text: string };
   getText(): string;
 }
 
-/** A text editor (placeholder; activeTextEditor returns undefined in v1). */
+/** A decoration option accepted by Monaco-backed text editors. */
+export interface DecorationOptions {
+  range: Range;
+  hoverMessage?: unknown;
+  renderOptions?: Record<string, unknown>;
+}
+
+/** Rendering options for an extension-owned decoration type. */
+export interface DecorationRenderOptions {
+  isWholeLine?: boolean;
+  className?: string;
+  glyphMarginClassName?: string;
+  borderStyle?: string;
+  borderWidth?: string;
+  borderColor?: unknown;
+  backgroundColor?: unknown;
+  color?: unknown;
+  overviewRulerColor?: unknown;
+  overviewRulerLane?: number;
+  after?: unknown;
+  before?: unknown;
+}
+
+/** Disposable decoration type plus its host identity. */
+export interface TextEditorDecorationType extends Disposable {
+  readonly key: string;
+}
+
+/** A text editor backed by the active Monaco instance. */
 export interface TextEditor {
   document: TextDocument;
+  selection?: Selection;
+  revealRange(range: Range, revealType?: number): void;
+  setDecorations(
+    decorationType: TextEditorDecorationType,
+    ranges: readonly (Range | DecorationOptions)[],
+  ): void;
+}
+
+/** Event emitted when one editor's selections change. */
+export interface TextEditorSelectionChangeEvent {
+  textEditor: TextEditor;
+  selections: readonly Selection[];
+  kind?: number;
 }
 
 /** Workspace configuration snapshot (read-only in v1). */
@@ -735,6 +906,26 @@ export interface WebviewPanel {
  * check the extension's declared permissions before dispatching.
  */
 export interface VscodeAPI {
+  /** Runtime constructors exposed by the isolated Worker bootstrap. */
+  ThemeColor: new (id: string) => ThemeColor;
+  Selection: {
+    new (anchor: Position, active: Position): Selection;
+    new (anchorLine: number, anchorCharacter: number, activeLine: number, activeCharacter: number): Selection;
+  };
+  /** VS Code-compatible status bar alignment constants. */
+  StatusBarAlignment: { readonly Left: 1; readonly Right: 2 };
+  /** VS Code-compatible editor reveal modes. */
+  TextEditorRevealType: {
+    readonly Default: 0;
+    readonly InCenter: 1;
+    readonly InCenterIfOutsideViewport: 2;
+    readonly AtTop: 3;
+  };
+  Position: new (line: number, character: number) => Position;
+  Range: {
+    new (start: Position, end: Position): Range;
+    new (startLine: number, startCharacter: number, endLine: number, endCharacter: number): Range;
+  };
   languages: {
     registerCompletionItemProvider(
       selector: DocumentSelector,
@@ -818,6 +1009,10 @@ export interface VscodeAPI {
       selector: DocumentSelector,
       provider: DocumentSemanticTokensProvider,
     ): Disposable;
+    registerDocumentRangeSemanticTokensProvider(
+      selector: DocumentSelector,
+      provider: DocumentRangeSemanticTokensProvider,
+    ): Disposable;
     registerDocumentHighlightProvider(
       selector: DocumentSelector,
       provider: DocumentHighlightProvider,
@@ -835,6 +1030,8 @@ export interface VscodeAPI {
     executeCommand(command: string, ...args: unknown[]): Thenable<unknown>;
   };
   workspace: {
+    /** The active single-root workspace, or undefined when no folder is open. */
+    workspaceFolders: WorkspaceFolder[] | undefined;
     fs: {
       readFile(uri: Uri): Thenable<Uint8Array>;
       writeFile(uri: Uri, content: Uint8Array): Thenable<void>;
@@ -853,9 +1050,12 @@ export interface VscodeAPI {
       readDirectory(uri: Uri): Thenable<[string, FileType][]>;
     };
     getConfiguration(section?: string): WorkspaceConfiguration;
+    /** Host-internal snapshot used by the isolated Worker bootstrap. */
+    getConfigurationSnapshot?(section?: string): Record<string, unknown>;
     onDidChangeConfiguration(
       listener: (e: ConfigurationChangeEvent) => void,
     ): Disposable;
+    createFileSystemWatcher(globPattern: GlobPattern): FileSystemWatcher;
     // F-6 (task-3.md): workspace API 补齐
     findFiles(
       include: GlobPattern,
@@ -871,6 +1071,7 @@ export interface VscodeAPI {
     onDidSaveTextDocument: Event<TextDocument>;
     onDidChangeTextDocument: Event<TextDocumentChangeEvent>;
     onDidOpenTextDocument: Event<TextDocument>;
+    onDidCloseTextDocument: Event<TextDocument>;
   };
   window: {
     createWebviewPanel(
@@ -891,12 +1092,20 @@ export interface VscodeAPI {
       message: string,
       ...items: string[]
     ): Thenable<string | undefined>;
+    /** Create a host-backed decoration type for the active Monaco editor. */
+    createTextEditorDecorationType(options: DecorationRenderOptions): TextEditorDecorationType;
     // F-6 (task-3.md): window API 补齐
     showInputBox(options?: InputBoxOptions): Thenable<string | undefined>;
     showQuickPick(
       items: string[] | QuickPickItem[],
       options?: QuickPickOptions,
-    ): Thenable<string | QuickPickItem | undefined>;
+    ): Thenable<string | QuickPickItem | (string | QuickPickItem)[] | undefined>;
+    setStatusBarMessage(text: string, hideAfter?: number): Disposable;
+    createStatusBarItem(): StatusBarItem;
+    withProgress<R>(
+      options: ProgressOptions,
+      task: (progress: Progress<{ message?: string; increment?: number }>) => Thenable<R>,
+    ): Thenable<R>;
     createOutputChannel(name: string): OutputChannel;
     createTerminal(options?: TerminalOptions): Terminal;
     registerTreeDataProvider<T>(
@@ -907,6 +1116,8 @@ export interface VscodeAPI {
       viewId: string,
       provider: WebviewViewProvider,
     ): Disposable;
+    onDidChangeActiveTextEditor: Event<TextEditor | undefined>;
+    onDidChangeTextEditorSelection: Event<TextEditorSelectionChangeEvent>;
     activeTextEditor: TextEditor | undefined;
   };
   // F-6 (task-3.md): tasks API namespace
@@ -986,6 +1197,7 @@ export type LanguageProviderKind =
   | "rename"
   | "documentSymbol"
   | "documentSemanticTokens"
+  | "documentRangeSemanticTokens"
   | "documentHighlight"
   | "inlayHints";
 
@@ -1070,6 +1282,12 @@ export interface VscodeHostBridge {
   bridgeOnDidChangeTextDocument: Event<TextDocumentChangeEvent>;
   /** workspace.onDidOpenTextDocument event source. */
   bridgeOnDidOpenTextDocument: Event<TextDocument>;
+  /** workspace.onDidCloseTextDocument event source. */
+  bridgeOnDidCloseTextDocument: Event<TextDocument>;
+  /** Forward configuration changes from the host. */
+  bridgeOnDidChangeConfiguration: Event<ConfigurationChangeEvent>;
+  /** Create a workspace-bound file watcher. */
+  bridgeCreateFileSystemWatcher(globPattern: GlobPattern): FileSystemWatcher;
 
   /** Create a sandboxed webview panel and track it. */
   createWebviewPanel(
@@ -1081,6 +1299,8 @@ export interface VscodeHostBridge {
 
   /** Show a host notification (no-op when ui.notifications absent). */
   notify(level: "info" | "warn" | "error", message: string): void;
+  /** Create an extension-owned decoration type. */
+  bridgeCreateTextEditorDecorationType(options: DecorationRenderOptions): TextEditorDecorationType;
 
   // F-6 (task-3.md): window API 补齐 bridge methods.
   /** Show an input box (returns user input or undefined if cancelled). */
@@ -1089,7 +1309,16 @@ export interface VscodeHostBridge {
   bridgeShowQuickPick(
     items: string[] | QuickPickItem[],
     options?: QuickPickOptions,
-  ): Promise<string | QuickPickItem | undefined>;
+  ): Promise<string | QuickPickItem | (string | QuickPickItem)[] | undefined>;
+  /** Show or update a status bar message. */
+  bridgeSetStatusBarMessage(text: string, hideAfter?: number): Disposable;
+  /** Create a status bar item. */
+  bridgeCreateStatusBarItem(): StatusBarItem;
+  /** Run an async task with visible progress. */
+  bridgeWithProgress<R>(
+    options: ProgressOptions,
+    task: (progress: Progress<{ message?: string; increment?: number }>) => Thenable<R>,
+  ): Thenable<R>;
   /** Create an output channel. */
   bridgeCreateOutputChannel(name: string): OutputChannel;
   /** Create a terminal (permission-gated: requires shell.execute). */
@@ -1156,6 +1385,12 @@ export interface VscodeHostBridge {
   // BUG-FIX-2d: 桥接活跃编辑器状态，解决 activeTextEditor 始终为 undefined。
   /** Get the current active text editor (if any). */
   bridgeGetActiveTextEditor?(): TextEditor | undefined;
+  /** Get the current single-root workspace folder, if one is open. */
+  bridgeGetWorkspaceFolders?(): WorkspaceFolder[] | undefined;
+  /** Active editor change event source. */
+  bridgeOnDidChangeActiveTextEditor: Event<TextEditor | undefined>;
+  /** Text editor selection change event source. */
+  bridgeOnDidChangeTextEditorSelection: Event<TextEditorSelectionChangeEvent>;
 
   // BUG-FIX-2d: 桥接扩展配置，解决 getConfiguration 始终返回空快照。
   /** Get configuration for the given section. */
@@ -1214,6 +1449,17 @@ export function isAllowedExtensionCommand(
  */
 export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
   const api: VscodeAPI = {
+    ThemeColor,
+    Selection,
+    StatusBarAlignment: Object.freeze({ Left: 1, Right: 2 }),
+    TextEditorRevealType: Object.freeze({
+      Default: 0,
+      InCenter: 1,
+      InCenterIfOutsideViewport: 2,
+      AtTop: 3,
+    }),
+    Position,
+    Range,
     languages: {
       registerCompletionItemProvider(selector, provider) {
         return host.bridgeLanguageProvider("completion", selector, provider);
@@ -1227,10 +1473,9 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
       registerCodeActionProvider(selector, provider) {
         return host.bridgeLanguageProvider("codeAction", selector, provider);
       },
-      // F-6 (task-3.md): 17 additional language provider registrations.
-      // Each delegates to bridgeLanguageProvider with its kind; the host
-      // routes the provider to Monaco (or a no-op disposable when Monaco
-      // lacks the registration method).
+      // F-6 (task-3.md): additional language-provider registrations.
+      // Each delegates to bridgeLanguageProvider; a missing Monaco method
+      // fails closed instead of returning a no-op disposable.
       registerReferenceProvider(selector, provider) {
         return host.bridgeLanguageProvider("reference", selector, provider);
       },
@@ -1289,6 +1534,9 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
       registerDocumentSemanticTokensProvider(selector, provider) {
         return host.bridgeLanguageProvider("documentSemanticTokens", selector, provider);
       },
+      registerDocumentRangeSemanticTokensProvider(selector, provider) {
+        return host.bridgeLanguageProvider("documentRangeSemanticTokens", selector, provider);
+      },
       registerDocumentHighlightProvider(selector, provider) {
         return host.bridgeLanguageProvider("documentHighlight", selector, provider);
       },
@@ -1310,6 +1558,9 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
       },
     },
     workspace: {
+      get workspaceFolders(): WorkspaceFolder[] | undefined {
+        return host.bridgeGetWorkspaceFolders?.();
+      },
       fs: {
         readFile(uri) {
           return host.bridgeReadFile(uri);
@@ -1333,6 +1584,9 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
         readDirectory(uri) {
           return host.bridgeReadDirectory(uri);
         },
+      },
+      getConfigurationSnapshot(section): Record<string, unknown> {
+        return host.bridgeGetConfiguration?.(section) ?? {};
       },
       getConfiguration(section): WorkspaceConfiguration {
         // BUG-FIX-2d: 通过 host 桥接获取配置值，不再返回空快照。
@@ -1365,9 +1619,11 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
           },
         };
       },
-      onDidChangeConfiguration(_listener) {
-        // v1 stub: configuration changes are not forwarded yet.
-        return { dispose: () => undefined };
+      onDidChangeConfiguration(listener) {
+        return host.bridgeOnDidChangeConfiguration(listener);
+      },
+      createFileSystemWatcher(globPattern) {
+        return host.bridgeCreateFileSystemWatcher(globPattern);
       },
       // F-6 (task-3.md): workspace API 补齐
       findFiles(include, exclude, maxResults) {
@@ -1390,6 +1646,9 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
       },
       onDidOpenTextDocument(listener) {
         return host.bridgeOnDidOpenTextDocument(listener);
+      },
+      onDidCloseTextDocument(listener) {
+        return host.bridgeOnDidCloseTextDocument(listener);
       },
     },
     window: {
@@ -1421,11 +1680,23 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
         }
       },
       // F-6 (task-3.md): window API 补齐实现
+      createTextEditorDecorationType(options) {
+        return host.bridgeCreateTextEditorDecorationType(options);
+      },
       showInputBox(options) {
         return host.bridgeShowInputBox(options);
       },
       showQuickPick(items, options) {
         return host.bridgeShowQuickPick(items, options);
+      },
+      setStatusBarMessage(text, hideAfter) {
+        return host.bridgeSetStatusBarMessage(text, hideAfter);
+      },
+      createStatusBarItem() {
+        return host.bridgeCreateStatusBarItem();
+      },
+      withProgress(options, task) {
+        return host.bridgeWithProgress(options, task);
       },
       createOutputChannel(name) {
         return host.bridgeCreateOutputChannel(name);
@@ -1438,6 +1709,12 @@ export function createVscodeAPI(host: VscodeHostBridge): VscodeAPI {
       },
       registerWebviewViewProvider(viewId, provider) {
         return host.bridgeRegisterWebviewViewProvider(viewId, provider);
+      },
+      onDidChangeActiveTextEditor(listener) {
+        return host.bridgeOnDidChangeActiveTextEditor(listener);
+      },
+      onDidChangeTextEditorSelection(listener) {
+        return host.bridgeOnDidChangeTextEditorSelection(listener);
       },
       // BUG-FIX-2d: activeTextEditor 改为 getter 以每次访问时动态获取当前编辑器状态。
       // 不再使用静态赋值（扩展 activate 时读取一次后就不再更新）。

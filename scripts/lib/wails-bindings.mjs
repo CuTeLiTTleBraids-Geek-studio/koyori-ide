@@ -31,7 +31,7 @@ async function applicationModulePath() {
 }
 
 const requiredExports = {
-  "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/aiservice.ts": ["StartStream", "StopStream", "SetConfig"],
+  "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/aiservice.ts": ["StartStream", "StopStream", "SetConfig", "GetReasoningCapability"],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/windowservice.ts": [
     "Minimise",
     "Maximise",
@@ -50,10 +50,6 @@ const requiredExports = {
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/agentservice.ts": [
     "ExecCommand",
     "CheckCommand",
-    "RequestCommandApproval",
-    "ExecuteApprovedCommand",
-    "RequestWriteApproval",
-    "ExecuteApprovedWrite",
   ],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/taskservice.ts": [
     "LoadTasks",
@@ -63,9 +59,20 @@ const requiredExports = {
     "Stop",
   ],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/mcpservice.ts": [
-    "CallTool",
-    "RequestToolApproval",
-    "ExecuteApprovedTool",
+    "ListServers",
+    "GetServer",
+    "SaveServer",
+    "SetServerEnabled",
+    "DeleteServer",
+    "ConnectServer",
+    "DisconnectServer",
+    "ListTools",
+    "ListAgentMCPTools",
+    "ListResources",
+    "ReadResource",
+    "ListPrompts",
+    "GetPrompt",
+    "ServerCapabilities",
   ],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/computeruseservice.ts": [
     "RequestOperationApproval",
@@ -100,7 +107,7 @@ const requiredExports = {
     "UnlockWorktree",
     "MoveWorktree",
   ],
-  "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/gitservice.ts": ["DiscoverRepositories"],
+  "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/gitservice.ts": ["DiscoverRepositories", "GetDiffForSide"],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/gitrebaseservice.ts": [
     "GetRebaseTodoList",
     "GetRebaseStatus",
@@ -126,6 +133,8 @@ const forbiddenExports = {
     "StoreSecret",
   ],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/aiservice.ts": [
+	"SendStream",
+	"SendStreamWithContext",
     "SetApp",
     "SetSettingsService",
     "SetPermissionService",
@@ -133,6 +142,8 @@ const forbiddenExports = {
     "SetProjectRoot",
   ],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/agentservice.ts": [
+    "CallMCPTool",
+    "Close",
     "SetMCPService",
     "SetSkillsService",
     "SetWorkspaceRoot",
@@ -183,7 +194,13 @@ const forbiddenExports = {
     "SetSecurityService",
     "SetActivationService",
   ],
-  "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/mcpservice.ts": ["SetOnToolsChanged", "SetWorkspaceRoot"],
+  "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/mcpservice.ts": [
+    "CallTool",
+    "Close",
+    "ExecuteApprovedTool",
+    "RequestToolApproval",
+    "SetOnToolsChanged",
+  ],
   "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/computeruseservice.ts": [
     "Screenshot",
     "MouseMove",

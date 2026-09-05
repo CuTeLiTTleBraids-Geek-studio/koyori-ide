@@ -333,7 +333,7 @@ function formatCell(value: unknown): string {
   min-width: 0;
   height: 100%;
   color: var(--color-text-primary, #d7d7d7);
-  background: var(--color-bg-base, #181818);
+  background: var(--color-bg-base, #ffffff);
   flex-direction: column;
   font-size: 12px;
   container-type: inline-size;
@@ -358,7 +358,7 @@ textarea {
   border: 1px solid var(--color-border-default, #424242);
   border-radius: 3px;
   outline: none;
-  background: var(--color-bg-surface-container, #242424);
+  background: var(--color-bg-surface-container, #f5f5f7);
 }
 
 input:focus-visible,
@@ -646,7 +646,7 @@ th {
   position: sticky;
   z-index: 1;
   top: 0;
-  background: var(--color-bg-surface-container, #242424);
+  background: var(--color-bg-surface-container, #f5f5f7);
   font-family: inherit;
   font-weight: 600;
 }

@@ -22,7 +22,7 @@ import type {
 import type { PluginPermission } from "@/types";
 import {
   isRecord, normalizeOptionalStringMap, optionalBoolean, optionalInteger,
-  optionalString, optionalStringArray, requiredInteger, requiredString,
+  optionalString, optionalStringArray, optionalUnknownRecord, requiredInteger, requiredString,
   safeRecordFromEntries, unwrapNullable, requireNonNull,
   warnInvalidBoundaryValue,
 } from "./boundary";
@@ -33,7 +33,20 @@ type BindingConversationSave = Parameters<typeof ConversationServiceBindings.Sav
 function fromBindingConversation(conversation: BindingConversation): Conversation {
   return {
     ...conversation,
-    messages: conversation.messages ?? [],
+    messages: (conversation.messages ?? []).map((message) => ({
+      role: message.role,
+      content: message.content,
+      toolCalls: message.toolCalls?.map((call) => ({
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+      })) ?? undefined,
+      toolResults: message.toolResults?.map((result) => ({
+        toolCallId: result.toolCallId,
+        content: result.content,
+        isError: result.isError,
+      })) ?? undefined,
+    })),
     tags: conversation.tags ?? undefined,
     revision: requiredInteger(conversation.revision, "Conversation.revision", 0),
     updated_at: requiredInteger(conversation.updated_at, "Conversation.updated_at", 0),
@@ -99,6 +112,38 @@ export const taskService = {
   loadTasks: (projectRoot: string) =>
     unwrapNullable(TaskServiceBindings.LoadTasks(projectRoot), [])
       .then((tasks) => tasks.map(fromBindingTask)),
+  requestWorkflowStepApproval: (sessionID: string, workflowName: string, stepName: string) =>
+    TaskServiceBindings.RequestWorkflowStepApproval(
+      sessionID,
+      workflowName,
+      stepName,
+    ) as Promise<string>,
+  executeApprovedWorkflowStep: (
+    sessionID: string,
+    workflowName: string,
+    stepName: string,
+    approvalToken: string,
+  ) =>
+    TaskServiceBindings.ExecuteApprovedWorkflowStep(
+      sessionID,
+      workflowName,
+      stepName,
+      approvalToken,
+    ) as Promise<ExecResult>,
+  requestExecutionApproval: (executionId: string, command: string, cwd: string) =>
+    TaskServiceBindings.RequestExecutionApproval(executionId, command, cwd) as Promise<string>,
+  executeApproved: (executionId: string, command: string, cwd: string, approvalToken: string) =>
+    TaskServiceBindings.ExecuteApproved(executionId, command, cwd, approvalToken) as Promise<ExecResult>,
+  stop: (executionId: string) =>
+    TaskServiceBindings.Stop(executionId) as Promise<void>,
+	beginWorkflowExecution: (workflowName: string) =>
+		TaskServiceBindings.BeginWorkflowExecution(workflowName) as Promise<string>,
+	completeWorkflowExecution: (sessionId: string) =>
+		TaskServiceBindings.CompleteWorkflowExecution(sessionId) as Promise<void>,
+	failWorkflowExecution: (sessionId: string, reason: string) =>
+		TaskServiceBindings.FailWorkflowExecution(sessionId, reason) as Promise<void>,
+	resumeWorkflowExecution: (sessionId: string) =>
+		TaskServiceBindings.ResumeWorkflowExecution(sessionId) as Promise<void>,
 };
 
 type BindingWorkflowDef = NonNullable<
@@ -133,8 +178,7 @@ function fromBindingWorkflowStepType(
     case BindingWorkflowStepType.WorkflowStepSkill:
       return "skill";
     default:
-      warnInvalidBoundaryValue(path, "a supported workflow step type", "undefined");
-      return undefined;
+      throw new Error(`${path} must be a supported workflow step type`);
   }
 }
 
@@ -160,8 +204,7 @@ function toBindingWorkflowStepType(
     case "skill":
       return BindingWorkflowStepType.WorkflowStepSkill;
     default:
-      warnInvalidBoundaryValue(path, "a supported workflow step type", "undefined");
-      return undefined;
+      throw new Error(`${path} must be a supported workflow step type`);
   }
 }
 
@@ -225,6 +268,8 @@ function fromBindingWorkflowStep(value: unknown, path: string): FrontendWorkflow
     condition: optionalString(step.condition, `${path}.condition`),
     expectSuccess: optionalBoolean(step.expectSuccess, `${path}.expectSuccess`),
     type: fromBindingWorkflowStepType(step.type, `${path}.type`),
+    tool: optionalString(step.tool, `${path}.tool`),
+    input: optionalUnknownRecord(step.input, `${path}.input`),
     onFailure: fromBindingOnFailure(step.onFailure, `${path}.onFailure`),
     timeout: optionalInteger(step.timeout, `${path}.timeout`),
   };
@@ -244,6 +289,8 @@ function toBindingWorkflowStep(value: unknown, path: string): BindingWorkflowSte
     condition: optionalString(step.condition, `${path}.condition`),
     expectSuccess: optionalBoolean(step.expectSuccess, `${path}.expectSuccess`),
     type: toBindingWorkflowStepType(step.type, `${path}.type`),
+    tool: optionalString(step.tool, `${path}.tool`),
+    input: optionalUnknownRecord(step.input, `${path}.input`),
     onFailure: toBindingOnFailure(step.onFailure, `${path}.onFailure`),
     timeout: optionalInteger(step.timeout, `${path}.timeout`),
   };
@@ -410,11 +457,31 @@ export const workflowService = {
     WorkflowServiceBindings.RenameWorkflow(projectRoot, oldName, newName) as Promise<void>,
 };
 
-export const agentService = {
-  requestCommandApproval: (command: string, cwd: string) =>
-    AgentServiceBindings.RequestCommandApproval(command, cwd) as Promise<string>,
-  executeApprovedCommand: (command: string, cwd: string, approvalToken: string) =>
-    AgentServiceBindings.ExecuteApprovedCommand(command, cwd, approvalToken) as Promise<ExecResult>,
+	export const agentService = {
+	createSession: (kind: "chat" | "plan" | "goal" | "workflow") =>
+		AgentServiceBindings.CreateAgentSessionForCaller(kind) as Promise<string>,
+	closeSession: (sessionId: string) =>
+		AgentServiceBindings.CloseAgentSessionForCaller(sessionId) as Promise<void>,
+	getToolCatalog: async (): Promise<AgentToolCatalog> => {
+		const catalog = await AgentServiceBindings.GetAgentToolCatalog();
+		return {
+			revision: catalog.revision,
+			tools: (catalog.tools ?? []).map((tool) => normalizeAgentToolDefinition(tool)),
+		};
+	},
+	requestAgentToolCapability: async (
+		request: AgentToolExecutionRequest,
+	): Promise<AgentToolCapability> => AgentServiceBindings.RequestAgentToolCapability(request),
+	executeApprovedAgentTool: async (
+		request: AgentToolCapabilityExecution,
+	): Promise<AgentToolExecutionResult> => normalizeAgentToolExecutionResult(
+		await AgentServiceBindings.ExecuteApprovedAgentTool(request),
+	),
+	executeAgentTool: async (
+		request: AgentToolExecutionRequest,
+	): Promise<AgentToolExecutionResult> => normalizeAgentToolExecutionResult(
+		await AgentServiceBindings.ExecuteAgentTool(request),
+	),
   checkCommand: (command: string) =>
     AgentServiceBindings.CheckCommand(command) as Promise<CommandCheck>,
   // GOAL-P1-02: the tool-call budget is enforced in the backend. These two
@@ -425,12 +492,133 @@ export const agentService = {
     AgentServiceBindings.GetToolBudget() as Promise<ToolBudgetStatus>,
   startNewToolBudgetEpoch: (limit: number) =>
     AgentServiceBindings.StartNewToolBudgetEpoch(limit) as Promise<ToolBudgetStatus>,
-  // G-02: write-file capability — mirrors requestCommandApproval/executeApprovedCommand.
-  requestWriteApproval: (targetPath: string, contentHash: string, size: number) =>
-    AgentServiceBindings.RequestWriteApproval(targetPath, contentHash, size) as Promise<string>,
-  executeApprovedWrite: (targetPath: string, content: string, token: string) =>
-    AgentServiceBindings.ExecuteApprovedWrite(targetPath, content, token) as Promise<void>,
 };
+
+export interface AgentToolDefinition {
+	id: string;
+	wireName: string;
+	description: string;
+	inputSchema: Record<string, unknown>;
+	source: "builtin" | "mcp" | "workflow" | "skill";
+	risk: "read-only" | "elevated" | "dangerous";
+	approval: "manual" | "backend-policy";
+	mutation: "none" | "workspace-transaction" | "external";
+	metadata?: Record<string, string>;
+}
+
+export interface AgentToolCatalog {
+	revision: number;
+	tools: AgentToolDefinition[];
+}
+
+export interface AgentToolExecutionRequest {
+	sessionId: string;
+	catalogRevision: number;
+	toolId: string;
+	arguments: Record<string, unknown>;
+}
+
+export interface AgentToolCapability {
+	token: string;
+	toolId: string;
+	argumentsHash: string;
+	catalogRevision: number;
+	budgetEpoch: number;
+	workspaceGeneration: number;
+	expiresAt: unknown;
+}
+
+export interface AgentToolCapabilityExecution extends AgentToolExecutionRequest {
+	token: string;
+}
+
+export interface AgentToolExecutionResult {
+	observation: string;
+	metadata?: Record<string, string>;
+	usage: {
+		unitId: string;
+		sessionId: string;
+		unitKind: string;
+		operation: string;
+		cost: number;
+		costBasis: string;
+		estimated: boolean;
+		success: boolean;
+		externalReceiptId?: string;
+		externalReceiptReversible?: boolean;
+		externalCompensation?: string;
+		pending?: boolean;
+		error?: string;
+	};
+}
+
+function normalizeAgentToolDefinition(value: unknown): AgentToolDefinition {
+	if (!isRecord(value)) throw new Error("AgentService returned a non-object ToolDef");
+	const inputSchema = isRecord(value.inputSchema) ? value.inputSchema : null;
+	if (!inputSchema) throw new Error("AgentService returned a ToolDef without inputSchema");
+	const source = requiredString(value.source, "AgentToolDefinition.source");
+	const risk = requiredString(value.risk, "AgentToolDefinition.risk");
+	const approval = requiredString(value.approval, "AgentToolDefinition.approval");
+	const mutation = requiredString(value.mutation, "AgentToolDefinition.mutation");
+	if (source !== "builtin" && source !== "mcp" && source !== "workflow" && source !== "skill") {
+		throw new Error(`AgentService returned invalid ToolDef source: ${source}`);
+	}
+	if (risk !== "read-only" && risk !== "elevated" && risk !== "dangerous") {
+		throw new Error(`AgentService returned invalid ToolDef risk: ${risk}`);
+	}
+	if (approval !== "manual" && approval !== "backend-policy") {
+		throw new Error(`AgentService returned invalid ToolDef approval: ${approval}`);
+	}
+	if (mutation !== "none" && mutation !== "workspace-transaction" && mutation !== "external") {
+		throw new Error(`AgentService returned invalid ToolDef mutation: ${mutation}`);
+	}
+	return {
+		id: requiredString(value.id, "AgentToolDefinition.id"),
+		wireName: requiredString(value.wireName, "AgentToolDefinition.wireName"),
+		description: requiredString(value.description, "AgentToolDefinition.description"),
+		inputSchema,
+		source,
+		risk,
+		approval,
+		mutation,
+		metadata: normalizeAgentMetadata(value.metadata),
+	};
+}
+
+function normalizeAgentMetadata(value: unknown): Record<string, string> | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!isRecord(value)) throw new Error("AgentService returned invalid tool metadata");
+	const metadata: Record<string, string> = {};
+	for (const [key, item] of Object.entries(value)) {
+		if (typeof item !== "string") throw new Error(`AgentService returned invalid metadata value for ${key}`);
+		metadata[key] = item;
+	}
+	return metadata;
+}
+
+function normalizeAgentToolExecutionResult(
+	value: Awaited<ReturnType<typeof AgentServiceBindings.ExecuteAgentTool>>,
+): AgentToolExecutionResult {
+	return {
+		observation: value.observation,
+		metadata: normalizeAgentMetadata(value.metadata),
+		usage: {
+			unitId: value.usage.unitId,
+			sessionId: value.usage.sessionId,
+			unitKind: value.usage.unitKind,
+			operation: value.usage.operation,
+			cost: value.usage.cost,
+			costBasis: value.usage.costBasis,
+			estimated: value.usage.estimated,
+			success: value.usage.success,
+			externalReceiptId: value.usage.externalReceiptId,
+			externalReceiptReversible: value.usage.externalReceiptReversible,
+			externalCompensation: value.usage.externalCompensation,
+			pending: value.usage.pending,
+			error: value.usage.error,
+		},
+	};
+}
 
 export const rulesService = {
   loadRules: (projectRoot: string) =>

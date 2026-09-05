@@ -7,7 +7,7 @@
  * 并展示 agent 可用的 MCP 工具（`mcp.<server>.<tool>` 命名空间）。
  * 安全提示（G-SEC-12）：新增 server 默认禁用，需用户显式启用后才能连接。
  */
-import { onMounted, computed } from "vue";
+import { onMounted, computed, ref } from "vue";
 import { ElMessageBox } from "element-plus";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -21,10 +21,15 @@ import {
   disconnectMcpServer,
   toggleMcpServerEnabled,
   refreshAgentMcpTools,
+  refreshMcpServerContext,
+  injectMcpResourceContext,
+  injectMcpPromptContext,
+  clearStaleMcpContexts,
   editingServer,
   openServerEditor,
   closeServerEditor,
 } from "@/stores/mcp";
+import type { McpListStatus, MCPCapabilityState } from "@/stores/mcp";
 import type { MCPServerConfig, MCPTransport } from "@/stores/mcp";
 import FocusTrapDialog from "@/components/common/FocusTrapDialog.vue";
 
@@ -34,6 +39,90 @@ onMounted(async () => {
   await loadMcpServers();
   await refreshAgentMcpTools();
 });
+
+// P1-03-F: per-server context (capabilities/resources/prompts) panel.
+const expandedServers = ref<Record<string, boolean>>({});
+const injectionFeedback = ref<Record<string, string>>({});
+
+function serverContext(name: string) {
+  return mcpState.serverContexts[name];
+}
+
+function contextStatusKey(status: McpListStatus | undefined): string {
+  return `mcpSection.contextStatus${status ?? "unloaded"}`;
+}
+
+function contextStatusClass(status: McpListStatus | undefined): string {
+  switch (status) {
+    case "loaded":
+      return "status-badge--connected";
+    case "stale":
+    case "unsupported":
+    case "empty":
+      return "status-badge--idle";
+    case "error":
+      return "status-badge--error";
+    default:
+      return "status-badge--idle";
+  }
+}
+
+const capabilityFamilies: Array<{ key: "tools" | "resources" | "prompts" | "sampling" | "elicitation" | "logging"; labelKey: string }> = [
+  { key: "tools", labelKey: "mcpSection.capTools" },
+  { key: "resources", labelKey: "mcpSection.capResources" },
+  { key: "prompts", labelKey: "mcpSection.capPrompts" },
+  { key: "sampling", labelKey: "mcpSection.capSampling" },
+  { key: "elicitation", labelKey: "mcpSection.capElicitation" },
+  { key: "logging", labelKey: "mcpSection.capLogging" },
+];
+
+function capabilityStateKey(state: MCPCapabilityState | undefined): string {
+  switch (state) {
+    case "supported":
+      return "mcpSection.capSupported";
+    case "missing":
+      return "mcpSection.capMissing";
+    case "unknown":
+      return "mcpSection.capUnknown";
+    default:
+      return "mcpSection.capUnsupported";
+  }
+}
+
+async function handleRefreshContext(name: string): Promise<void> {
+  await refreshMcpServerContext(name);
+}
+
+async function handleInjectResource(server: string, uri: string): Promise<void> {
+  const ok = await injectMcpResourceContext(server, uri);
+  injectionFeedback.value = {
+    ...injectionFeedback.value,
+    [server]: ok ? t("mcpSection.injected") : (mcpState.error ?? t("mcpSection.injectionFailed")),
+  };
+}
+
+async function handleInjectPrompt(server: string, prompt: string): Promise<void> {
+  const ok = await injectMcpPromptContext(server, prompt, {});
+  injectionFeedback.value = {
+    ...injectionFeedback.value,
+    [server]: ok ? t("mcpSection.injected") : (mcpState.error ?? t("mcpSection.injectionFailed")),
+  };
+}
+
+async function toggleContextPanel(name: string): Promise<void> {
+  const next = !expandedServers.value[name];
+  expandedServers.value = { ...expandedServers.value, [name]: next };
+  if (next) {
+    const ctx = mcpState.serverContexts[name];
+    if (!ctx || ctx.status === "unloaded") {
+      await refreshMcpServerContext(name);
+    }
+  }
+}
+
+function handleClearStale(): void {
+  clearStaleMcpContexts();
+}
 
 const transportOptions: { value: MCPTransport; label: string }[] = [
   { value: "stdio", label: "stdio" },
@@ -71,13 +160,13 @@ async function handleDelete(name: string): Promise<void> {
   await deleteMcpServer(name);
 }
 
-function riskBadgeClass(risk: string): string {
+function riskBadgeClass(risk: string | undefined): string {
   if (risk === "dangerous") return "tool-risk-badge--dangerous";
   if (risk === "safe") return "tool-risk-badge--safe";
   return "tool-risk-badge--elevated";
 }
 
-function riskLabel(risk: string): string {
+function riskLabel(risk: string | undefined): string {
   if (risk === "dangerous") return t("agentSection.riskDangerous");
   if (risk === "safe") return t("agentSection.riskSafe");
   return t("agentSection.riskElevated");
@@ -102,6 +191,9 @@ function argsText(cfg: MCPServerConfig): string {
       </el-button>
       <el-button size="small" :loading="mcpState.loading" @click="loadMcpServers">
         {{ t("mcpSection.refresh") }}
+      </el-button>
+      <el-button size="small" @click="handleClearStale">
+        {{ t("mcpSection.clearStale") }}
       </el-button>
       <span v-if="mcpState.error" class="mcp-error">{{ mcpState.error }}</span>
     </div>
@@ -159,8 +251,106 @@ function argsText(cfg: MCPServerConfig): string {
             size="small"
             @click="disconnectMcpServer(srv.name)"
           >{{ t("mcpSection.disconnect") }}</el-button>
+          <el-button
+            v-if="mcpState.connected[srv.name]"
+            size="small"
+            :aria-expanded="expandedServers[srv.name] === true"
+            @click="toggleContextPanel(srv.name)"
+          >{{ t("mcpSection.contextButton") }}</el-button>
           <el-button size="small" @click="openServerEditor(srv)">{{ t("mcpSection.edit") }}</el-button>
           <el-button size="small" type="danger" @click="handleDelete(srv.name)">{{ t("common.remove") }}</el-button>
+        </div>
+        <!-- P1-03-F: capabilities/resources/prompts context panel -->
+        <div v-if="expandedServers[srv.name]" class="mcp-context">
+          <div class="mcp-context__bar">
+            <span class="mcp-context__title">{{ t("mcpSection.contextTitle") }}</span>
+            <el-button
+              size="small"
+              :loading="serverContext(srv.name)?.status === 'loading'"
+              @click="handleRefreshContext(srv.name)"
+            >{{ t("mcpSection.refreshContext") }}</el-button>
+            <span
+              class="status-badge"
+              :class="contextStatusClass(serverContext(srv.name)?.status)"
+            >{{ t(contextStatusKey(serverContext(srv.name)?.status)) }}</span>
+            <span v-if="serverContext(srv.name)?.error" class="mcp-error">{{ serverContext(srv.name)?.error }}</span>
+            <span v-if="injectionFeedback[srv.name]" class="mcp-context__feedback">{{ injectionFeedback[srv.name] }}</span>
+          </div>
+
+          <template v-if="serverContext(srv.name)?.capabilities">
+            <div class="mcp-context__caps">
+              <span class="mcp-context__meta">
+                {{ serverContext(srv.name)!.capabilities!.serverInfo.name }}
+                {{ serverContext(srv.name)!.capabilities!.serverInfo.version }}
+                · {{ serverContext(srv.name)!.capabilities!.protocolVersion }}
+              </span>
+              <span
+                v-for="family in capabilityFamilies"
+                :key="family.key"
+                class="mcp-context__cap"
+              >
+                <b>{{ t(family.labelKey) }}</b>
+                {{ t(capabilityStateKey(serverContext(srv.name)!.capabilities!.capabilities[family.key].state)) }}
+              </span>
+              <span
+                v-for="unknownKey in serverContext(srv.name)!.capabilities!.capabilities.unknown ?? []"
+                :key="unknownKey"
+                class="mcp-context__cap"
+              >
+                <b>{{ unknownKey }}</b> {{ t("mcpSection.capUnknown") }}
+              </span>
+            </div>
+          </template>
+
+          <h4 class="mcp-context__family">{{ t("mcpSection.resourcesTitle") }}</h4>
+          <div v-if="serverContext(srv.name)?.resourcesStatus === 'unsupported'" class="mcp-context__hint">
+            {{ t("mcpSection.familyUnsupported", { family: t("mcpSection.resourcesTitle") }) }}
+          </div>
+          <div v-else-if="serverContext(srv.name)?.resourcesStatus === 'error'" class="mcp-error">
+            {{ serverContext(srv.name)?.resourcesError }}
+          </div>
+          <div v-else-if="serverContext(srv.name)?.resourcesStatus === 'empty'" class="mcp-context__hint">
+            {{ t("mcpSection.familyEmpty") }}
+          </div>
+          <div
+            v-for="res in serverContext(srv.name)?.resources ?? []"
+            :key="res.uri"
+            class="mcp-context__item"
+          >
+            <code class="mcp-context__uri" :title="res.uri">{{ res.uri }}</code>
+            <span class="mcp-cell__sub" :title="res.description ?? res.name">
+              {{ res.name }}<template v-if="res.mimeType"> · {{ res.mimeType }}</template>
+            </span>
+            <el-button
+              size="small"
+              :aria-label="t('mcpSection.injectAria', { source: res.uri })"
+              @click="handleInjectResource(srv.name, res.uri)"
+            >{{ t("mcpSection.inject") }}</el-button>
+          </div>
+
+          <h4 class="mcp-context__family">{{ t("mcpSection.promptsTitle") }}</h4>
+          <div v-if="serverContext(srv.name)?.promptsStatus === 'unsupported'" class="mcp-context__hint">
+            {{ t("mcpSection.familyUnsupported", { family: t("mcpSection.promptsTitle") }) }}
+          </div>
+          <div v-else-if="serverContext(srv.name)?.promptsStatus === 'error'" class="mcp-error">
+            {{ serverContext(srv.name)?.promptsError }}
+          </div>
+          <div v-else-if="serverContext(srv.name)?.promptsStatus === 'empty'" class="mcp-context__hint">
+            {{ t("mcpSection.familyEmpty") }}
+          </div>
+          <div
+            v-for="prompt in serverContext(srv.name)?.prompts ?? []"
+            :key="prompt.name"
+            class="mcp-context__item"
+          >
+            <code class="mcp-context__uri" :title="prompt.name">{{ prompt.name }}</code>
+            <span class="mcp-cell__sub" :title="prompt.description ?? ''">{{ prompt.description }}</span>
+            <el-button
+              size="small"
+              :aria-label="t('mcpSection.injectAria', { source: prompt.name })"
+              @click="handleInjectPrompt(srv.name, prompt.name)"
+            >{{ t("mcpSection.inject") }}</el-button>
+          </div>
         </div>
       </div>
     </div>
@@ -177,7 +367,6 @@ function argsText(cfg: MCPServerConfig): string {
         <span class="tool-risk-badge" :class="riskBadgeClass(tool.riskLevel)">
           {{ riskLabel(tool.riskLevel) }}
         </span>
-        <span v-if="tool.autoApproved" class="auto-badge">{{ t("mcpSection.autoApproved") }}</span>
       </div>
     </div>
 
@@ -253,16 +442,6 @@ function argsText(cfg: MCPServerConfig): string {
           </div>
         </template>
 
-        <div class="mcp-editor__row">
-          <label class="mcp-editor__label">{{ t("mcpSection.fieldAutoApprove") }}</label>
-          <input
-            :value="form.autoApprove?.join(', ') ?? ''"
-            type="text"
-            class="mcp-editor__input"
-            :placeholder="t('mcpSection.fieldAutoApprovePlaceholder')"
-            @input="(e) => { form!.autoApprove = (e.target as HTMLInputElement).value.split(',').map((s) => s.trim()).filter(Boolean); }"
-          />
-        </div>
 
         <div class="mcp-editor__row">
           <label class="mcp-editor__label">{{ t("mcpSection.fieldEnabled") }}</label>
@@ -410,6 +589,98 @@ function argsText(cfg: MCPServerConfig): string {
 .status-badge--disabled {
   color: var(--color-text-tertiary);
   background: var(--color-bg-surface-container-low);
+}
+
+.status-badge--error {
+  color: var(--color-error, #f44336);
+  background: var(--color-error-container, rgba(244, 67, 54, 0.1));
+}
+
+/* P1-03-F: per-server context panel (capabilities/resources/prompts). */
+.mcp-context {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--color-bg-surface-container-low);
+  border-radius: var(--radius-sm);
+}
+
+.mcp-context__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mcp-context__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.mcp-context__feedback {
+  font-size: 11px;
+  color: var(--color-success, #4caf50);
+}
+
+.mcp-context__caps {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.mcp-context__cap {
+  padding: 1px 6px;
+  background: var(--color-bg-surface-container);
+  border-radius: var(--radius-xs);
+}
+
+.mcp-context__meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.mcp-context__family {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 4px 0 0;
+  color: var(--color-text-primary);
+}
+
+.mcp-context__hint {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.mcp-context__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.mcp-context__item .mcp-cell__sub {
+  flex: 1;
+  min-width: 0;
+}
+
+.mcp-context__uri {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface-container);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcp-subtitle {

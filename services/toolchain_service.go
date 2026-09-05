@@ -1287,17 +1287,12 @@ func parseGoCompiler(output, source string) []ToolchainDiagnostic {
 		if m == nil {
 			continue
 		}
-		lineNo, err := strconv.Atoi(m[2])
-		if err != nil {
-			continue
-		}
 		col := 0
 		if m[3] != "" {
-			col, err = strconv.Atoi(m[3])
-			if err != nil {
-				continue
-			}
+			_, _ = fmt.Sscanf(m[3], "%d", &col)
 		}
+		var lineNo int
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
 		severity := "error"
 		if strings.Contains(m[4], "warning") || strings.HasPrefix(line, "warning:") {
 			severity = "warning"
@@ -1327,11 +1322,9 @@ func parseGolangciLint(output string) []ToolchainDiagnostic {
 		if m == nil {
 			continue
 		}
-		lineNo, lineErr := strconv.Atoi(m[2])
-		col, colErr := strconv.Atoi(m[3])
-		if lineErr != nil || colErr != nil {
-			continue
-		}
+		var lineNo, col int
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
+		_, _ = fmt.Sscanf(m[3], "%d", &col)
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1358,11 +1351,9 @@ func parseTypeScript(output string) []ToolchainDiagnostic {
 		if m == nil {
 			continue
 		}
-		lineNo, lineErr := strconv.Atoi(m[2])
-		col, colErr := strconv.Atoi(m[3])
-		if lineErr != nil || colErr != nil {
-			continue
-		}
+		var lineNo, col int
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
+		_, _ = fmt.Sscanf(m[3], "%d", &col)
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1393,11 +1384,9 @@ func parseESLint(output string) []ToolchainDiagnostic {
 		if !looksLikeSourceFile(m[1]) {
 			continue
 		}
-		lineNo, lineErr := strconv.Atoi(m[2])
-		col, colErr := strconv.Atoi(m[3])
-		if lineErr != nil || colErr != nil {
-			continue
-		}
+		var lineNo, col int
+		_, _ = fmt.Sscanf(m[2], "%d", &lineNo)
+		_, _ = fmt.Sscanf(m[3], "%d", &col)
 		diags = append(diags, ToolchainDiagnostic{
 			File:     m[1],
 			Line:     lineNo,
@@ -1423,8 +1412,8 @@ func splitToolchainLines(s string) []string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	lines := strings.Split(s, "\n")
 	out := make([]string, 0, len(lines))
-	// Keep blank lines so indices stay stable if ever needed; the parsers
-	// simply won't match them.
+	// Keep blank lines so indices stay stable if ever needed; the
+	// parsers simply won't match them.
 	out = append(out, lines...)
 	return out
 }

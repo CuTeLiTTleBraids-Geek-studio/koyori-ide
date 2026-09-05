@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -26,7 +25,7 @@ import (
 
 // marketplace_service.go — G-VSC-01: VS Code extension marketplace client.
 //
-// This service searches, browses, downloads, verifies, and installs VS Code
+// This service searches, browses, downloads, checks, and installs VS Code
 // extensions (VSIX packages) from a registry. The default registry is the
 // Open VSX Registry (https://open-vsx.org/vscode/registry/api), which has no
 // legal restrictions on programmatic access. The VS Code Marketplace is
@@ -34,8 +33,9 @@ import (
 //
 // Security (G-SEC-12):
 //   - requirement 2: newly installed extensions are disabled by default.
-//   - requirement 3: every downloaded VSIX is verified against a registry-
-//     provided SHA-256 hash; a mismatch aborts the install.
+//   - requirement 3: every downloaded VSIX is checked against a registry-
+//     provided SHA-256 hash; a mismatch aborts the install. This is an
+//     integrity check; it does not establish publisher identity.
 //   - All extracted paths are validated to stay within the target directory
 //     (path traversal protection) — see extractVSIX.
 
@@ -79,7 +79,7 @@ const vsixExtensionPrefix = "extension/"
 // on this context deadline instead.
 const vsixDownloadTimeout = 10 * time.Minute
 
-// MarketplaceService searches, downloads, verifies, and installs VS Code
+// MarketplaceService searches, downloads, integrity-checks, and installs VS Code
 // extensions (VSIX) from a registry. The default registry is Open VSX.
 type MarketplaceService struct {
 	mu          sync.Mutex
@@ -500,14 +500,102 @@ type VSCodeExtensionManifest struct {
 }
 
 func (m *VSCodeExtensionManifest) RequestedPermissions() ([]ExtensionPermission, error) {
-	hasExecutableMain := m != nil && (strings.TrimSpace(m.Main) != "" || strings.TrimSpace(m.Browser) != "")
-	if m == nil || m.KoyoriIde == nil || m.KoyoriIde.Permissions == nil {
-		if hasExecutableMain {
-			return nil, fmt.Errorf("executable extensions must declare koyoriIde.permissions explicitly")
-		}
+	if m == nil {
 		return []ExtensionPermission{}, nil
 	}
-	return validateExtensionPermissions(*m.KoyoriIde.Permissions)
+	if m.KoyoriIde != nil && m.KoyoriIde.Permissions != nil {
+		return validateExtensionPermissions(*m.KoyoriIde.Permissions)
+	}
+	return validateExtensionPermissions(deriveExtensionPermissions(m, ""))
+}
+
+// RequestedPermissionsFromInstallDir uses declared koyoriIde.permissions when
+// present; otherwise it infers Trusted/Reviewed/Restricted from contributes,
+// activationEvents, and a static scan of the VSIX entrypoint. Missing
+// koyoriIde.permissions is no longer an install hard-block (P14-G38).
+func (m *VSCodeExtensionManifest) RequestedPermissionsFromInstallDir(extDir string) ([]ExtensionPermission, error) {
+	if m == nil {
+		return []ExtensionPermission{}, nil
+	}
+	if m.KoyoriIde != nil && m.KoyoriIde.Permissions != nil {
+		return validateExtensionPermissions(*m.KoyoriIde.Permissions)
+	}
+	entrypoint := ""
+	if rel := strings.TrimSpace(m.Browser); rel != "" {
+		entrypoint = filepath.Join(extDir, vsixExtensionPrefix, filepath.FromSlash(rel))
+	} else if rel := strings.TrimSpace(m.Main); rel != "" {
+		entrypoint = filepath.Join(extDir, vsixExtensionPrefix, filepath.FromSlash(rel))
+	}
+	source := ""
+	if entrypoint != "" {
+		if data, err := readFileLimited(entrypoint, maxReadableFileBytes); err == nil {
+			source = string(data)
+		}
+	}
+	derived := deriveExtensionPermissions(m, source)
+	if (strings.TrimSpace(m.Main) != "" || strings.TrimSpace(m.Browser) != "") && source == "" {
+		derived = append(derived, PermNetwork)
+	}
+	return validateExtensionPermissions(derived)
+}
+
+func deriveExtensionPermissions(m *VSCodeExtensionManifest, entrySource string) []ExtensionPermission {
+	perms := make([]ExtensionPermission, 0, 4)
+	add := func(p ExtensionPermission) {
+		for _, existing := range perms {
+			if existing == p {
+				return
+			}
+		}
+		perms = append(perms, p)
+	}
+	c := ExtensionContributes{}
+	if m != nil {
+		c = m.ParsedContributes
+	}
+	if len(c.Commands) > 0 || len(c.Menus) > 0 || len(c.Keybindings) > 0 {
+		add(PermUINotif)
+	}
+	if len(c.Themes) > 0 || len(c.IconThemes) > 0 || len(c.Languages) > 0 || len(c.Grammars) > 0 || len(c.Snippets) > 0 {
+		add(PermFsRead)
+	}
+	if len(c.Debuggers) > 0 {
+		add(PermDebugExec)
+	}
+	if m != nil {
+		for _, event := range m.ActivationEvents {
+			lower := strings.ToLower(event)
+			if strings.HasPrefix(lower, "oncommand:") {
+				add(PermUINotif)
+			}
+			if strings.Contains(lower, "ondebug") {
+				add(PermDebugExec)
+			}
+			if strings.HasPrefix(lower, "workspacecontains:") || strings.HasPrefix(lower, "onlanguage:") {
+				add(PermFsRead)
+			}
+		}
+	}
+	lowerSrc := strings.ToLower(entrySource)
+	if strings.Contains(lowerSrc, "child_process") || strings.Contains(lowerSrc, "shell.execute") || strings.Contains(lowerSrc, "cp.exec") || strings.Contains(lowerSrc, "spawn(") {
+		add(PermShellExec)
+	}
+	if strings.Contains(lowerSrc, "fetch(") || strings.Contains(lowerSrc, "xmlhttprequest") || strings.Contains(lowerSrc, "websocket") || strings.Contains(entrySource, "http.") || strings.Contains(lowerSrc, "vscode.env.openexternal") {
+		add(PermNetwork)
+	}
+	if strings.Contains(lowerSrc, "writefile") || strings.Contains(lowerSrc, "workspace.fs.write") {
+		add(PermFsWrite)
+	}
+	if strings.Contains(lowerSrc, "showinformationmessage") || strings.Contains(lowerSrc, "showwarningmessage") || strings.Contains(lowerSrc, "showerrormessage") {
+		add(PermUINotif)
+	}
+	if strings.Contains(lowerSrc, "registercommand") {
+		add(PermUINotif)
+	}
+	if len(perms) == 0 && m != nil && (strings.TrimSpace(m.Main) != "" || strings.TrimSpace(m.Browser) != "") {
+		add(PermUINotif)
+	}
+	return perms
 }
 
 // ExtensionID 返回 "publisher.name" 形式的扩展 ID。如果 publisher 或 name
@@ -663,10 +751,11 @@ func (s *MarketplaceService) GetExtensionDetail(publisher, name string) (*Extens
 }
 
 // DownloadAndInstallExtension downloads a VSIX for the given extension
-// version, verifies its SHA-256 against the registry-provided hash, and
+// version, checks its SHA-256 against the registry-provided hash, and
 // installs it under <configDir>/koyori-ide/extensions/<publisher>.<name>/.
 // Newly installed extensions are disabled by default (G-SEC-12 req. 2).
-// A hash mismatch aborts the install (G-SEC-12 req. 3).
+// A hash mismatch aborts the install (G-SEC-12 req. 3). This integrity check
+// does not authenticate the publisher.
 func (s *MarketplaceService) DownloadAndInstallExtension(publisher, name, version string) error {
 	if err := validateExtensionIdent(publisher, name); err != nil {
 		return err
@@ -703,9 +792,9 @@ func (s *MarketplaceService) DownloadAndInstallExtension(publisher, name, versio
 	}
 	if wantHash == "" {
 		// G-SEC-12 req. 3: refuse to install when the registry did not
-		// provide a hash to verify against. Installing without verification
+		// provide a hash to compare against. Installing without this check
 		// would defeat the integrity gate.
-		return fmt.Errorf("extension %s.%s version %s has no SHA-256 hash from the registry; refusing to install unverified", publisher, name, ver.Version)
+		return fmt.Errorf("extension %s.%s version %s has no registry SHA-256 digest; refusing to install without a SHA-256 integrity check", publisher, name, ver.Version)
 	}
 	// P2-4: 流式下载 VSIX 到临时文件 + 同时哈希，避免全量驻留内存。
 	// 安装时用 zip.OpenReader 从磁盘读取。原 httpGetBytes 把 256MB VSIX
@@ -714,12 +803,11 @@ func (s *MarketplaceService) DownloadAndInstallExtension(publisher, name, versio
 	if err != nil {
 		return fmt.Errorf("download VSIX: %w", err)
 	}
-	defer func() {
-		_ = os.Remove(tmpPath) // 安装完成后删除临时文件
-	}()
-	// G-SEC-12 req. 3: SHA-256 验证。流式哈希与 wantHash 比对。
+	defer os.Remove(tmpPath) // 安装完成后删除临时文件
+	// G-SEC-12 req. 3: SHA-256 完整性校验。流式哈希与 wantHash 比对；
+	// 它不会确认发布者身份。
 	if !strings.EqualFold(gotHash, wantHash) {
-		return fmt.Errorf("SHA-256 verification failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
+		return fmt.Errorf("SHA-256 integrity check failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
 	}
 	return s.installFromVSIXFile(tmpPath, wantHash, publisher, name, ver.Version)
 }
@@ -751,7 +839,7 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 		return fmt.Errorf("extension %s.%s is blacklisted (G-SEC-12)", publisher, name)
 	}
 
-	// Resolve and verify the new archive before touching the installed version.
+	// Resolve and integrity-check the new archive before touching the installed version.
 	reqURL := fmt.Sprintf("%s/%s/%s", s.registryURL, urlEscape(publisher), urlEscape(name))
 	data, err := s.httpGetJSON(reqURL)
 	if err != nil {
@@ -774,17 +862,15 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 		return fmt.Errorf("resolve SHA-256 for %s.%s version %s: %w", publisher, name, ver.Version, err)
 	}
 	if wantHash == "" {
-		return fmt.Errorf("extension %s.%s version %s has no SHA-256 hash from the registry; refusing to update unverified", publisher, name, ver.Version)
+		return fmt.Errorf("extension %s.%s version %s has no registry SHA-256 digest; refusing to update without a SHA-256 integrity check", publisher, name, ver.Version)
 	}
 	tmpPath, gotHash, err := s.downloadVSIXToTempFile(downloadURL)
 	if err != nil {
 		return fmt.Errorf("download VSIX: %w", err)
 	}
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
+	defer os.Remove(tmpPath)
 	if !strings.EqualFold(gotHash, wantHash) {
-		return fmt.Errorf("SHA-256 verification failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
+		return fmt.Errorf("SHA-256 integrity check failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
 	}
 
 	targetDir := s.extensionDir(publisher, name)
@@ -819,7 +905,7 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 	if manifest.Version != "" && manifest.Version != ver.Version {
 		return fmt.Errorf("updated manifest version %q does not match requested version %q", manifest.Version, ver.Version)
 	}
-	permissions, err := manifest.RequestedPermissions()
+	permissions, err := manifest.RequestedPermissionsFromInstallDir(updatingDir)
 	if err != nil {
 		return fmt.Errorf("validate extension permissions: %w", err)
 	}
@@ -997,6 +1083,14 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 	return nil
 }
 
+// validateDownloadURL guards registry-supplied download/sha256 URLs (P19
+// P1-04). Production uses ValidateNonPrivateURL — the same gate
+// SetRegistryURL applies to the registry base itself — so a compromised or
+// hostile registry response cannot aim marketplace fetches at
+// private/loopback/link-local targets. Tests may swap it to admit httptest
+// loopback servers (see allowLoopbackDownloadURLs in the test file).
+var validateDownloadURL = ValidateNonPrivateURL
+
 // downloadVSIXToTempFile (P2-4) 流式下载 VSIX 到临时文件，同时用 TeeReader
 // 计算 SHA-256。返回临时文件路径与计算出的哈希。调用方负责删除临时文件。
 //
@@ -1004,6 +1098,12 @@ func (s *MarketplaceService) UpdateExtension(publisher, name, version string) (e
 // 流式方案降低内存峰值：仅 io.Copy 默认 32KB 缓冲 + 哈希状态，与 VSIX 大小无关。
 // 落盘后用 zip.OpenReader 从磁盘读取（见 installFromVSIXFile），避免全量驻留内存。
 func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath, gotHash string, err error) {
+	// P19 P1-04: the download URL comes from the registry response, not from
+	// the user-validated registry base. Re-apply the SSRF gate before any
+	// byte is fetched.
+	if _, err := validateDownloadURL(downloadURL); err != nil {
+		return "", "", fmt.Errorf("download URL %q rejected: %w", downloadURL, err)
+	}
 	s.mu.Lock()
 	sharedClient := s.httpClient
 	s.mu.Unlock()
@@ -1015,8 +1115,17 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	// dedicated client that reuses the shared transport but has no overall
 	// Timeout, and enforce a longer deadline via context instead.
 	client := &http.Client{}
+	// P19 P1-04: never follow redirects — a 302 aimed at an internal target
+	// must not be chased; the 3xx response falls through to the status
+	// check below and is rejected.
+	client.CheckRedirect = noRedirectPolicy
+	// P20 P1-02: an injected transport (tests) is reused as-is; production's
+	// transport-less client dials through the SSRF-safe transport so the
+	// resolved IP is revalidated at connect time (DNS rebinding guard).
 	if sharedClient.Transport != nil {
 		client.Transport = sharedClient.Transport
+	} else {
+		client.Transport = marketplaceTransport()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), vsixDownloadTimeout)
 	defer cancel()
@@ -1029,9 +1138,7 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	if err != nil {
 		return "", "", err
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", "", fmt.Errorf("registry returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -1046,8 +1153,8 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	// 失败路径清理临时文件
 	defer func() {
 		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmpPath)
+			tmp.Close()
+			os.Remove(tmpPath)
 			tmpPath = ""
 		}
 	}()
@@ -1080,6 +1187,15 @@ func (s *MarketplaceService) downloadVSIXToTempFile(downloadURL string) (tmpPath
 	return tmpPath, gotHash, nil
 }
 
+// InstallVSIXFile runs a local VSIX through the same production extraction,
+// permission-inference, lifecycle, and integrity path as a marketplace download.
+// It is intentionally a Go-side/manual-install seam, not a renderer API.
+//
+//wails:ignore
+func (s *MarketplaceService) InstallVSIXFile(tmpPath, wantHash, publisher, name, version string) error {
+	return s.installFromVSIXFile(tmpPath, wantHash, publisher, name, version)
+}
+
 // installFromVSIXFile (P2-4) 从磁盘临时文件读取 VSIX 并安装。
 // 用 zip.OpenReader 直接从磁盘读取，避免全量驻留内存。
 // 安装完成后调用方应删除临时文件。
@@ -1091,7 +1207,7 @@ func (s *MarketplaceService) installFromVSIXFile(tmpPath, wantHash, publisher, n
 		return err
 	}
 	if wantHash == "" {
-		return fmt.Errorf("installFromVSIXFile: wantHash is empty")
+		return fmt.Errorf("installFromVSIXFile: expected SHA-256 digest is empty; integrity check cannot run")
 	}
 	if s.securityService != nil {
 		if s.securityService.IsBlacklisted(publisher, name) {
@@ -1116,7 +1232,7 @@ func (s *MarketplaceService) installFromVSIXFile(tmpPath, wantHash, publisher, n
 		return fmt.Errorf("hash VSIX before install: %w", err)
 	}
 	if !strings.EqualFold(strings.TrimSpace(gotHash), strings.TrimSpace(wantHash)) {
-		return fmt.Errorf("SHA-256 verification failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
+		return fmt.Errorf("SHA-256 integrity check failed for %s.%s: expected %s, got %s (G-SEC-12 req. 3)", publisher, name, wantHash, gotHash)
 	}
 	targetDir := s.extensionDir(publisher, name)
 	tmpDir := targetDir + ".installing"
@@ -1136,7 +1252,7 @@ func (s *MarketplaceService) installFromVSIXFile(tmpPath, wantHash, publisher, n
 		_ = removeAllWithRetry(tmpDir)
 		return fmt.Errorf("parse extension manifest: %w", err)
 	}
-	permissions, err := manifest.RequestedPermissions()
+	permissions, err := manifest.RequestedPermissionsFromInstallDir(tmpDir)
 	if err != nil {
 		_ = removeAllWithRetry(tmpDir)
 		return fmt.Errorf("validate extension permissions: %w", err)
@@ -1193,8 +1309,8 @@ func (s *MarketplaceService) installFromVSIXFile(tmpPath, wantHash, publisher, n
 		return fmt.Errorf("swap install dir into place: %w", err)
 	}
 	// Register the original on-disk archive. Registration streams the file for
-	// signature verification and never creates an archive-sized []byte or a
-	// second VSIX copy.
+	// a second SHA-256 integrity check and never creates an archive-sized []byte
+	// or a second VSIX copy. The check does not authenticate the publisher.
 	if s.securityService != nil {
 		_, regErr := s.securityService.RegisterInstallFromFile(extensionID, permissions, tmpPath, wantHash)
 		if regErr != nil {
@@ -1219,16 +1335,12 @@ func (s *MarketplaceService) installFromVSIXFile(tmpPath, wantHash, publisher, n
 
 // extractVSIXFromFile (P2-4) 从磁盘 VSIX 文件解压到 targetDir。
 // 用 zip.OpenReader 直接从磁盘读取，避免 ReaderAt 需要全量在内存。
-func extractVSIXFromFile(tmpPath, targetDir string) (err error) {
+func extractVSIXFromFile(tmpPath, targetDir string) error {
 	zr, err := zip.OpenReader(tmpPath)
 	if err != nil {
 		return fmt.Errorf("open VSIX zip: %w", err)
 	}
-	defer func() {
-		if closeErr := zr.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close VSIX zip: %w", closeErr))
-		}
-	}()
+	defer zr.Close()
 	// zr 是 *zip.ReadCloser，嵌入值类型 zip.Reader；&zr.Reader 取其地址。
 	return extractVSIXEntries(&zr.Reader, targetDir)
 }
@@ -1243,9 +1355,7 @@ func (s *MarketplaceService) installFromVSIXData(vsix []byte, wantHash, publishe
 		return fmt.Errorf("create temporary VSIX: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
+	defer os.Remove(tmpPath)
 	if _, err := tmp.Write(vsix); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write temporary VSIX: %w", err)
@@ -1775,7 +1885,81 @@ func (s *MarketplaceService) httpGetJSON(url string) ([]byte, error) {
 
 // httpGetBytes fetches raw bytes (e.g. a VSIX) from a URL.
 func (s *MarketplaceService) httpGetBytes(url string) ([]byte, error) {
-	return s.httpGet(url, "")
+	// P20 P1-02: the sha256 sidecar and readme URLs come from the registry
+	// response, not from the user-validated registry base — apply the same
+	// SSRF gate as the VSIX funnel before any byte is fetched.
+	if _, err := validateDownloadURL(url); err != nil {
+		return nil, fmt.Errorf("registry fetch URL %q rejected: %w", url, err)
+	}
+	s.mu.Lock()
+	sharedClient := s.httpClient
+	s.mu.Unlock()
+	if sharedClient == nil {
+		sharedClient = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "koyori-ide-marketplace/1.0")
+	// P20 P1-02: dial-time revalidation defeats DNS rebinding after the URL
+	// gate passed, and no-redirect stops a 302 aimed at an internal target
+	// (the 3xx falls through to the status check below and is rejected).
+	transport := sharedClient.Transport
+	if transport == nil {
+		transport = marketplaceTransport()
+	}
+	client := &http.Client{
+		Timeout:       sharedClient.Timeout,
+		Transport:     transport,
+		CheckRedirect: noRedirectPolicy,
+	}
+	return httpGetBody(client.Do(req))
+}
+
+// marketplaceTransport produces the dial-time revalidating transport used for
+// every registry-originated fetch (P20 P1-02). Production gets
+// NewSSRFSafeTransport so a hostname that passed ValidateNonPrivateURL cannot
+// rebind to a private address between validation and dial. Tests swap this
+// provider (alongside validateDownloadURL) to return nil so loopback
+// httptest servers stay reachable.
+var marketplaceTransport = newMarketplaceSSRFTransport
+
+var (
+	marketplaceTransportOnce sync.Once
+	marketplaceTransportReal http.RoundTripper
+)
+
+func newMarketplaceSSRFTransport() http.RoundTripper {
+	marketplaceTransportOnce.Do(func() {
+		marketplaceTransportReal = NewSSRFSafeTransport()
+	})
+	return marketplaceTransportReal
+}
+
+// httpGetBody reads and bounds an HTTP GET response body shared by the
+// registry JSON and raw-bytes funnels: non-2xx becomes an error (a 3xx that
+// reached this point was not followed), and the body is size-capped (H-2).
+func httpGetBody(resp *http.Response, err error) ([]byte, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("registry returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	// H-2: limit response body to maxHTTPResponseSize to prevent OOM from
+	// a malicious or buggy server streaming an unbounded body. We read one
+	// extra byte to detect the overflow condition.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	if int64(len(data)) > maxHTTPResponseSize {
+		return nil, fmt.Errorf("response body exceeds max size %d bytes", maxHTTPResponseSize)
+	}
+	return data, nil
 }
 
 func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
@@ -1794,27 +1978,7 @@ func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", "koyori-ide-marketplace/1.0")
 	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("registry returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	// H-2: limit response body to maxHTTPResponseSize to prevent OOM from
-	// a malicious or buggy server streaming an unbounded body. We read one
-	// extra byte to detect the overflow condition.
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
-	}
-	if int64(len(data)) > maxHTTPResponseSize {
-		return nil, fmt.Errorf("response body exceeds max size %d bytes", maxHTTPResponseSize)
-	}
-	return data, nil
+	return httpGetBody(resp, err)
 }
 
 // extractVSIXEntries extracts zip entries from an on-disk VSIX reader.
@@ -1860,7 +2024,7 @@ func extractVSIXEntries(zr *zip.Reader, targetDir string) error {
 // symlink bit) are rejected — an extension should not install symlinks.
 // G20: quotas are enforced on both the header-declared sizes and the actual
 // streamed bytes (a lying header cannot bypass the budget).
-func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, seen map[string]struct{}) (err error) {
+func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, seen map[string]struct{}) error {
 	name := f.Name
 	// Normalize separators to the OS form and clean. Reject absolute paths
 	// and parent traversal before joining.
@@ -1886,7 +2050,14 @@ func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, see
 	if err != nil {
 		return fmt.Errorf("resolve VSIX entry path %q: %w", f.Name, err)
 	}
-	if destResolved != absTarget && !strings.HasPrefix(destResolved, absTarget+string(filepath.Separator)) {
+	// P19 CI 修复：destResolved 已经过符号链接/8.3 短名解析，而 absTarget
+	// 是调用方原始拼写（macOS /var 前缀、Windows 短名 TEMP）。两侧须在同一
+	// 解析形态下做前缀比较，否则同一目录会被判为越界。
+	targetResolved := absTarget
+	if resolved, resolveErr := filepath.EvalSymlinks(absTarget); resolveErr == nil {
+		targetResolved = filepath.Clean(resolved)
+	}
+	if destResolved != targetResolved && !strings.HasPrefix(destResolved, targetResolved+string(filepath.Separator)) {
 		return fmt.Errorf("VSIX entry %q resolves outside the install directory (path traversal)", f.Name)
 	}
 	// Reject symlink entries (Unix mode bit). A VSIX should ship real files.
@@ -1929,20 +2100,12 @@ func extractZipEntry(f *zip.File, absTarget string, stats *vsixExtractStats, see
 	if err != nil {
 		return fmt.Errorf("open VSIX entry %q: %w", f.Name, err)
 	}
-	defer func() {
-		if closeErr := rc.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close VSIX entry %q: %w", f.Name, closeErr))
-		}
-	}()
+	defer rc.Close()
 	w, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("create file %q: %w", f.Name, err)
 	}
-	defer func() {
-		if closeErr := w.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close file %q: %w", f.Name, closeErr))
-		}
-	}()
+	defer w.Close()
 	// G20: budget the ACTUAL streamed bytes (defeats lying headers); the
 	// per-entry limit uses LimitReader so a bomb cannot over-allocate.
 	written, copyErr := io.Copy(w, io.LimitReader(rc, vsixMaxEntryBytes+1))
@@ -2071,7 +2234,11 @@ func (s *MarketplaceService) resolveSha256(raw string) (string, error) {
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		return strings.TrimSpace(raw), nil
 	}
-	// Fetch the .sha256 file content.
+	// Fetch the .sha256 file content. The URL is registry-controlled, so it
+	// passes the same SSRF gate as the VSIX download (P19 P1-04).
+	if _, err := validateDownloadURL(raw); err != nil {
+		return "", fmt.Errorf("sha256 URL %q rejected: %w", raw, err)
+	}
 	data, err := s.httpGetBytes(raw)
 	if err != nil {
 		return "", fmt.Errorf("fetch sha256 file: %w", err)

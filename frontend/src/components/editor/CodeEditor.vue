@@ -12,6 +12,7 @@ import {
 } from "@/stores/app";
 import { detectLanguage } from "@/lib/language";
 import { runAIAction } from "@/stores/ai";
+import { sendSelectionToAIDesktopWindow } from "@/stores/aiAssistant";
 import {
   requestCompletion,
   cancelInlineCompletion,
@@ -22,10 +23,13 @@ import type { AIActionName } from "@/types";
 import { getMonacoThemeNameForMode } from "@/lib/monaco-themes";
 import { useI18n } from "@/lib/i18n";
 import { registerLSPProviders } from "@/lib/lspCompletion";
-import { gitService, windowService } from "@/api/services";
+import { gitService } from "@/api/services";
 import { setCallHierarchyQuery } from "@/stores/lsp";
 import { coverageHitsForFile, coverageState } from "@/stores/coverage";
 import { registerEmmetProviders } from "@/lib/emmet";
+import { registerExtensionEditorSurface } from "@/lib/extensionDecorations";
+import { Position, Selection } from "@/lib/extensionHost/vscodeApi";
+import { notifyExtensionHostTextEditorSelectionChange } from "@/lib/vscodeExtensionActivation";
 import { layoutState, splitLeaf } from "@/stores/layout";
 import { registerEditorCommands } from "@/lib/editorCommands";
 import * as GitServiceBindings from "../../../bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/gitservice.js";
@@ -235,8 +239,7 @@ function registerContextMenuActions(
         }
         const filePath = props.path || appState.currentFilePath || "untitled";
         const language = model.getLanguageId();
-        void windowService
-          .sendSelectionToAI(selectedText, language, filePath)
+        void sendSelectionToAIDesktopWindow(selectedText, language, filePath)
           .then(() => notifySuccess(t("codeEditor.sentToAIWindow")))
           .catch((e: unknown) =>
             notifyWarning(e instanceof Error ? e.message : String(e)),
@@ -1118,6 +1121,7 @@ function handleMount(
   if (editorInstance.value) disposeEditorMountResources();
   editorInstance.value = editor;
   monacoInstance.value = monaco;
+  disposables.value.push(registerExtensionEditorSurface(props.path, editor, monaco));
   const debugGeneration = ++debugWatchGeneration.value;
   if (
     contrastMediaListeners.length === 0 &&
@@ -1143,6 +1147,13 @@ function handleMount(
       scheduleInlineBlame(editor, monaco, e.position.lineNumber);
     },
   );
+  disposables.value.push(editor.onDidChangeCursorSelection(() => {
+    const selections = editor.getSelections()?.map((value) => new Selection(
+      new Position(value.selectionStartLineNumber - 1, value.selectionStartColumn - 1),
+      new Position(value.positionLineNumber - 1, value.positionColumn - 1),
+    )) ?? [];
+    notifyExtensionHostTextEditorSelectionChange(props.path, selections);
+  }));
   // Click glyph margin to toggle breakpoint (prompt-11 11-A)
   // M-12: 跟踪 onMouseDown 返回的 IDisposable，卸载时统一释放。
   disposables.value.push(

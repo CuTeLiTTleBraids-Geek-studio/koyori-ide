@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     koyori-ide Windows MSI ????????WiX Toolset v3??
 
@@ -62,6 +62,8 @@ function Find-WiXTool {
     $candidates = @()
     $candidates += Get-ChildItem "C:\Program Files (x86)\WiX Toolset*\bin\$Name.exe" -ErrorAction SilentlyContinue
     $candidates += Get-ChildItem "C:\Program Files\WiX Toolset*\bin\$Name.exe" -ErrorAction SilentlyContinue
+        $candidates += Get-ChildItem (Join-Path $env:LOCALAPPDATA "wix*\bin\$Name.exe") -ErrorAction SilentlyContinue
+    $candidates += Get-ChildItem (Join-Path $env:LOCALAPPDATA "wix*\$Name.exe") -ErrorAction SilentlyContinue
     if ($env:ChocolateyInstall) {
         $candidates += Get-ChildItem (Join-Path $env:ChocolateyInstall "lib\wixtoolset\**\$Name.exe") -ErrorAction SilentlyContinue
     }
@@ -124,3 +126,4 @@ $SizeMb = [math]::Round((Get-Item $MsiPath).Length / 1MB, 1)
 Write-Host "[OK]    MSI ???: $MsiPath ($SizeMb MB)"
 Write-Host "[INFO]  ??:       msiexec /i $MsiPath"
 Write-Host "[INFO]  ????:   msiexec /i $MsiPath /qn"
+

@@ -83,11 +83,12 @@ tag.
 
 ## [0.2.0]
 
-**Status: not verified as released.** This is the version `VERSION` and
+**Status: not verified as a formal release.** This is the version `VERSION` and
 `build/config.yml` declare, and the version `README.md` points at for packaged
-artifacts. No release date is given because none can be verified: this checkout
-has no git history, so no `v0.2.0` tag, commit, or release artifact is available
-to confirm. A date will be added when a tag and artifact are confirmed.
+artifacts. This checkout **does have local git** (commits and a `beta0.2.0`
+tag). There is **no verified formal `v0.2.0` GitHub Release** (the local tag is
+`beta0.2.0`, not a signed `v0.2.0` release). A release date will be added when
+a tagged formal artifact is confirmed.
 
 This section exists so that `TestReleaseVersionConsistency` and the release
 workflow have a section to resolve for the declared version. Pushing a `v0.2.0`
@@ -110,10 +111,10 @@ substituting `[Unreleased]` if the section for a tag is missing.
 
 ## Historical development milestones
 
-The entries below are **development milestones, not verified releases**. This
-repository checkout carries no git history, so no tag, commit, or release
-artifact can be verified for them. Dates are deliberately omitted rather than
-reconstructed: a fabricated release date is worse than an absent one.
+The entries below are **development milestones, not verified formal releases**.
+This repository has local git history (commits and a `beta0.2.0` tag) but no
+verified `v0.2.0` GitHub Release artifact. Dates for unverified milestones are
+deliberately omitted rather than reconstructed.
 
 Treat every version below as unverified until a tag and release artifact are
 confirmed against the upstream repository.

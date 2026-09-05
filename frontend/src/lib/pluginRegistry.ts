@@ -233,37 +233,59 @@ async function deactivateStalePluginModule(module: PluginModule): Promise<void> 
   }
 }
 
-// Sandbox host for Web Worker-based plugin isolation (N-26). When set,
-// activatePlugin routes activation through the sandbox instead of direct
-// dynamic import. Set via setSandboxMode(true) or setSandboxHost(host).
-// Tests can inject a mock host via setSandboxHost.
+// Sandbox host for Web Worker-based plugin isolation (N-26). Production
+// renderers are fail-closed: they always create/retain this host and can
+// never reach the direct dynamic-import activation path. Tests can model
+// production explicitly or inject a mock host outside production.
 let sandboxHost: SandboxHost | null = null;
 
-/**
- * Enable or disable sandbox mode (N-26). When enabled, a
- * PluginSandboxHost is created with the default RpcHandler that
- * dispatches to real services. When disabled, plugins run in the
- * main thread via dynamic import (the v1 default).
- *
- * Note: sandbox mode is opt-in. The main-thread path remains the
- * default for backward compatibility and for plugins that need
- * direct DOM access (e.g. views with Vue components).
- */
-export function setSandboxMode(enabled: boolean): void {
-  if (enabled && !sandboxHost) {
+export interface SandboxModeOptions {
+  /** Test-only production-mode override; a real production build always wins. */
+  production?: boolean;
+}
+
+export function isProductionSandboxRequired(options?: SandboxModeOptions): boolean {
+  return import.meta.env.PROD || options?.production === true;
+}
+
+function ensureSandboxHost(): SandboxHost {
+  if (!sandboxHost) {
     sandboxHost = new PluginSandboxHost(createSandboxRpcHandler());
-  } else if (!enabled && sandboxHost) {
+  }
+  return sandboxHost;
+}
+
+/**
+ * Enable or disable sandbox mode (N-26). Production builds always force
+ * sandbox mode regardless of renderer settings. Development and tests may
+ * explicitly disable it to exercise the legacy main-thread path.
+ */
+export function setSandboxMode(
+  enabled: boolean,
+  options?: SandboxModeOptions,
+): void {
+  const effectiveEnabled = enabled || isProductionSandboxRequired(options);
+  if (effectiveEnabled && !sandboxHost) {
+    ensureSandboxHost();
+  } else if (!effectiveEnabled && sandboxHost) {
     sandboxHost.terminateAll();
     sandboxHost = null;
   }
 }
 
 /**
- * Set or clear the sandbox host directly. When set, activatePlugin
- * routes through the host. Pass null to disable sandbox mode.
- * Useful for tests that need to inject a mock host.
+ * Set or clear the sandbox host directly. Production builds reject the
+ * disabling effect of null and retain a default host. Useful for tests that
+ * need to inject a mock host outside production.
  */
-export function setSandboxHost(host: SandboxHost | null): void {
+export function setSandboxHost(
+  host: SandboxHost | null,
+  options?: SandboxModeOptions,
+): void {
+  if (!host && isProductionSandboxRequired(options)) {
+    ensureSandboxHost();
+    return;
+  }
   if (sandboxHost && sandboxHost !== host) {
     sandboxHost.terminateAll();
   }
@@ -612,11 +634,16 @@ async function activatePluginImpl(
   entry.activation.error = undefined;
   void logPluginEvent("info", `Activating plugin "${name}"…`);
 
+  // Fail closed even if activation is invoked before the normal bootstrap
+  // stage. This compile-time production branch prevents the renderer from
+  // ever reaching direct dynamic import in a production bundle.
+  if (import.meta.env.PROD) ensureSandboxHost();
+
   // If a test or pre-loader injected a module, use it instead of the
   // dynamic import. This lets unit tests exercise activateOnStartup /
   // activateOnCommand / deactivatePlugin without a real URL handler.
   const cached = moduleCache.get(name);
-  if (cached) {
+  if (cached && !import.meta.env.PROD) {
     let activationStarted = false;
     try {
       if (!entry.info.mainExists) {
@@ -787,6 +814,18 @@ export async function deactivatePlugin(name: string): Promise<void> {
     moduleCache.delete(name);
     entry.activation.status = "loaded";
     void logPluginEvent("info", `Plugin "${name}" unloaded (sandboxed)`);
+    return;
+  }
+
+  // A crashed or externally reset Worker may no longer be tracked by the
+  // host. Production teardown must still stay fail-closed and must never
+  // import the plugin entry module into the renderer just to deactivate it.
+  if (import.meta.env.PROD) {
+    if (!ownsEntry()) return;
+    unregisterPluginContributions(name);
+    moduleCache.delete(name);
+    entry.activation.status = "loaded";
+    void logPluginEvent("info", `Plugin "${name}" unloaded (sandbox unavailable)`);
     return;
   }
 

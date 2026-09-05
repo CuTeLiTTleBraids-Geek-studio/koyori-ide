@@ -7,6 +7,8 @@ import type { TerminalOutputPayload, TerminalExitedPayload } from "@/types";
 
 export interface TerminalSessionState {
   id: string;
+  /** Current backend PTY identity. Rotates on reconnect. */
+  backendId?: string;
   output: string;
   running: boolean;
   cols: number;
@@ -57,6 +59,16 @@ const exitListeners = new Map<string, Set<ExitListener>>();
 // global listeners can be torn down during HMR / tests to avoid duplicates.
 const terminalEventCancellers: Array<() => void> = [];
 
+function findSessionByBackendId(backendId: string): TerminalSessionState | undefined {
+  return Object.values(terminalState.sessions).find(
+    (session) => currentBackendId(session) === backendId,
+  );
+}
+
+function currentBackendId(session: TerminalSessionState): string {
+  return session.backendId || session.id;
+}
+
 /**
  * Register a callback that fires whenever terminal output arrives for the
  * given session. Returns an unsubscribe function. Used by
@@ -101,20 +113,18 @@ function ensureEventListener() {
   terminalEventCancellers.push(
     Events.On("terminal:output", (event) => {
       const payload = (event?.data ?? {}) as Partial<TerminalOutputPayload>;
-      const sessionId = payload.sessionId ?? "";
+      const backendId = payload.sessionId ?? "";
       const data = payload.data ?? "";
-      if (sessionId && typeof data === "string") {
-        const session = terminalState.sessions[sessionId];
+      if (backendId && typeof data === "string") {
+        const session = findSessionByBackendId(backendId);
         if (session) {
           session.output += data;
-        }
-        // M-24: 自增 sessionsVersion 通知 TerminalPanel 的浅 watch 刷新 xterm，
-        // 替代原先对 sessions 的深度 watch（避免每次输出追加都深度遍历）。
-        terminalState.sessionsVersion++;
-        // Notify registered output listeners.
-        const listeners = outputListeners.get(sessionId);
-        if (listeners) {
-          for (const cb of listeners) cb(data);
+          // M-24: 自增 sessionsVersion 通知 TerminalPanel 的浅 watch 刷新 xterm。
+          terminalState.sessionsVersion++;
+          const listeners = outputListeners.get(session.id);
+          if (listeners) {
+            for (const cb of listeners) cb(data);
+          }
         }
       }
     }),
@@ -130,9 +140,9 @@ function ensureEventListener() {
   terminalEventCancellers.push(
     Events.On("terminal:exited", (event) => {
       const payload = (event?.data ?? {}) as Partial<TerminalExitedPayload>;
-      const sessionId = payload.sessionId ?? "";
-      if (!sessionId) return;
-      const session = terminalState.sessions[sessionId];
+      const backendId = payload.sessionId ?? "";
+      if (!backendId) return;
+      const session = findSessionByBackendId(backendId);
       if (session) {
         session.running = false;
         session.reconnecting = false;
@@ -154,7 +164,7 @@ function ensureEventListener() {
         // M-24: 自增 sessionsVersion 让 TerminalPanel 的浅 watch 把提示写入 xterm。
         terminalState.sessionsVersion++;
       }
-      const listeners = exitListeners.get(sessionId);
+      const listeners = session ? exitListeners.get(session.id) : undefined;
       if (listeners) {
         for (const cb of listeners) cb();
       }
@@ -217,6 +227,7 @@ export async function createSession(
   // 由 TerminalPanel 初始化 xterm 时回放。
   terminalState.sessions[id] = {
     id,
+    backendId: id,
     output: "",
     running: true,
     cols: 80,
@@ -259,9 +270,12 @@ export async function reconnectSession(sessionId: string): Promise<boolean> {
   session.reconnecting = true;
   session.lastError = undefined;
   terminalState.sessionsVersion++;
+  const backendId = `${sessionId}:reconnect:${generateSessionId()}`;
+  const previousBackendId = currentBackendId(session);
+  session.backendId = backendId;
   try {
     await terminalService.startSession(
-      sessionId,
+      backendId,
       session.workingDir ?? "",
       session.shell ?? "",
     );
@@ -273,6 +287,7 @@ export async function reconnectSession(sessionId: string): Promise<boolean> {
     terminalState.sessionsVersion++;
     return true;
   } catch (error) {
+    session.backendId = previousBackendId;
     session.running = false;
     session.reconnecting = false;
     session.lastError = error instanceof Error ? error.message : String(error);
@@ -289,17 +304,23 @@ export async function writeToSession(
   const session = terminalState.sessions[sessionId];
   if (!session || !session.running) return;
   try {
-    await terminalService.writeSession(sessionId, input);
+    await terminalService.writeSession(currentBackendId(session), input);
   } catch (e) {
     console.error("Failed to write to terminal:", e);
   }
 }
 
-export async function killSession(sessionId: string): Promise<void> {
-  try {
-    await terminalService.killSession(sessionId);
-  } catch (e) {
+export async function killSession(sessionId: string): Promise<boolean> {
+	const session = terminalState.sessions[sessionId];
+	if (!session) return true;
+	try {
+		await terminalService.killSession(currentBackendId(session));
+	} catch (e) {
     console.error("Failed to kill terminal:", e);
+		session.lastError = e instanceof Error ? e.message : String(e);
+		session.output += `\r\n\x1b[31m[Terminal close failed: ${session.lastError}. The session remains available for retry.]\x1b[0m\r\n`;
+		terminalState.sessionsVersion++;
+		return false;
   }
   delete terminalState.sessions[sessionId];
   terminalState.sessionOrder = terminalState.sessionOrder.filter(
@@ -312,8 +333,9 @@ export async function killSession(sessionId: string): Promise<void> {
   terminalState.sessionsVersion++;
   // H-12: 清理已终止会话的 listener 引用，避免 outputListeners / exitListeners
   // 的 Map 中残留已终止会话的回调，造成内存泄漏与对已销毁会话的误通知。
-  outputListeners.delete(sessionId);
-  exitListeners.delete(sessionId);
+	outputListeners.delete(sessionId);
+	exitListeners.delete(sessionId);
+	return true;
 }
 
 export async function resizeSession(
@@ -327,7 +349,7 @@ export async function resizeSession(
   session.rows = rows;
   if (!session.running) return;
   try {
-    await terminalService.resizeSession(sessionId, cols, rows);
+    await terminalService.resizeSession(currentBackendId(session), cols, rows);
   } catch (e) {
     console.error("Failed to resize terminal:", e);
   }
