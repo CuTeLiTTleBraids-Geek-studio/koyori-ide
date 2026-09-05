@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"github.com/adrg/xdg"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 )
 
 // Settings holds all persisted application settings.
@@ -96,12 +98,8 @@ type Settings struct {
 	// otherwise "false" (the zero value) would be dropped and reload as "true".
 	AiChatPosition     string `json:"aiChatPosition,omitempty"`
 	ActivityBarVisible bool   `json:"activityBarVisible"`
-	// Plan 47: per-tool-kind approval policy. Keys are tool kinds
-	// ("read"/"write"/"run"/"search"/custom), values are policy strings
-	// ("always-ask"/"auto-approve"/"never-approve"). Missing keys default
-	// to "always-ask" on the frontend. omitempty is safe — an empty map
-	// is equivalent to all-default.
-	ToolApprovalConfig map[string]string `json:"toolApprovalConfig,omitempty"`
+	// P16 P1-01: one session-wide approval intent. Backend safety checks remain authoritative.
+	AgentPermissionMode string `json:"agentPermissionMode"`
 	// Plan 48: accent theme key. Can be a built-in ("blue", "teal", ...)
 	// or "custom". Empty defaults to "blue" on the frontend.
 	AccentTheme string `json:"accentTheme,omitempty"`
@@ -173,16 +171,17 @@ type PersonalizationConfig struct {
 // HTTP API shape the backend uses: "openai" (default, /v1/chat/completions
 // + Bearer) or "anthropic" (/v1/messages + x-api-key + anthropic-version).
 type AIProviderConfig struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	Provider     string  `json:"provider"`
-	Protocol     string  `json:"protocol,omitempty"` // "openai" | "anthropic", default "openai"
-	APIKey       string  `json:"apiKey"`
-	BaseURL      string  `json:"baseUrl"`
-	Model        string  `json:"model"`
-	Temperature  float64 `json:"temperature,omitempty"`
-	MaxTokens    int     `json:"maxTokens,omitempty"`
-	SystemPrompt string  `json:"systemPrompt,omitempty"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Provider        string  `json:"provider"`
+	Protocol        string  `json:"protocol,omitempty"` // "openai" | "anthropic", default "openai"
+	APIKey          string  `json:"apiKey"`
+	BaseURL         string  `json:"baseUrl"`
+	Model           string  `json:"model"`
+	Temperature     float64 `json:"temperature,omitempty"`
+	ReasoningEffort string  `json:"reasoningEffort,omitempty"`
+	MaxTokens       int     `json:"maxTokens,omitempty"`
+	SystemPrompt    string  `json:"systemPrompt,omitempty"`
 	// G-SEC-07: signals whether a key is stored on disk for this config.
 	// Recomputed by LoadSettings (true when the on-disk APIKey is non-empty).
 	// The frontend reads this to show "key configured" status without ever
@@ -304,7 +303,7 @@ func (s *SettingsService) SavePersonalizationAsset(filename string, data []byte)
 	}
 	targetPath := filepath.Join(assetsDir, clean)
 	// G-SEC-06: validate the resolved path is within the assets dir.
-	if _, err := ValidatePathWithinRoot(assetsDir, targetPath); err != nil {
+	if _, err := ValidateMutatingPathWithinRoot(assetsDir, targetPath); err != nil {
 		return "", fmt.Errorf("asset path validation failed: %w", err)
 	}
 	// Limit asset size to 8MB to prevent abuse (Step 2).
@@ -337,7 +336,7 @@ func (s *SettingsService) DeletePersonalizationAsset(relPath string) error {
 	assetsDir := s.assetsDir()
 	s.pathMu.RUnlock()
 	fullPath := filepath.Join(assetsDir, filepath.Base(relPath))
-	if _, err := ValidatePathWithinRoot(assetsDir, fullPath); err != nil {
+	if _, err := ValidateMutatingPathWithinRoot(assetsDir, fullPath); err != nil {
 		return fmt.Errorf("asset path validation failed: %w", err)
 	}
 	return os.Remove(fullPath)
@@ -388,6 +387,7 @@ func (s *SettingsService) LoadSettings() (Settings, error) {
 	// Missing schemaVersion is the legacy schema 0. Its fields already map to
 	// the current struct, so migration only advances the independent marker.
 	settings.SchemaVersion = currentSettingsSchemaVersion
+	settings.AgentPermissionMode = normalizeAgentPermissionMode(settings.AgentPermissionMode)
 	settings.AIWindowTheme = normalizeAIWindowTheme(settings.AIWindowTheme)
 	settings.AISidebarWidth = clampInt(settings.AISidebarWidth, 288, 260, 380)
 	settings.AITerminalWidth = clampInt(settings.AITerminalWidth, 440, 340, 960)
@@ -431,9 +431,20 @@ func (s *SettingsService) LoadSettings() (Settings, error) {
 	return settings, nil
 }
 
+// encryptSecretForSettingsForTest allows SaveSettings encryption failures to be
+// injected by tests. A nil hook preserves the production EncryptSecret path.
+var encryptSecretForSettingsForTest func(account, plaintext string) (string, error)
+
+func encryptSecretForSettings(account, plaintext string) (string, error) {
+	if encryptSecretForSettingsForTest != nil {
+		return encryptSecretForSettingsForTest(account, plaintext)
+	}
+	return EncryptSecret(account, plaintext)
+}
+
 // SaveSettings writes settings to disk as pretty-printed JSON. The API key is
-// encrypted before writing (N-13). If encryption fails, the key is saved with
-// an explicit "plain:" prefix so settings can still be persisted.
+// encrypted before writing (N-13). If encryption fails, saving fails rather
+// than persisting the key in plaintext.
 //
 // N-76: holds the read lock so a concurrent SetConfigPath cannot swap the
 // path mid-save (which would write the old profile's data to the new
@@ -444,9 +455,6 @@ func (s *SettingsService) SaveSettings(settings Settings) error {
 	return s.saveSettingsLocked(settings)
 }
 
-// ErrSettingsConflict is returned when settings CAS fails (prompt-7 Task F).
-var ErrSettingsConflict = fmt.Errorf("settings version conflict: disk was modified by another window")
-
 // saveSettingsLocked encrypts the API key and writes to disk. Caller MUST
 // hold s.pathMu (read or write). Used internally by LoadSettings (which
 // already holds the lock) and SaveSettings.
@@ -456,6 +464,9 @@ var ErrSettingsConflict = fmt.Errorf("settings version conflict: disk was modifi
 // saves unrelated changes with empty + configured=true), the existing
 // on-disk key is preserved so unrelated saves don't wipe the stored key. A
 // genuine clear passes AIApiKeyConfigured=false, so the key is written empty.
+// ErrSettingsConflict is returned when settings CAS fails (prompt-7 Task F).
+var ErrSettingsConflict = fmt.Errorf("settings version conflict: disk was modified by another window")
+
 func (s *SettingsService) saveSettingsLocked(settings Settings) error {
 	// Make a shallow copy so we don't mutate the caller's struct.
 	copy := settings
@@ -471,6 +482,7 @@ func (s *SettingsService) saveSettingsLocked(settings Settings) error {
 		)
 	}
 	copy.SchemaVersion = currentSettingsSchemaVersion
+	copy.AgentPermissionMode = normalizeAgentPermissionMode(copy.AgentPermissionMode)
 
 	// prompt-7 Task F / BUG-M14: optional version CAS + monotonic bump.
 	if snapshot.versionOK {
@@ -503,15 +515,19 @@ func (s *SettingsService) saveSettingsLocked(settings Settings) error {
 	// CRIT-01 scope fix: this block is OUTSIDE the legacy-key if-block so
 	// provider keys are preserved regardless of the legacy key state.
 	// Previously it was nested inside, so when the legacy key was non-empty
-	// the provider keys were wiped.
 	for i := range copy.AIProviderConfigs {
 		cfg := &copy.AIProviderConfigs[i]
+		normalized, reasoningErr := normalizeReasoningEffort(cfg.ReasoningEffort)
+		if reasoningErr != nil {
+			return fmt.Errorf("invalid reasoning effort for provider %q: %w", cfg.ID, reasoningErr)
+		}
+		if reasoningErr = validateReasoningCapability(cfg.Provider, cfg.Model, cfg.Protocol, normalized); reasoningErr != nil {
+			return fmt.Errorf("invalid reasoning capability for provider %q: %w", cfg.ID, reasoningErr)
+		}
+		cfg.ReasoningEffort = normalized
 		if cfg.APIKey == "" && cfg.APIKeyConfigured {
 			for _, ec := range snapshot.aiProviderConfigs {
 				if ec.ID == cfg.ID && ec.APIKey != "" {
-					// ec.APIKey is stored encrypted on disk; decrypt to
-					// plaintext so the encryption path below re-encrypts it
-					// (no double-encryption).
 					plaintext, derr := DecryptSecret(keyringAccount, ec.APIKey)
 					if derr != nil {
 						return fmt.Errorf("preserve API key for provider %q: %w", cfg.ID, derr)
@@ -522,14 +538,9 @@ func (s *SettingsService) saveSettingsLocked(settings Settings) error {
 			}
 		}
 	}
-	encrypted, err := EncryptSecret(keyringAccount, copy.AIApiKey)
+	encrypted, err := encryptSecretForSettings(keyringAccount, copy.AIApiKey)
 	if err != nil {
-		// Encryption failed — fall back to explicit plaintext marker so
-		// settings can still be saved. The marker makes it clear the key
-		// is not encrypted at rest.
-		if copy.AIApiKey != "" {
-			copy.AIApiKey = secretPrefixPlain + copy.AIApiKey
-		}
+		return fmt.Errorf("encrypt API key: %w", err)
 	} else {
 		copy.AIApiKey = encrypted
 	}
@@ -542,9 +553,9 @@ func (s *SettingsService) saveSettingsLocked(settings Settings) error {
 		if cfg.APIKey == "" {
 			continue
 		}
-		enc, encErr := EncryptSecret(keyringAccount, cfg.APIKey)
+		enc, encErr := encryptSecretForSettings(keyringAccount, cfg.APIKey)
 		if encErr != nil {
-			cfg.APIKey = secretPrefixPlain + cfg.APIKey
+			return fmt.Errorf("encrypt API key for provider %q: %w", cfg.ID, encErr)
 		} else {
 			cfg.APIKey = enc
 		}
@@ -1010,6 +1021,7 @@ func defaultSettings() Settings {
 		EmmetIncludeLanguages: map[string]string{},
 		AiChatPosition:        "right",
 		ActivityBarVisible:    true,
+		AgentPermissionMode:   string(agentcore.SessionPermissionAlwaysAsk),
 		// N-29: sandbox enabled by default (v2 behavior).
 		EnablePluginSandbox: true,
 		// prompt-5 Task C: do not auto-pop AI window on every launch.
@@ -1027,6 +1039,14 @@ func normalizeAIWindowTheme(value string) string {
 	default:
 		return "apple-dark"
 	}
+}
+
+func normalizeAgentPermissionMode(value string) string {
+	mode := agentcore.SessionPermissionMode(strings.TrimSpace(value))
+	if mode.Valid() {
+		return string(mode)
+	}
+	return string(agentcore.SessionPermissionAlwaysAsk)
 }
 
 func clampInt(value, fallback, min, max int) int {

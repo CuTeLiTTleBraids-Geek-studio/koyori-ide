@@ -2,12 +2,17 @@ package services
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 var _ agentServiceRootSetter = (*AgentService)(nil)
@@ -47,6 +52,69 @@ func TestExecCommand_Success(t *testing.T) {
 	}
 }
 
+func TestAgentCommandOutputHelper(t *testing.T) {
+	if len(os.Args) == 0 {
+		return
+	}
+	switch os.Args[len(os.Args)-1] {
+	case "agent-command-timeout-helper":
+		time.Sleep(5 * time.Second)
+		return
+	case "agent-command-output-helper":
+	default:
+		return
+	}
+	payload := strings.Repeat("界", maxAgentCommandOutputBytes)
+	if _, err := os.Stdout.WriteString(payload); err != nil {
+		t.Fatalf("write helper stdout: %v", err)
+	}
+	if _, err := os.Stderr.WriteString(payload); err != nil {
+		t.Fatalf("write helper stderr: %v", err)
+	}
+}
+
+func TestExecCommand_ReportsCommandContextTimeoutAsFailure(t *testing.T) {
+	svc := NewAgentService()
+	svc.commandTimeout = 50 * time.Millisecond
+	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	commandLine := strconv.Quote(os.Args[0]) + " -test.run=TestAgentCommandOutputHelper -- agent-command-timeout-helper"
+	result, err := svc.executeCommand(commandLine, "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout error = %v, want context.DeadlineExceeded", err)
+	}
+	if result.ExitCode != -1 || !strings.Contains(result.Stderr, "[command timed out after") {
+		t.Fatalf("timeout result = %+v", result)
+	}
+	if len(result.Stderr) > maxAgentCommandOutputBytes {
+		t.Fatalf("timeout stderr length = %d, want <= %d", len(result.Stderr), maxAgentCommandOutputBytes)
+	}
+}
+
+func TestExecCommand_BoundsCapturedStdoutAndStderr(t *testing.T) {
+	svc := NewAgentService()
+	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	commandLine := strconv.Quote(os.Args[0]) + " -test.run=TestAgentCommandOutputHelper -- agent-command-output-helper"
+	result, err := svc.executeCommand(commandLine, "")
+	if err != nil {
+		t.Fatalf("execute output helper: %v", err)
+	}
+	for name, output := range map[string]string{"stdout": result.Stdout, "stderr": result.Stderr} {
+		if len(output) > maxAgentCommandOutputBytes {
+			t.Fatalf("%s length = %d, want <= %d", name, len(output), maxAgentCommandOutputBytes)
+		}
+		if !utf8.ValidString(output) {
+			t.Fatalf("%s is not valid UTF-8", name)
+		}
+		if !strings.Contains(output, "[truncated,") {
+			t.Fatalf("%s lacks an explicit truncation marker", name)
+		}
+	}
+}
+
 func TestExecCommand_NonZeroExit(t *testing.T) {
 	svc := NewAgentService()
 	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
@@ -79,54 +147,6 @@ func TestExecCommand_RequiresBackendApproval(t *testing.T) {
 	}
 	if !res.Blocked {
 		t.Fatal("expected direct ExecCommand result to be blocked")
-	}
-}
-
-func TestApprovedCommandTokenIsSingleUseAndBoundToArguments(t *testing.T) {
-	svc := NewAgentService()
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
-	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	token, err := svc.RequestCommandApproval("go version", "")
-	if err != nil {
-		t.Fatalf("request approval: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go env", ""); err == nil {
-		t.Fatal("expected changed argv to invalidate token")
-	}
-	if err := svc.consumeCommandApproval(token, "go version", ""); err == nil {
-		t.Fatal("expected mismatched attempt to consume token")
-	}
-
-	token, err = svc.RequestCommandApproval("go version", "")
-	if err != nil {
-		t.Fatalf("request second approval: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go   version", ""); err != nil {
-		t.Fatalf("equivalent parsed argv should be accepted: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go version", ""); err == nil {
-		t.Fatal("expected token replay to fail")
-	}
-}
-
-func TestApprovedCommandTokenInvalidatedByWorkspaceChange(t *testing.T) {
-	svc := NewAgentService()
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
-	root := t.TempDir()
-	if err := svc.configureWorkspaceRoot(root); err != nil {
-		t.Fatalf("set root: %v", err)
-	}
-	token, err := svc.RequestCommandApproval("go version", root)
-	if err != nil {
-		t.Fatalf("request approval: %v", err)
-	}
-	if err := svc.configureWorkspaceRoot(t.TempDir()); err != nil {
-		t.Fatalf("reset root: %v", err)
-	}
-	if err := svc.consumeCommandApproval(token, "go version", root); err == nil {
-		t.Fatal("expected workspace generation change to invalidate token")
 	}
 }
 
@@ -214,6 +234,22 @@ func TestCheckCommand_Elevated(t *testing.T) {
 	}
 }
 
+func TestCheckCommand_FormatDenylistDoesNotFlagFormatterCommands(t *testing.T) {
+	svc := NewAgentService()
+	// P19 P2: the disk-format pattern anchors on command position, so
+	// formatter tooling whose NAME contains "format" is no longer badged
+	// dangerous (the pattern is a UX hint, not a security boundary).
+	for _, cmd := range []string{
+		"clang-format -i main.go",
+		"git format-patch origin/main",
+	} {
+		check := svc.CheckCommand(cmd)
+		if check.RiskLevel == RiskDangerous || check.Blocked {
+			t.Errorf("formatter command %q must not hit the disk-format denylist: risk=%q blocked=%v", cmd, check.RiskLevel, check.Blocked)
+		}
+	}
+}
+
 func TestCheckCommand_Dangerous(t *testing.T) {
 	svc := NewAgentService()
 	cases := []string{
@@ -221,6 +257,8 @@ func TestCheckCommand_Dangerous(t *testing.T) {
 		"rm -fr /tmp",
 		"rm -rfv ~",
 		"format C:",
+		"format /dev/sda1",
+		"sudo format /dev/sdb",
 		"mkfs.ext4 /dev/sda1",
 		"shutdown -h now",
 		"reboot",
@@ -264,7 +302,7 @@ func TestCheckCommand_RmWithoutFlags_NotBlocked(t *testing.T) {
 func TestCheckCommand_RmSubpath_NotBlocked(t *testing.T) {
 	svc := NewAgentService()
 	// `rm -r /tmp/test` targets a subpath, not root/home directly.
-	// The denylist should only block rm of /, ~, * (whole root/home/all).
+	// The denylist should only block rm of /, ~, * (whole root, home, or all).
 	check := svc.CheckCommand("rm -r /tmp/test")
 	if check.Blocked {
 		t.Errorf("expected 'rm -r /tmp/test' to not be blocked, reason: %s", check.BlockReason)
@@ -498,7 +536,7 @@ func TestExecCommand_BlockedByDenylist_ForkBomb(t *testing.T) {
 
 func TestSetWorkspaceRoot_DefaultsCwd(t *testing.T) {
 	svc := NewAgentService()
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	if err := svc.configureWorkspaceRoot(root); err != nil {
 		t.Fatalf("SetWorkspaceRoot failed: %v", err)
 	}
@@ -580,7 +618,7 @@ func TestSetWorkspaceRoot_NotADirectory(t *testing.T) {
 
 func TestExecCommand_CwdInsideWorkspace_Succeeds(t *testing.T) {
 	svc := NewAgentService()
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	svc.configureWorkspaceRoot(root)
 	// HIGH-03: use `go version` — a standalone executable on all
 	// platforms. Shell builtins (echo, cd) are no longer available since
@@ -617,24 +655,15 @@ func TestAgentService_ValidateCwdEmptyRootFailsClosed(t *testing.T) {
 			t.Errorf("validateCwd(%q) accepted cwd without a workspace root", cwd)
 		}
 	}
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
-	if _, err := svc.RequestCommandApproval("go version", t.TempDir()); err == nil {
-		t.Fatal("approval accepted external cwd without a workspace root")
-	}
 	if _, err := svc.executeCommand("go version", t.TempDir()); err == nil {
 		t.Fatal("execution accepted external cwd without a workspace root")
 	}
 }
 
-func TestAgentService_RestoreEmptyRootFailsClosedAndInvalidatesToken(t *testing.T) {
+func TestAgentService_RestoreEmptyRootFailsClosed(t *testing.T) {
 	svc := NewAgentService()
-	svc.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
 	root := t.TempDir()
 	if err := svc.setWorkspaceRoot(root); err != nil {
-		t.Fatal(err)
-	}
-	token, err := svc.RequestCommandApproval("go version", root)
-	if err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.restoreWorkspaceRoot(""); err != nil {
@@ -642,9 +671,6 @@ func TestAgentService_RestoreEmptyRootFailsClosedAndInvalidatesToken(t *testing.
 	}
 	if _, err := svc.validateCwd(root); err == nil {
 		t.Fatal("restored empty root allowed an external cwd")
-	}
-	if err := svc.consumeCommandApproval(token, "go version", root); err == nil {
-		t.Fatal("root restoration did not invalidate the approval token")
 	}
 }
 

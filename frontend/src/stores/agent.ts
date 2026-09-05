@@ -1,19 +1,32 @@
-// Agent store: manages Agent mode state, tool-call parsing, and the
-// approval→execute→feed-back loop. The AI emits tool calls as fenced code
-// blocks whose first line is `read:`, `write:`, `run:`, or `search:`
-// followed by the target. See AgentSystemPrompt in services/ai_prompts.go.
+// Agent store: native provider tool calls are authoritative. Fenced tool
+// parsing is an explicitly marked compatibility fallback for providers that
+// cannot use native function calling; both sources share one execution path.
+
 // Koyori IDE 模块 · Agent；交互服务：AI 对话（AIService）、自治 Agent（AgentService）、文件系统（FileService）。
 // 喵，这是 Koyori IDE 的 Agent 模块（前端实现）~
 import { reactive, computed, ref } from "vue";
 import { Events } from "@wailsio/runtime";
-import { fileService, searchService, agentService, aiService } from "@/api/services";
+import { agentService, aiService, fileService } from "@/api/services";
+import { computeFileDiffPreview } from "@/stores/diff";
+import type {
+	AgentToolCatalog,
+	AgentToolDefinition,
+	AgentToolExecutionResult,
+} from "@/api/automation";
 import { appState } from "@/stores/app";
 import { pushOutput } from "@/stores/output";
 import { notifyError, notifySuccess, notifyWarning, notifyInfo } from "@/lib/notifications";
 import { errorMessage } from "@/lib/errors";
 import { getWindowOriginId, unwrapEventData, parseSyncOrigin } from "@/lib/windowOrigin";
 import { translate } from "@/lib/i18n";
-import type { RiskLevel, ApprovalPolicy, ToolBudgetStatus } from "@/types";
+import type { RiskLevel, AgentPermissionMode, NativeToolResultContext, ToolBudgetStatus } from "@/types";
+import {
+  recordToolObservation,
+  recordToolRequested,
+  recordToolStage,
+  bindAgentState,
+  resetAgentTimeline,
+} from "@/stores/agentTimeline";
 
 export type AgentMode = "chat" | "agent";
 // ToolCallKind is now `string` (N-16) to allow custom tools registered via
@@ -27,6 +40,11 @@ export type ToolCallStatus =
   | "rejected"
   | "executed"
   | "error";
+
+export interface ToolCallExecution {
+	requestSessionId: string;
+	result: AgentToolExecutionResult;
+}
 
 // MAX_TOOL_CALLS is a DISPLAY-ONLY fallback (GOAL-P1-02).
 //
@@ -42,13 +60,28 @@ export type ToolCallStatus =
 /** Exported for README/docs alignment; display fallback only, not enforced. */
 export const MAX_TOOL_CALLS = 20;
 
+export type ToolCallSource = "native" | "fence";
+
 export interface ToolCall {
   id: string;
+  source?: ToolCallSource;
   kind: ToolCallKind;
   // For read/write/run/search: the path or command or query on the first line.
   target: string;
   // For write: the full file content (rest of the code block).
   content?: string;
+	// Structured arguments from the backend catalog schema. This is the
+	// authoritative invocation payload; target/content are compatibility display
+	// fields for the four historical tools.
+	arguments?: Record<string, unknown>;
+	writeDiff?: import("@/types").FileDiff;
+	selectedHunks?: number[];
+	catalogRevision?: number;
+	wireName?: string;
+	sessionId?: string;
+	// Retain the typed backend result that produced the observation. This is
+	// renderer evidence only; it does not grant or restore backend authority.
+	execution?: ToolCallExecution;
   status: ToolCallStatus;
   // Human-readable result summary, populated after execution.
   result?: string;
@@ -57,12 +90,19 @@ export interface ToolCall {
   // Risk level for `run` tool calls, populated asynchronously by
   // checkRunRisk() after the tool call is added to the pending queue
   // (N-1). Used by the approval UI to show a risk badge.
+  // Runtime classification and backend denial evidence; never an authority grant.
   riskLevel?: RiskLevel;
-  // Block reason when the command matches the denylist (N-1).
   blockReason?: string;
-  // Plan 47: in-flight risk check promise. Used by applyApprovalPolicy to
-  // await the risk check without re-triggering it. Not persisted.
-  _riskCheckPromise?: Promise<void>;
+  /** Permission intent captured with the backend session that proposed this call. */
+  permissionMode?: AgentPermissionMode;
+	// Multiple native calls emitted by one provider turn are completed as one
+	// batch. These renderer-only fields carry no backend authority.
+	_turnBatchId?: string;
+	_turnObservation?: string;
+
+	// Renderer-local authority generation captured when the call entered the
+	// queue. A conversation or mode reset burns it before any later approval.
+	_turnGeneration?: number;
 }
 
 interface AgentStoreState {
@@ -79,6 +119,9 @@ interface AgentStoreState {
   // GOAL-P1-02: authoritative budget state from the backend. null until the
   // first refresh completes.
   budget: ToolBudgetStatus | null;
+	catalogRevision: number;
+	catalogLoaded: boolean;
+	sessionId: string;
 }
 
 export const agentState = reactive<AgentStoreState>({
@@ -86,7 +129,170 @@ export const agentState = reactive<AgentStoreState>({
   pendingToolCalls: [],
   toolCallCount: 0,
   budget: null,
+	catalogRevision: 0,
+	catalogLoaded: false,
+	sessionId: `chat-${Date.now().toString(36)}`,
 });
+
+// Keep legacy direct state consumers (including the embedded panel) reflected
+// in the shared execution timeline. Explicit transition hooks below provide
+// richer details for the authoritative execution path.
+bindAgentState(agentState);
+
+let backendAgentSessionId: string | null = null;
+let agentSessionPromise: Promise<string> | null = null;
+let agentSessionGeneration = 0;
+let agentTurnGeneration = 0;
+let agentSessionPermissionMode: AgentPermissionMode = "always-ask";
+let backendAgentWorkspaceGeneration: number | null = null;
+
+// Tool execution is serialized behind the active AI turn. Native tool-call
+// events arrive before `ai:done`; sending an observation from that window
+// would be silently ignored by ai.sendMessage while the prior stream is still
+// active. The queue also gives manual approvals the same ordering guarantee.
+let toolExecutionTail: Promise<void> = Promise.resolve();
+interface AgentToolTurnBatch {
+	id: string;
+	generation: number;
+	calls: ToolCall[];
+	submitting: boolean;
+}
+const agentToolTurnBatches = new Map<string, AgentToolTurnBatch>();
+let agentToolTurnBatchCounter = 0;
+// Provider call IDs are authoritative within one backend Agent session. Keep
+// the complete invocation identity so an exact event replay is idempotent,
+// while reuse of an ID for different arguments fails closed.
+const nativeToolCallIdentities = new Map<string, string>();
+const AGENT_STREAM_IDLE_POLL_MS = 16;
+const AGENT_STREAM_RELEASE_TIMEOUT_MS = 5_000;
+
+interface AIStreamActivity {
+	streaming: boolean;
+	globalStreamBusy: boolean;
+}
+
+async function readAIStreamActivity(): Promise<AIStreamActivity> {
+	try {
+		// Keep the dependency lazy: ai.ts imports this store for tool handling.
+		const { aiState } = await import("@/stores/ai");
+		return {
+			streaming: Boolean(aiState?.streaming),
+			globalStreamBusy: Boolean(aiState?.globalStreamBusy),
+		};
+	} catch {
+		// Headless/unit consumers may not provide the renderer AI store. In that
+		// case there is no renderer stream to fence and execution may proceed.
+		return { streaming: false, globalStreamBusy: false };
+	}
+}
+
+async function waitForAIStreamIdle(): Promise<void> {
+	let releaseStartedAt: number | null = null;
+	while (true) {
+		const activity = await readAIStreamActivity();
+		if (!activity.streaming && !activity.globalStreamBusy) return;
+		if (!activity.streaming && activity.globalStreamBusy) {
+			releaseStartedAt ??= Date.now();
+			if (Date.now() - releaseStartedAt >= AGENT_STREAM_RELEASE_TIMEOUT_MS) {
+				throw new Error("AI stream cleanup did not complete within 5 seconds");
+			}
+		} else {
+			// A real provider stream may legitimately run for minutes. Bound only
+			// the short done -> process-wide busy release window.
+			releaseStartedAt = null;
+		}
+		await new Promise<void>((resolve) => {
+			setTimeout(resolve, AGENT_STREAM_IDLE_POLL_MS);
+		});
+	}
+}
+
+function enqueueToolExecution(
+	task: () => Promise<void>,
+	expectedGeneration = agentTurnGeneration,
+): Promise<void> {
+	const guardedTask = async (): Promise<void> => {
+		if (expectedGeneration !== agentTurnGeneration) return;
+		await task();
+	};
+	const run = toolExecutionTail.then(guardedTask, guardedTask);
+	// A failed execution must not poison later approvals, while the returned
+	// promise still carries the current operation's error to its caller.
+	toolExecutionTail = run.catch(() => undefined);
+	return run;
+}
+
+function createAgentToolTurnBatch(calls: ToolCall[], generation: number): void {
+	if (calls.length < 2) return;
+	agentToolTurnBatchCounter += 1;
+	const id = `tool-turn-${generation}-${agentToolTurnBatchCounter}`;
+	for (const call of calls) call._turnBatchId = id;
+	agentToolTurnBatches.set(id, { id, generation, calls, submitting: false });
+}
+
+/** Ensures all renderer tool calls reuse one backend-owned chat session. */
+export function ensureAgentSession(): string | Promise<string> {
+  const workspaceGeneration = Number.isSafeInteger(appState.workspaceGeneration)
+    ? appState.workspaceGeneration
+    : 0;
+  if (backendAgentSessionId && backendAgentWorkspaceGeneration === workspaceGeneration) {
+    return backendAgentSessionId;
+  }
+  if (backendAgentSessionId) resetAgentSession();
+  if (typeof agentService.createSession !== "function") {
+    agentSessionPermissionMode = normalizePermissionMode(appState.agentPermissionMode);
+    return agentState.sessionId;
+  }
+  if (!agentSessionPromise) {
+    const generation = agentSessionGeneration;
+    const requestedWorkspaceGeneration = workspaceGeneration;
+    const creating = agentService.createSession("chat").then((sessionId) => {
+      const normalized = sessionId.trim();
+      if (!normalized) throw new Error("backend returned an empty Agent session ID");
+      if (generation !== agentSessionGeneration
+        || backendWorkspaceGeneration() !== requestedWorkspaceGeneration) {
+        if (typeof agentService.closeSession === "function") {
+          void agentService.closeSession(normalized).catch(() => undefined);
+        }
+        throw new Error("Agent session changed while it was being created");
+      }
+      backendAgentSessionId = normalized;
+      backendAgentWorkspaceGeneration = requestedWorkspaceGeneration;
+      agentSessionPermissionMode = normalizePermissionMode(appState.agentPermissionMode);
+      agentState.sessionId = normalized;
+      return normalized;
+    });
+    const tracked = creating.finally(() => {
+      if (agentSessionPromise === tracked) agentSessionPromise = null;
+    });
+    agentSessionPromise = tracked;
+  }
+  return agentSessionPromise;
+}
+
+/** Closes the current authority namespace and rotates the local draft ID. */
+export function resetAgentSession(): void {
+  const previous = backendAgentSessionId;
+  agentSessionGeneration += 1;
+  agentTurnGeneration += 1;
+  backendAgentSessionId = null;
+  backendAgentWorkspaceGeneration = null;
+  agentSessionPermissionMode = "always-ask";
+  agentSessionPromise = null;
+  agentToolTurnBatches.clear();
+  nativeToolCallIdentities.clear();
+  agentState.sessionId = `chat-${Date.now().toString(36)}`;
+  if (previous && typeof agentService.closeSession === "function") {
+    void agentService.closeSession(previous).catch(() => undefined);
+  }
+}
+function normalizePermissionMode(value: unknown): AgentPermissionMode {
+  return value === "assist" || value === "allow-all" ? value : "always-ask";
+}
+
+function backendWorkspaceGeneration(): number {
+	return Number.isSafeInteger(appState.workspaceGeneration) ? appState.workspaceGeneration : 0;
+}
 
 export const isAgentMode = computed(() => agentState.mode === "agent");
 export const hasPendingToolCalls = computed(
@@ -155,13 +361,13 @@ export async function startNewToolBudgetEpoch(limit = 0): Promise<boolean> {
 }
 
 export function setMode(mode: AgentMode): void {
+  if (agentState.mode === mode) return;
   agentState.mode = mode;
+  clearPendingToolCalls();
 }
 
 export function toggleMode(): void {
-  agentState.mode = agentState.mode === "chat" ? "agent" : "chat";
-  // Clear pending approvals when switching modes.
-  agentState.pendingToolCalls = [];
+  setMode(agentState.mode === "chat" ? "agent" : "chat");
 }
 
 let toolCallCounter = 0;
@@ -199,7 +405,9 @@ let cachedToolCallRe: RegExp | null = null;
 
 function getToolCallRegex(): RegExp {
   if (cachedToolCallRe !== null) return cachedToolCallRe;
-  const kinds = Array.from(toolRegistry.keys());
+	const kinds = Array.from(toolRegistry.values()).flatMap((tool) =>
+		!tool.wireName || tool.wireName === tool.kind ? [tool.kind] : [tool.kind, tool.wireName],
+	);
   if (kinds.length === 0) {
     // No tools registered — a regex that never matches.
     cachedToolCallRe = /(?!)/g;
@@ -213,8 +421,140 @@ function getToolCallRegex(): RegExp {
   return cachedToolCallRe;
 }
 
+function findToolByCallName(name: string): ToolDef | undefined {
+	const byId = toolRegistry.get(name);
+	if (byId) return byId;
+	return Array.from(toolRegistry.values()).find((tool) => tool.wireName === name);
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateToolArguments(
+	schema: Record<string, unknown>,
+	value: unknown,
+): value is Record<string, unknown> {
+	const type = schema.type;
+	if (type === "object") {
+		if (!isRecordValue(value)) return false;
+		const properties = isRecordValue(schema.properties) ? schema.properties : {};
+		const required = Array.isArray(schema.required)
+			? schema.required.filter((item): item is string => typeof item === "string")
+			: [];
+		if (required.some((name) => !(name in value))) return false;
+		if (schema.additionalProperties !== false) return false;
+		for (const [name, child] of Object.entries(value)) {
+			const childSchema = properties[name];
+			if (!isRecordValue(childSchema) || !validateToolArguments(childSchema, child)) return false;
+		}
+		return true;
+	}
+	if (type === "array") {
+		if (!Array.isArray(value) || !isRecordValue(schema.items)) return false;
+		if (typeof schema.minItems === "number" && value.length < schema.minItems) return false;
+		if (typeof schema.maxItems === "number" && value.length > schema.maxItems) return false;
+		return value.every((item) => validateToolArguments(schema.items as Record<string, unknown>, item));
+	}
+	if (type === "string") {
+		return typeof value === "string"
+			&& (typeof schema.minLength !== "number" || value.length >= schema.minLength);
+	}
+	if (type === "boolean") return typeof value === "boolean";
+	if (type === "number") return typeof value === "number" && Number.isFinite(value);
+	if (type === "integer") return typeof value === "number" && Number.isInteger(value);
+	if (type === "null") return value === null;
+	return false;
+}
+
+function legacyFenceArguments(
+	tool: ToolDef,
+	target: string,
+	content: string | undefined,
+): Record<string, unknown> | null {
+	const schema = tool.schema.inputSchema;
+	if (!schema) return null;
+	const rawJSON = content === undefined ? target : `${target}\n${content}`;
+	if (target.trimStart().startsWith("{")) {
+		try {
+			const parsed: unknown = JSON.parse(rawJSON);
+			return validateToolArguments(schema, parsed) ? parsed : null;
+		} catch {
+			return null;
+		}
+	}
+	let args: Record<string, unknown>;
+	switch (tool.kind) {
+		case "read":
+			args = { path: target };
+			break;
+		case "write":
+			args = { path: target, content: content ?? "" };
+			break;
+		case "run":
+			args = { command: target };
+			break;
+		case "search":
+			args = { query: target, ignoreCase: true };
+			break;
+		default:
+			return null;
+	}
+	return validateToolArguments(schema, args) ? args : null;
+}
+
+function displayFields(
+	tool: ToolDef,
+	args: Record<string, unknown>,
+): { target: string; content?: string } {
+	if (tool.kind === "write") {
+		return {
+			target: typeof args.path === "string" ? args.path : "",
+			content: typeof args.content === "string" ? args.content : undefined,
+		};
+	}
+	const candidate = tool.kind === "run"
+		? args.command
+		: tool.kind === "search"
+			? args.query
+			: tool.kind === "read"
+				? args.path
+				: undefined;
+	return {
+		target: typeof candidate === "string" ? candidate : JSON.stringify(args),
+	};
+}
+
 function invalidateToolCallRegex(): void {
   cachedToolCallRe = null;
+}
+
+function toolCallFromFenceMatch(match: RegExpExecArray): ToolCall | null {
+	const tool = findToolByCallName(match[2]);
+	if (!tool) return null;
+  const target = match[3].trim();
+  // match[5] is undefined when there is no body, or the body without the
+  // closing fence when present. Strip only the newline introduced by the
+  // fence grammar; preserve user content exactly for write previews.
+  const rawContent = match[5];
+  const content = rawContent && rawContent.length > 0
+    ? rawContent.replace(/\n+$/, "")
+    : undefined;
+	const args = legacyFenceArguments(tool, target, content);
+	if (!args) return null;
+	const display = displayFields(tool, args);
+  return {
+    id: nextToolCallId(),
+    source: "fence",
+		kind: tool.kind,
+		wireName: tool.wireName ?? tool.kind,
+		target: display.target,
+		content: display.content,
+		arguments: args,
+		catalogRevision: agentState.catalogRevision,
+		sessionId: agentState.sessionId,
+    status: "pending",
+  };
 }
 
 /**
@@ -230,23 +570,8 @@ export function parseToolCalls(message: string): ToolCall[] {
   // Reset regex state (it's a global regex with /g flag).
   re.lastIndex = 0;
   while ((match = re.exec(message)) !== null) {
-    const kind = match[2] as ToolCallKind;
-    const target = match[3].trim();
-    // match[5] is undefined when there's no newline after the target,
-    // or "" when the content block is empty. Strip a trailing newline
-    // (always present when content is non-empty due to the closing fence).
-    const rawContent = match[5];
-    const content =
-      rawContent && rawContent.length > 0
-        ? rawContent.replace(/\n+$/, "")
-        : undefined;
-    calls.push({
-      id: nextToolCallId(),
-      kind,
-      target,
-      content,
-      status: "pending",
-    });
+		const call = toolCallFromFenceMatch(match);
+		if (call) calls.push(call);
   }
   return calls;
 }
@@ -260,63 +585,23 @@ export function extractToolCallBlocks(
   message: string,
 ): { toolCalls: ToolCall[]; cleanedMessage: string } {
   const toolCalls = parseToolCalls(message);
-  // Remove the tool-call blocks from the rendered message.
+  // Remove only schema-valid/parseable tool blocks. Keeping malformed blocks
+  // visible is important: silently deleting a rejected invocation makes the
+  // model appear to have answered normally and gives the user no diagnosis.
   const re = getToolCallRegex();
   re.lastIndex = 0;
-  const cleanedMessage = message.replace(re, "").trim();
+  let cursor = 0;
+  let cleanedMessage = "";
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(message)) !== null) {
+    cleanedMessage += message.slice(cursor, match.index);
+    if (!toolCallFromFenceMatch(match)) cleanedMessage += match[0];
+    cursor = match.index + match[0].length;
+  }
+  cleanedMessage += message.slice(cursor);
+  cleanedMessage = cleanedMessage.trim();
   return { toolCalls, cleanedMessage };
 }
-
-/**
- * resolveProjectPath validates that `target` is a relative path within the
- * currently open project root, and returns the absolute path. Rejects absolute
- * paths and parent-traversal paths before they reach FileService, so the AI
- * gets a clear, structured error instead of a low-level validation failure
- * (#25 / N-3).
- */
-function resolveProjectPath(
-  target: string,
-): { ok: true; absPath: string } | { ok: false; error: string } {
-  const root = appState.currentProject;
-  if (!root) {
-    return { ok: false, error: "No project open" };
-  }
-  // Reject absolute paths (Windows drive letter or POSIX root).
-  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(target)) {
-    return {
-      ok: false,
-      error: `Absolute paths are not allowed: ${target}. Use a path relative to the project root.`,
-    };
-  }
-  // Normalize and reject parent traversal that escapes the root.
-  const parts = target.replace(/\\/g, "/").split("/");
-  const normalized: string[] = [];
-  for (const p of parts) {
-    if (p === "." || p === "") continue;
-    if (p === "..") {
-      if (normalized.length === 0) {
-        return { ok: false, error: `Path escapes project root: ${target}` };
-      }
-      normalized.pop();
-    } else {
-      normalized.push(p);
-    }
-  }
-  const relPath = normalized.join("/");
-  if (!relPath) {
-    return { ok: false, error: `Empty path after normalization: ${target}` };
-  }
-  const absPath = root.replace(/[\\/]+$/, "") + "/" + relPath;
-  return { ok: true, absPath };
-}
-
-/**
- * ToolExecutor is the signature of a registered tool's execute function.
- * It receives the parsed ToolCall and returns a string observation to feed
- * back to the AI. Errors should be thrown; the caller (approveToolCall)
- * catches them and marks the call as failed.
- */
-export type ToolExecutor = (tc: ToolCall) => Promise<string>;
 
 /**
  * ToolSchema describes a tool's metadata for the AI prompt and UI (N-16).
@@ -331,6 +616,10 @@ export interface ToolSchema {
   // Default danger level for this tool kind. `run` tools get a runtime risk
   // level from CheckCommand; other tools use this default for the UI badge.
   dangerLevel?: RiskLevel;
+	inputSchema?: Record<string, unknown>;
+	source?: AgentToolDefinition["source"];
+	approval?: AgentToolDefinition["approval"];
+	mutation?: AgentToolDefinition["mutation"];
 }
 
 /**
@@ -340,14 +629,13 @@ export interface ToolSchema {
  */
 export interface ToolDef {
   kind: string;
+	wireName?: string;
   schema: ToolSchema;
-  execute: ToolExecutor;
 }
 
 /**
- * toolRegistry maps tool kinds to their executors. Built-in tools are
- * registered here so that future custom tools (from plugins or config) can
- * be added via `registerTool` without modifying the dispatch logic (#25 / N-16).
+ * toolRegistry is a renderer projection of the backend catalog. It contains no
+ * executable closures and therefore grants no authority by itself.
  */
 const toolRegistry = new Map<string, ToolDef>();
 
@@ -359,16 +647,12 @@ const toolRegistry = new Map<string, ToolDef>();
 const toolRegistryVersion = ref(0);
 
 /**
- * registerTool adds (or replaces) a tool in the registry. Exposed so that
- * future plugin/config code can register custom agent tools. Invalidates the
- * regex and prompt caches so the new tool is immediately recognized by the
- * parser and included in the AI system prompt (N-16).
+ * Renderer registration is deliberately forbidden. Dynamic MCP/workflow/skill
+ * tools must be registered by trusted backend wiring and published as one
+ * catalog revision.
  */
 export function registerTool(def: ToolDef): void {
-  toolRegistry.set(def.kind, def);
-  invalidateToolCallRegex();
-  __resetAgentPromptCacheForTests();
-  toolRegistryVersion.value++;
+	throw new Error(`renderer tool registration is forbidden: ${def.kind}`);
 }
 
 /**
@@ -376,13 +660,81 @@ export function registerTool(def: ToolDef): void {
  * was removed, false if the kind was not registered. Invalidates caches.
  */
 export function unregisterTool(kind: string): boolean {
-  const removed = toolRegistry.delete(kind);
-  if (removed) {
-    invalidateToolCallRegex();
-    __resetAgentPromptCacheForTests();
-    toolRegistryVersion.value++;
-  }
-  return removed;
+	throw new Error(`renderer tool unregistration is forbidden: ${kind}`);
+}
+
+function dangerLevelForTool(tool: AgentToolDefinition): RiskLevel {
+	if (tool.risk === "read-only") return "safe";
+	return tool.risk;
+}
+function canAssistAutoApprove(tc: ToolCall): boolean {
+  const definition = toolRegistry.get(tc.kind);
+  return definition?.schema.approval === "backend-policy"
+    && definition.schema.dangerLevel === "safe"
+    && definition.schema.mutation === "none";
+}
+
+function shouldAutoApprove(tc: ToolCall, mode: AgentPermissionMode): boolean {
+  if (mode === "allow-all") return true;
+  return mode === "assist" && canAssistAutoApprove(tc);
+}
+
+
+function projectToolDef(tool: AgentToolDefinition): ToolDef {
+	return {
+		kind: tool.id,
+		wireName: tool.wireName,
+		schema: {
+			description: tool.description,
+			dangerLevel: dangerLevelForTool(tool),
+			inputSchema: tool.inputSchema,
+			source: tool.source,
+			approval: tool.approval,
+			mutation: tool.mutation,
+		},
+	};
+}
+
+function publishToolCatalog(catalog: AgentToolCatalog): void {
+	const next = new Map<string, ToolDef>();
+	const wireNames = new Set<string>();
+	for (const tool of catalog.tools) {
+		if (!tool.id || !tool.wireName || next.has(tool.id) || wireNames.has(tool.wireName)) {
+			throw new Error("backend returned an invalid or duplicate Agent ToolDef");
+		}
+		next.set(tool.id, projectToolDef(tool));
+		wireNames.add(tool.wireName);
+	}
+	toolRegistry.clear();
+	for (const [id, definition] of next) toolRegistry.set(id, definition);
+	agentState.catalogRevision = catalog.revision;
+	agentState.catalogLoaded = true;
+	invalidateToolCallRegex();
+	__resetAgentPromptCacheForTests();
+	toolRegistryVersion.value++;
+}
+
+/** Refreshes the complete backend catalog atomically. Failure clears the local
+ * projection so stale dynamic tools cannot remain model-callable. */
+export async function refreshAgentToolCatalog(): Promise<AgentToolCatalog> {
+	try {
+		const catalog = await agentService.getToolCatalog();
+		publishToolCatalog(catalog);
+		return catalog;
+	} catch (error: unknown) {
+		toolRegistry.clear();
+		agentState.catalogRevision = 0;
+		agentState.catalogLoaded = false;
+		invalidateToolCallRegex();
+		__resetAgentPromptCacheForTests();
+		toolRegistryVersion.value++;
+		throw error;
+	}
+}
+
+/** @internal Test-only catalog injection; production code must refresh the backend. */
+export function __setAgentToolCatalogForTests(catalog: AgentToolCatalog): void {
+	publishToolCatalog(catalog);
 }
 
 /**
@@ -405,194 +757,110 @@ export function getRegisteredTools(): ToolDef[] {
 }
 
 /**
- * getToolSchemaList builds a markdown-formatted list of all registered tools
- * for inclusion in the AI system prompt (N-16). The AI uses this list to know
- * which tools it can emit and what each tool does.
+ * getToolSchemaList builds a concise native-tool catalog summary for the
+ * system prompt. The request's native tool schema remains authoritative;
+ * this text must not teach the legacy fenced syntax as the primary protocol.
  */
 export function getToolSchemaList(): string {
   const tools = getRegisteredTools();
   if (tools.length === 0) return "";
   const lines = tools.map((t) => {
-    let line = `- \`${t.kind}:\` ${t.schema.description}`;
+    let line = `- \`${t.wireName ?? t.kind}\` — ${t.schema.description}`;
     if (t.schema.dangerLevel) {
       line += ` (risk: ${t.schema.dangerLevel})`;
     }
     return line;
   });
-  return "Available tools:\n" + lines.join("\n");
+  return "Available tools: native function/tool-calling declarations (use the declared request schema):\n" + lines.join("\n");
 }
-
-// --- Built-in tool executors ---
-
-async function executeReadTool(tc: ToolCall): Promise<string> {
-  // prompt-7 Task G / BUG-M18: Agent reads require an open project root.
-  if (!appState.currentProject) {
-    throw new Error("no workspace root: open a project before Agent read tools");
-  }
-  const resolved = resolveProjectPath(tc.target);
-  if (!resolved.ok) {
-    throw new Error(resolved.error);
-  }
-  const content = await fileService.readFile(resolved.absPath);
-  // Truncate very large files so we don't blow the context window.
-  const max = 8000;
-  const truncated =
-    content.length > max
-      ? content.slice(0, max) + `\n... [truncated, ${content.length} total chars]`
-      : content;
-  return `Read ${tc.target}:\n\`\`\`\n${truncated}\n\`\`\``;
-}
-
-async function executeWriteTool(tc: ToolCall): Promise<string> {
-  // G-02: write-file capability — mirrors executeRunTool.
-  // The renderer must request backend approval; only the backend can issue
-  // a write token bound to (absPath, contentHash, workspace generation, TTL).
-  if (!tc.content) {
-    throw new Error("write tool call missing file content");
-  }
-  const resolved = resolveProjectPath(tc.target);
-  if (!resolved.ok) {
-    throw new Error(resolved.error);
-  }
-
-  // Compute SHA-256 of the new content to bind the approval to the exact bytes.
-  const encoder = new TextEncoder();
-  const data = encoder.encode(tc.content);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const contentHash = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  // Request backend approval — shows a native dialog to the user.
-  const approvalToken = await agentService.requestWriteApproval(
-    resolved.absPath,
-    contentHash,
-    data.byteLength,
-  );
-
-  // Execute with the backend-issued token — path, hash, and generation are
-  // all re-verified on the backend before any byte reaches disk.
-  await agentService.executeApprovedWrite(resolved.absPath, tc.content, approvalToken);
-  notifySuccess(`Wrote ${tc.target}`);
-  return `Wrote ${tc.target} (${tc.content.length} chars).`;
-}
-
-async function executeRunTool(tc: ToolCall): Promise<string> {
-  // prompt-5 Task E: refuse run when no workspace is open (empty root would
-  // widen the process cwd sandbox surface).
-  const cwd = appState.currentProject;
-  if (!cwd) {
-    throw new Error("No project open: run tool requires an open workspace");
-  }
-  if (!tc.target || !tc.target.trim()) {
-    throw new Error("run tool requires a command — the AI returned an empty target");
-  }
-  // GOAL-P1-02: this call is where backend budget is actually spent. The
-  // backend charges one unit when it mints the capability token, so the budget
-  // is refreshed here — on both success and refusal — rather than at emission
-  // time, where nothing has been charged yet.
-  let approvalToken: string;
-  try {
-    approvalToken = await agentService.requestCommandApproval(tc.target, cwd);
-  } catch (e: unknown) {
-    // A refusal is authoritative state: reconcile before rethrowing so the UI
-    // shows the exhausted budget rather than a bare error.
-    await refreshToolBudget();
-    throw e;
-  }
-  await refreshToolBudget();
-  const result = await agentService.executeApprovedCommand(tc.target, cwd, approvalToken);
-  const summary =
-    `Ran: ${result.command}\n` +
-    `Exit code: ${result.exitCode} (${result.durationMs}ms)\n` +
-    (result.stdout ? `stdout:\n\`\`\`\n${result.stdout}\n\`\`\`\n` : "") +
-    (result.stderr ? `stderr:\n\`\`\`\n${result.stderr}\n\`\`\`\n` : "");
-  pushOutput(
-    "agent",
-    result.exitCode === 0 ? "info" : "warn",
-    `Agent ran "${result.command}" → exit ${result.exitCode}`,
-  );
-  return summary;
-}
-
-async function executeSearchTool(tc: ToolCall): Promise<string> {
-  // prompt-7 Task G: Agent search also requires project root.
-  const root = appState.currentProject;
-  if (!root) {
-    throw new Error("no workspace root: open a project before Agent search tools");
-  }
-  const results = await searchService.search(root, tc.target, true);
-  // Flatten results: each SearchResult has a path + matches[].
-  const allMatches: { path: string; line: number; column: number; preview: string }[] = [];
-  for (const r of results) {
-    for (const m of r.matches) {
-      allMatches.push({ path: r.path, line: m.line, column: m.column, preview: m.preview });
-    }
-  }
-  if (allMatches.length === 0) {
-    return `No matches found for "${tc.target}".`;
-  }
-  const maxResults = 10;
-  const top = allMatches.slice(0, maxResults);
-  const summary =
-    `Found ${allMatches.length} match(es) for "${tc.target}" (showing top ${top.length}):\n` +
-    top
-      .map(
-        (m) =>
-          `- ${m.path}:${m.line}:${m.column}: ${m.preview.trim()}`,
-      )
-      .join("\n");
-  return summary;
-}
-
-// Register built-in tools. Done at module load so they're available
-// immediately. Custom tools can be registered later via registerTool().
-// Each tool includes a schema (N-16) with a description and default danger
-// level used in the AI system prompt and approval UI.
-registerTool({
-  kind: "read",
-  schema: {
-    description: "Read a file from the project. Target is a path relative to the project root.",
-    dangerLevel: "safe",
-  },
-  execute: executeReadTool,
-});
-registerTool({
-  kind: "write",
-  schema: {
-    description: "Write or overwrite a file in the project. Target is a relative path, content is the file body.",
-    dangerLevel: "elevated",
-  },
-  execute: executeWriteTool,
-});
-registerTool({
-  kind: "run",
-  schema: {
-    description: "Execute a single command with arguments in the project root. The command is parsed into an argv and executed directly (no shell wrapper: no `sh -c`, no `cmd /c`). Pipes (|), redirects (> <), variable expansion ($VAR), command substitution (backtick or $()), chaining (&& ;), background (&), glob (* ?), brace expansion ({a,b}), and home expansion (~) are rejected. To pipe or chain, emit separate run calls and inspect the observation between them. Subject to sandbox validation and risk classification.",
-    dangerLevel: "elevated",
-  },
-  execute: executeRunTool,
-});
-registerTool({
-  kind: "search",
-  schema: {
-    description: "Search for a text pattern across the project. Target is the search query.",
-    dangerLevel: "safe",
-  },
-  execute: executeSearchTool,
-});
 
 /**
  * executeToolCall runs the given tool call and returns a string summary that
  * should be fed back to the AI as the "observation" in the agent loop.
- * Dispatches via the toolRegistry Map (#25 / N-16).
+ * The renderer has no executable ToolDef. Every call goes through the unified
+ * backend capability facade using the catalog revision captured at parse time.
  */
+async function previewWriteDiff(tc: ToolCall): Promise<void> {
+	const path = typeof tc.arguments?.path === "string" ? tc.arguments.path : tc.target;
+	const content = typeof tc.arguments?.content === "string" ? tc.arguments.content : String(tc.content ?? "");
+	if (!path) return;
+	let baseline = "";
+	try {
+		const raw = await fileService.readFile(path);
+		baseline = typeof raw === "string" ? raw : "";
+	} catch {
+		baseline = "";
+	}
+	try {
+		const diff = await computeFileDiffPreview(path, baseline, content);
+		tc.writeDiff = diff;
+		if (!tc.selectedHunks) tc.selectedHunks = diff.hunks.map((_, index) => index);
+	} catch {
+		tc.writeDiff = {
+			path,
+			oldContent: baseline,
+			newContent: content,
+			hunks: [{
+				oldStart: 1,
+				oldCount: baseline.split("\n").length,
+				newStart: 1,
+				newCount: content.split("\n").length,
+				lines: [
+					...baseline.split("\n").filter(Boolean).map((line) => ({ type: "removed" as const, content: line })),
+					...content.split("\n").filter(Boolean).map((line) => ({ type: "added" as const, content: line })),
+				],
+			}],
+			addedLines: content.split("\n").length,
+			removedLines: baseline.split("\n").length,
+		};
+		tc.selectedHunks = [0];
+	}
+}
+
+export function toggleWriteHunk(tc: ToolCall, hunkIdx: number): void {
+	const selected = new Set(tc.selectedHunks ?? []);
+	if (selected.has(hunkIdx)) selected.delete(hunkIdx);
+	else selected.add(hunkIdx);
+	tc.selectedHunks = [...selected].sort((a, b) => a - b);
+}
+
 export async function executeToolCall(tc: ToolCall): Promise<string> {
   const def = toolRegistry.get(tc.kind);
   if (!def) {
     throw new Error(`unknown tool call kind: ${tc.kind}`);
   }
-  return def.execute(tc);
+	const catalogRevision = tc.catalogRevision ?? agentState.catalogRevision;
+	const args = tc.arguments ?? legacyFenceArguments(def, tc.target, tc.content);
+	await ensureAgentSession();
+	const sessionId = backendAgentSessionId ?? tc.sessionId ?? agentState.sessionId;
+  if (catalogRevision !== agentState.catalogRevision) {
+    throw new Error("Agent tool catalog changed after this call was proposed; ask the model to retry");
+  }
+	if (!args || !sessionId || !def.schema.inputSchema || !validateToolArguments(def.schema.inputSchema, args)) {
+    throw new Error("Agent tool call is missing its backend catalog binding");
+  }
+	const payload = { ...args };
+	if (tc.kind === "write" && Array.isArray(tc.selectedHunks)) {
+		payload.selectedHunks = tc.selectedHunks;
+	}
+	if (tc.kind === "write" && payload.selectedHunks !== undefined && !validateToolArguments(def.schema.inputSchema, payload)) {
+		throw new Error("Agent write selectedHunks failed schema validation");
+	}
+	try {
+		const result = await agentService.executeAgentTool({
+			sessionId,
+			catalogRevision,
+			toolId: tc.kind,
+			arguments: payload,
+		});
+		tc.execution = { requestSessionId: sessionId, result };
+		await refreshToolBudget();
+		if (tc.kind === "write") notifySuccess(`Wrote ${tc.target}`);
+		return result.observation;
+	} catch (error: unknown) {
+		await refreshToolBudget();
+		throw error;
+	}
 }
 
 /**
@@ -604,14 +872,18 @@ export async function approveToolCall(
   tc: ToolCall,
 ): Promise<string | null> {
   tc.status = "approved";
+  recordToolStage(tc.id, tc.kind, "approved");
+  recordToolStage(tc.id, tc.kind, "executing");
   try {
     const observation = await executeToolCall(tc);
     tc.status = "executed";
     tc.result = observation;
+    recordToolStage(tc.id, tc.kind, "executed", observation);
     return observation;
   } catch (e: unknown) {
     tc.status = "error";
     tc.error = errorMessage(e);
+    recordToolStage(tc.id, tc.kind, "error", tc.error);
     notifyError(`Tool call failed: ${tc.error}`);
     return `Error executing ${tc.kind} on "${tc.target}": ${tc.error}`;
   }
@@ -623,6 +895,7 @@ export async function approveToolCall(
  */
 export function rejectToolCall(tc: ToolCall): string {
   tc.status = "rejected";
+  recordToolStage(tc.id, tc.kind, "rejected");
   return `User rejected the ${tc.kind} action on "${tc.target}". Choose a different approach or ask the user for guidance.`;
 }
 
@@ -633,6 +906,8 @@ export function rejectToolCall(tc: ToolCall): string {
 export function clearPendingToolCalls(): void {
   agentState.pendingToolCalls = [];
   agentState.toolCallCount = 0;
+	resetAgentSession();
+  resetAgentTimeline();
 }
 
 // --- Agent loop wiring ---
@@ -679,80 +954,9 @@ export function __resetAgentPromptCacheForTests(): void {
   agentSystemPromptCache = null;
 }
 
-/**
- * getApprovalPolicy returns the configured approval policy for a tool kind
- * (Plan 47). Reads from appState.toolApprovalConfig; missing entries default
- * to "always-ask". Exposed for tests and the settings UI.
- */
-export function getApprovalPolicy(kind: ToolCallKind): ApprovalPolicy {
-  const cfg = appState.toolApprovalConfig[kind];
-  if (cfg === "auto-approve" || cfg === "never-approve") return cfg;
-  return "always-ask";
-}
-
-/**
- * shouldAutoApprove determines whether a tool call should be auto-approved
- * based on the configured policy.
- *
- * G-SEC-02: `run` tools are NEVER auto-approved — every shell command
- * requires explicit manual approval, regardless of the configured policy
- * or risk level. The denylist is not a security boundary (only auxiliary
- * filtering), so even "Safe"-classified or unblocked commands must be
- * approved by the user.
- *
- * prompt-5 Task E / BUG-M4: `write` tools are also NEVER auto-approved so
- * a hallucinating agent cannot silently modify files. Only `read`/`search`
- * (and other safe tools) may use auto-approve.
- */
-export function shouldAutoApprove(tc: ToolCall): boolean {
-  // G-SEC-02: run commands always require manual approval.
-  if (tc.kind === "run") return false;
-  // prompt-5 Task E: write always requires manual approval.
-  if (tc.kind === "write") return false;
-  if (getApprovalPolicy(tc.kind) !== "auto-approve") return false;
-  return true;
-}
-
-/**
- * applyApprovalPolicy applies the configured approval policy to a pending
- * tool call (Plan 47). Called fire-and-forget from onAssistantFinished.
- *
- * - "auto-approve": executes the call and feeds the observation back to
- *   the AI without waiting for user interaction.
- * - "never-approve": rejects the call and feeds the rejection back.
- * - "always-ask": no-op (the call stays in the pending queue).
- *
- * G-SEC-02: `run` tools are NEVER auto-approved. Even when the policy is
- * "auto-approve", run commands stay in the pending queue for mandatory
- * manual approval. The denylist is not a security boundary, so no command
- * bypasses approval — blocked or not. For `run` tools, this still waits
- * for the risk check to complete so the risk badge is populated in the UI.
- */
-export async function applyApprovalPolicy(tc: ToolCall): Promise<void> {
-  // For `run` tools, wait for the risk check so the UI badge is populated.
-  if (tc.kind === "run" && tc._riskCheckPromise) {
-    await tc._riskCheckPromise;
-  }
-  if (tc.status !== "pending") return;
-  // G-SEC-02: run commands always require manual approval — never
-  // auto-approve, regardless of the configured policy.
-  if (tc.kind === "run") return;
-  const policy = getApprovalPolicy(tc.kind);
-  if (policy === "auto-approve") {
-    pushOutput(
-      "agent",
-      "info",
-      `Auto-approving ${tc.kind} tool call: ${tc.target}`,
-    );
-    await approveAndFeed(tc);
-  } else if (policy === "never-approve") {
-    pushOutput(
-      "agent",
-      "info",
-      `Auto-rejecting ${tc.kind} tool call per policy: ${tc.target}`,
-    );
-    await rejectAndFeed(tc);
-  }
+/** Returns the permission mode captured when the active backend session began. */
+export function getAgentPermissionMode(): AgentPermissionMode {
+  return agentSessionPermissionMode;
 }
 
 /**
@@ -760,6 +964,7 @@ export async function applyApprovalPolicy(tc: ToolCall): Promise<void> {
  * registered agent tool (prompt-5 Task H). Passed to AIService.SetConfig so
  * the model can use native function calling; fence parsing remains as fallback.
  */
+
 export function buildNativeToolDefs(): Array<{
   type: "function";
   function: {
@@ -769,34 +974,14 @@ export function buildNativeToolDefs(): Array<{
   };
 }> {
   return getRegisteredTools().map((td) => {
-    const kind = td.kind;
-    const properties: Record<string, unknown> = {};
-    const required: string[] = [];
-    if (kind === "write") {
-      properties.path = { type: "string", description: "Relative path within the project" };
-      properties.content = { type: "string", description: "Full file content to write" };
-      required.push("path", "content");
-    } else if (kind === "run") {
-      properties.command = { type: "string", description: "Command and arguments (no shell)" };
-      required.push("command");
-    } else if (kind === "search") {
-      properties.query = { type: "string", description: "Search query" };
-      required.push("query");
-    } else {
-      // read + custom tools default to path/target
-      properties.path = { type: "string", description: "Relative path or tool target" };
-      required.push("path");
-    }
     return {
       type: "function" as const,
       function: {
-        name: kind,
-        description: td.schema.description || `Agent tool: ${kind}`,
-        parameters: {
-          type: "object",
-          properties,
-          required,
-        },
+				name: td.wireName ?? td.kind,
+				description: td.schema.description || `Agent tool: ${td.kind}`,
+				parameters: td.schema.inputSchema ?? {
+					type: "object", properties: {}, additionalProperties: false,
+				},
       },
     };
   });
@@ -814,48 +999,59 @@ export interface NativeToolCallPayload {
  */
 export function parseNativeToolCalls(payloads: NativeToolCallPayload[]): ToolCall[] {
   const out: ToolCall[] = [];
+  const seen = new Set<string>();
   for (const p of payloads) {
-    if (!p?.name) continue;
-    let args: Record<string, unknown> = {};
+    if (!p?.id || !p.name || seen.has(p.id)) return [];
+		seen.add(p.id);
+		const tool = findToolByCallName(p.name);
+		if (!tool) return [];
+		let parsed: unknown;
     try {
-      args = p.arguments ? (JSON.parse(p.arguments) as Record<string, unknown>) : {};
+			parsed = JSON.parse(p.arguments || "{}");
     } catch {
-      args = {};
+			return [];
     }
-    const kind = p.name;
-    let target = "";
-    let content: string | undefined;
-    if (kind === "write") {
-      target = String(args.path ?? args.target ?? "");
-      content = args.content != null ? String(args.content) : undefined;
-    } else if (kind === "run") {
-      target = String(args.command ?? args.target ?? "");
-    } else if (kind === "search") {
-      target = String(args.query ?? args.target ?? "");
-    } else {
-      target = String(args.path ?? args.target ?? args.query ?? "");
-    }
-    if (!target && !content) continue;
+		if (!tool.schema.inputSchema || !validateToolArguments(tool.schema.inputSchema, parsed)) return [];
+		const args = parsed;
+		const display = displayFields(tool, args);
     out.push({
-      id: p.id || nextToolCallId(),
-      kind,
-      target,
-      content,
+      id: p.id,
+      source: "native",
+			kind: tool.kind,
+			wireName: tool.wireName ?? tool.kind,
+			target: display.target,
+			content: display.content,
+			arguments: args,
+			catalogRevision: agentState.catalogRevision,
+			sessionId: agentState.sessionId,
       status: "pending",
     });
   }
   return out;
 }
 
-/** prompt-6 Task 11: stable dedup key including content hash for write. */
-export function toolCallDedupKey(tc: { kind: string; target: string; content?: string }): string {
-  const content = tc.content ?? "";
-  // Simple non-crypto hash for dual-track dedup (same content → same key).
+function stableJSON(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(stableJSON).join(",")}]`;
+	if (isRecordValue(value)) {
+		return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJSON(value[key])}`).join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/** Stable dedup key for native/fence calls from the same catalog revision. */
+export function toolCallDedupKey(tc: {
+	kind: string;
+	arguments?: Record<string, unknown>;
+	catalogRevision?: number;
+	target?: string;
+	content?: string;
+}): string {
+	const content = stableJSON(tc.arguments ?? { target: tc.target ?? "", content: tc.content ?? "" });
   let h = 0;
   for (let i = 0; i < content.length; i++) {
     h = (Math.imul(31, h) + content.charCodeAt(i)) | 0;
   }
-  return `${tc.kind}\0${tc.target}\0${h.toString(36)}`;
+	return `${tc.catalogRevision ?? 0}\0${tc.kind}\0${h.toString(36)}`;
 }
 
 /**
@@ -916,23 +1112,49 @@ import.meta.hot?.dispose(cleanupAgentPendingSyncListener);
  */
 export function enqueueToolCalls(calls: ToolCall[]): number {
   if (calls.length === 0) return 0;
-  agentState.pendingToolCalls.push(...calls);
-  agentState.toolCallCount += calls.length;
-  for (const tc of calls) {
+  const existingIds = new Set(agentState.pendingToolCalls.map((call) => call.id));
+  const acceptedIds = new Set<string>();
+  const acceptedCalls = calls.filter((call) => {
+    if (!call.id || existingIds.has(call.id) || acceptedIds.has(call.id)) return false;
+    acceptedIds.add(call.id);
+    return true;
+  });
+  if (acceptedCalls.length === 0) return 0;
+
+  const firstIndex = agentState.pendingToolCalls.length;
+  agentState.pendingToolCalls.push(...acceptedCalls);
+  agentState.toolCallCount += acceptedCalls.length;
+  // Read the just-inserted slice back from the reactive array. Vue wraps the
+  // raw objects on access; mutating the caller's raw array would leave the UI
+  // observing a different object and miss approved/executed/result changes.
+  const reactiveCalls = agentState.pendingToolCalls.slice(
+    firstIndex,
+    firstIndex + acceptedCalls.length,
+  );
+  const expectedGeneration = agentTurnGeneration;
+  const permissionMode = backendAgentSessionId
+    ? agentSessionPermissionMode
+    : normalizePermissionMode(appState.agentPermissionMode);
+  for (const tc of reactiveCalls) {
+    tc._turnGeneration = expectedGeneration;
+    tc.permissionMode = permissionMode;
+  }
+  createAgentToolTurnBatch(reactiveCalls, expectedGeneration);
+  for (const tc of reactiveCalls) {
+		recordToolRequested(tc.id, tc.kind, tc.target);
     if (tc.kind === "run" && tc.status === "pending") {
-      tc._riskCheckPromise = checkRunRisk(tc);
+      void checkRunRisk(tc);
     }
+		if (tc.kind === "write" && tc.status === "pending") {
+			void previewWriteDiff(tc);
+		}
   }
   pushOutput(
     "agent",
     "info",
-    `Agent emitted ${calls.length} tool call(s) awaiting approval`,
+    `Agent emitted ${acceptedCalls.length} tool call(s) awaiting approval`,
   );
   if (maxIterationsReached.value) {
-    // The wording states a refusal rather than offering advice: the backend
-    // will not mint another capability token until a new epoch is opened, so
-    // describing this as "consider starting a new conversation" would
-    // understate it and leave the user waiting for calls that never run.
     notifyWarning(
       `Tool budget spent (${toolBudgetSpent.value}/${toolBudgetLimit.value}). `
       + "Further tool calls are refused by the backend until you start a new budget.",
@@ -945,43 +1167,79 @@ export function enqueueToolCalls(calls: ToolCall[]): number {
     );
   }
   emitPendingUpdated();
-  void (async () => {
-    for (const tc of calls) {
-      if (tc.status === "pending") {
-        await applyApprovalPolicy(tc);
+  if (permissionMode !== "always-ask") {
+    void (async () => {
+      try {
+        for (const tc of reactiveCalls) {
+          if (tc.status === "pending" && shouldAutoApprove(tc, permissionMode)) {
+            await approveAndFeed(tc, expectedGeneration);
+          }
+        }
+      } catch (error: unknown) {
+        const message = errorMessage(error) || "Agent tool turn failed";
+        notifyError(message, "Agent Error");
+        pushOutput("agent", "error", message);
+      } finally {
+        emitPendingUpdated();
       }
-    }
-    emitPendingUpdated();
-  })();
-  return calls.length;
+    })();
+  }
+  return acceptedCalls.length;
 }
 
 /**
- * onNativeToolCalls handles ai:tool_calls events from the backend.
+ * onNativeToolCalls handles ai:tool_calls events from the backend. Exact event
+ * replay is idempotent; a provider reusing an ID for another invocation is an
+ * invalid batch and returns -1 without mutating the queue.
  */
 export function onNativeToolCalls(payloads: NativeToolCallPayload[]): number {
-  return enqueueToolCalls(parseNativeToolCalls(payloads));
+  const calls = parseNativeToolCalls(payloads);
+  if (calls.length !== payloads.length) return -1;
+
+  const fresh: ToolCall[] = [];
+  for (const call of calls) {
+    const identity = `${call.wireName ?? call.kind}\0${stableJSON(call.arguments ?? {})}`;
+    const existingIdentity = nativeToolCallIdentities.get(call.id);
+    if (existingIdentity !== undefined) {
+      if (existingIdentity !== identity) return -1;
+      continue;
+    }
+    if (agentState.pendingToolCalls.some((candidate) => candidate.id === call.id)) return -1;
+    fresh.push(call);
+  }
+  for (const call of fresh) {
+    nativeToolCallIdentities.set(
+      call.id,
+      `${call.wireName ?? call.kind}\0${stableJSON(call.arguments ?? {})}`,
+    );
+  }
+  return enqueueToolCalls(fresh);
 }
 
 /**
- * onAssistantFinished should be called by the ai store when an assistant
- * message finishes streaming in agent mode. Parses tool calls from the
- * message (fence dual-track) and appends them to the pending queue.
- * Native tool_calls may already have been enqueued via onNativeToolCalls;
- * fence parse still runs for models that only speak the text protocol.
- *
- * Returns the number of tool calls added (0 if none).
+ * Runs the explicitly marked fenced compatibility fallback after a completed
+ * assistant turn. Any native tool-call event in that turn is authoritative,
+ * so text fences from the same response are never parsed or executed.
  */
-export function onAssistantFinished(assistantContent: string): number {
-  if (!assistantContent) return 0;
+export function onAssistantFinished(
+  assistantContent: string,
+  nativeToolEventSeen = false,
+): number {
+  if (!assistantContent || nativeToolEventSeen) return 0;
   const calls = parseToolCalls(assistantContent);
   if (calls.length === 0) return 0;
-  // Dual-track: if native tool_calls already populated the queue, skip fence
-  // duplicates by kind+target+content hash (prompt-6 Task 11 / BUG-L12).
   const existing = new Set(
-    agentState.pendingToolCalls.map((tc) => toolCallDedupKey(tc)),
+    agentState.pendingToolCalls
+      .filter((tc) => tc.status === "pending" || tc.status === "approved")
+      .map((tc) => toolCallDedupKey(tc)),
   );
-  const fresh = calls.filter((tc) => !existing.has(toolCallDedupKey(tc)));
+  const freshKeys = new Set<string>();
+  const fresh = calls.filter((tc) => {
+    const key = toolCallDedupKey(tc);
+    if (existing.has(key) || freshKeys.has(key)) return false;
+    freshKeys.add(key);
+    return true;
+  });
   return enqueueToolCalls(fresh);
 }
 
@@ -1008,7 +1266,13 @@ export async function checkRunRisk(tc: ToolCall): Promise<void> {
  * new user message, continuing the agent loop. Imported lazily to avoid a
  * circular dependency with the ai store.
  */
-export async function feedObservation(observation: string): Promise<void> {
+export async function feedObservation(
+	observation: string,
+	expectedGeneration = agentTurnGeneration,
+): Promise<void> {
+	if (expectedGeneration !== agentTurnGeneration) return;
+	await waitForAIStreamIdle();
+	if (expectedGeneration !== agentTurnGeneration) return;
   // Inline dynamic import breaks the circular dep (ai.ts imports this module).
   const { sendMessage } = await import("@/stores/ai");
   await sendMessage(`[Observation]\n${observation}`);
@@ -1018,26 +1282,134 @@ export async function feedObservation(observation: string): Promise<void> {
  * feedRejection sends a rejection message back to the AI so it knows the
  * action was not performed and can choose a different approach.
  */
-export async function feedRejection(rejection: string): Promise<void> {
+export async function feedRejection(
+	rejection: string,
+	expectedGeneration = agentTurnGeneration,
+): Promise<void> {
+	if (expectedGeneration !== agentTurnGeneration) return;
+	await waitForAIStreamIdle();
+	if (expectedGeneration !== agentTurnGeneration) return;
   const { sendMessage } = await import("@/stores/ai");
   await sendMessage(`[Rejection]\n${rejection}`);
+}
+
+async function feedNativeToolResults(
+	results: NativeToolResultContext[],
+	expectedGeneration: number,
+): Promise<void> {
+	if (expectedGeneration !== agentTurnGeneration) return;
+	await waitForAIStreamIdle();
+	if (expectedGeneration !== agentTurnGeneration) return;
+	const { sendNativeToolResults } = await import("@/stores/ai");
+	const submitted = await sendNativeToolResults(results);
+	if (!submitted) {
+		throw new Error("Agent tool result was not submitted to the provider");
+	}
+}
+
+function isTerminalToolCall(tc: ToolCall): boolean {
+	return tc.status === "executed" || tc.status === "error" || tc.status === "rejected";
+}
+
+async function feedToolOutcome(
+	tc: ToolCall,
+	outcome: string,
+	standaloneKind: "observation" | "rejection",
+	expectedGeneration: number,
+): Promise<void> {
+	tc._turnObservation = outcome;
+	if (!tc._turnBatchId) {
+		if (tc.source === "native") {
+			await feedNativeToolResults([{
+				toolCallId: tc.id,
+				content: outcome,
+				isError: tc.status === "error" || tc.status === "rejected",
+			}], expectedGeneration);
+			return;
+		}
+		if (standaloneKind === "rejection") {
+			await feedRejection(outcome, expectedGeneration);
+		} else {
+			await feedObservation(outcome, expectedGeneration);
+		}
+		return;
+	}
+
+	const batch = agentToolTurnBatches.get(tc._turnBatchId);
+	if (!batch || batch.generation !== expectedGeneration || expectedGeneration !== agentTurnGeneration) return;
+	if (batch.submitting) return;
+	if (!batch.calls.every((call) => isTerminalToolCall(call) && typeof call._turnObservation === "string")) return;
+
+	batch.submitting = true;
+	const results = batch.calls.map((call) => ({
+		callId: call.id,
+		tool: call.wireName ?? call.kind,
+		status: call.status,
+		output: call._turnObservation,
+	}));
+	try {
+		if (batch.calls.every((call) => call.source === "native")) {
+			await feedNativeToolResults(batch.calls.map((call) => ({
+				toolCallId: call.id,
+				content: call._turnObservation as string,
+				isError: call.status === "error" || call.status === "rejected",
+			})), expectedGeneration);
+		} else {
+			await feedObservation(`[Tool Results]\n${JSON.stringify(results)}`, expectedGeneration);
+		}
+		agentToolTurnBatches.delete(batch.id);
+	} catch (error) {
+		batch.submitting = false;
+		throw error;
+	}
 }
 
 /**
  * approveAndFeed approves a tool call, executes it, and feeds the observation
  * back to the AI. Designed to be called directly from UI handlers.
  */
-export async function approveAndFeed(tc: ToolCall): Promise<void> {
-  const observation = await approveToolCall(tc);
-  if (observation !== null) {
-    await feedObservation(observation);
-  }
+export async function approveAndFeed(
+	tc: ToolCall,
+	expectedGeneration = tc._turnGeneration ?? agentTurnGeneration,
+): Promise<void> {
+	try {
+		await enqueueToolExecution(async () => {
+			// Native tool calls are emitted while the assistant stream is still
+			// active. Wait for its terminal event before executing and feeding the
+			// observation, otherwise ai.sendMessage silently returns early.
+			await waitForAIStreamIdle();
+			if (expectedGeneration !== agentTurnGeneration || tc.status !== "pending") return;
+			const observation = await approveToolCall(tc);
+			if (observation !== null) {
+				recordToolObservation(tc.id, tc.kind, observation);
+				await feedToolOutcome(tc, observation, "observation", expectedGeneration);
+			}
+		}, expectedGeneration);
+	} catch (error: unknown) {
+		const message = errorMessage(error) || "Agent observation failed";
+		notifyError(message, "Agent Error");
+		pushOutput("agent", "error", message);
+	}
 }
 
 /**
  * rejectAndFeed rejects a tool call and feeds the rejection back to the AI.
  */
-export async function rejectAndFeed(tc: ToolCall): Promise<void> {
-  const rejection = rejectToolCall(tc);
-  await feedRejection(rejection);
+export async function rejectAndFeed(
+	tc: ToolCall,
+	expectedGeneration = tc._turnGeneration ?? agentTurnGeneration,
+): Promise<void> {
+	try {
+		await enqueueToolExecution(async () => {
+			await waitForAIStreamIdle();
+			if (expectedGeneration !== agentTurnGeneration || tc.status !== "pending") return;
+			const rejection = rejectToolCall(tc);
+			recordToolObservation(tc.id, tc.kind, rejection);
+			await feedToolOutcome(tc, rejection, "rejection", expectedGeneration);
+		}, expectedGeneration);
+	} catch (error: unknown) {
+		const message = errorMessage(error) || "Agent rejection turn failed";
+		notifyError(message, "Agent Error");
+		pushOutput("agent", "error", message);
+	}
 }

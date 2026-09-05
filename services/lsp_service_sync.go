@@ -398,17 +398,16 @@ func runeOffsetToLineCol(runes []rune, offset int) (line, col int) {
 	}
 	for index := 0; index < offset; index++ {
 		r := runes[index]
-		switch r {
-		case '\r':
+		if r == '\r' {
 			line++
 			col = 0
 			if index+1 < offset && runes[index+1] == '\n' {
 				index++
 			}
-		case '\n':
+		} else if r == '\n' {
 			line++
 			col = 0
-		default:
+		} else {
 			col += utf16.RuneLen(r)
 		}
 	}

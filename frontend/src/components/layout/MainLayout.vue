@@ -56,6 +56,7 @@ import {
 } from "@/stores/refactor";
 import { monacoLanguageToLSP } from "@/stores/lsp";
 import { commandRegistry, syncPaletteCommands } from "@/lib/commands";
+import { notifyError } from "@/lib/notifications";
 
 useKeyboard();
 
@@ -305,16 +306,12 @@ const commands = computed<Command[]>(() => {
       id: "toggle-ai",
       label: t("mainLayout.commandToggleAiChat"),
       action: () => {
-        // 与活动栏一致：切换 OS 级 AI 伴侣窗口，而非主窗侧边栏嵌入面板
-        void import("@/api/services").then(({ windowService }) => {
-          void windowService.toggleAIWindow().catch(() => {
-            void import("@/stores/aiAssistant").then(
-              ({ openAIDesktopWindow }) => {
-                openAIDesktopWindow();
-              },
-            );
+        // Opening an already-visible window also performs the conversation handoff.
+        void import("@/stores/aiAssistant")
+          .then(({ openAIDesktopWindow }) => openAIDesktopWindow())
+          .catch((error: unknown) => {
+            notifyError(error instanceof Error ? error.message : t("aiWindow.toggleFailed"));
           });
-        });
       },
     },
     {
@@ -398,6 +395,65 @@ const commands = computed<Command[]>(() => {
         setPanelTab("extensions");
         setExtensionsSubview("marketplace");
         if (appState.sidebarCollapsed) appState.sidebarCollapsed = false;
+      },
+    },
+    {
+      id: "koyoriIde.view.debug",
+      label: t("mainLayout.commandOpenDebugView"),
+      action: () => {
+        void router.push("/debug");
+      },
+    },
+    {
+      id: "koyoriIde.view.testExplorer",
+      label: t("mainLayout.commandOpenTestExplorer"),
+      action: () => {
+        void router.push("/test");
+      },
+    },
+    {
+      id: "koyoriIde.view.build",
+      label: t("mainLayout.commandOpenBuild"),
+      action: () => {
+        setPanelTab("build");
+        if (appState.sidebarCollapsed) appState.sidebarCollapsed = false;
+        if (route.path !== "/editor") void router.push("/editor");
+      },
+    },
+    {
+      id: "koyoriIde.view.database",
+      label: t("mainLayout.commandOpenDatabase"),
+      action: () => {
+        setPanelTab("database");
+        if (appState.sidebarCollapsed) appState.sidebarCollapsed = false;
+        if (route.path !== "/editor") void router.push("/editor");
+      },
+    },
+    {
+      id: "koyoriIde.view.httpClient",
+      label: t("mainLayout.commandOpenHttpClient"),
+      action: () => {
+        setPanelTab("httpClient");
+        if (appState.sidebarCollapsed) appState.sidebarCollapsed = false;
+        if (route.path !== "/editor") void router.push("/editor");
+      },
+    },
+    {
+      id: "koyoriIde.view.inspections",
+      label: t("mainLayout.commandOpenInspections"),
+      action: () => {
+        setPanelTab("inspections");
+        if (appState.sidebarCollapsed) appState.sidebarCollapsed = false;
+        if (route.path !== "/editor") void router.push("/editor");
+      },
+    },
+    {
+      id: "koyoriIde.view.callHierarchy",
+      label: t("mainLayout.commandOpenCallHierarchy"),
+      action: () => {
+        setPanelTab("callHierarchy");
+        if (appState.sidebarCollapsed) appState.sidebarCollapsed = false;
+        if (route.path !== "/editor") void router.push("/editor");
       },
     },
   ];

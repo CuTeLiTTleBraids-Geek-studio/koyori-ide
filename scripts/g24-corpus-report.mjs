@@ -13,12 +13,12 @@
  *   - activationEvents and contributes summary
  *   - every `vscode.<namespace>.<api>` reference found in the bundled
  *     entrypoint source (static analysis; not proof of execution)
- *   - the Koyori permission declaration (koyoriIde.permissions)
+ *   - declared or inferred permissions (koyoriIde.permissions is optional)
  *   - a disposition: supported / unsupported / blocked / corrupt, with a
- *     concrete reason. Installing successfully is NOT activation success:
- *     missing permission declarations, unsigned/unverified archives,
- *     incompatible entrypoints and unreachable network are all explicit
- *     reasons, never implied success.
+ *     concrete reason. Installing successfully is NOT activation success.
+ *     Missing koyoriIde.permissions is no longer an install hard-block;
+ *     permissions are inferred from contributes/activationEvents/static
+ *     vscode.* references. Unknown vscode namespaces remain unsupported.
  *
  * The generator is intentionally testable: it accepts a directory or an
  * explicit file list, fails closed on corrupt archives, detects duplicate
@@ -153,18 +153,12 @@ async function analyzePackage(filePath) {
       activationEvents,
       contributes: summarizeContributes(manifest.contributes),
       declaredPermissions: permissions,
+      inferredPermissions: permissions === null,
       apiReferences: [],
       unsupportedApiNamespaces: [],
       disposition: "unsupported",
       reason: "",
     };
-
-    if (permissions === null) {
-      record.disposition = "blocked";
-      record.reason =
-        "no koyoriIde.permissions declaration; install would be rejected by the permission gate";
-      return record;
-    }
 
     if (!entrypoint) {
       record.disposition = "unsupported";
@@ -195,8 +189,9 @@ async function analyzePackage(filePath) {
     }
 
     record.disposition = "supported";
-    record.reason =
-      "compatible entrypoint, declared permissions, and known vscode API namespaces (static analysis only; activation success requires the packaged run)";
+    record.reason = permissions === null
+      ? "compatible entrypoint and known vscode API namespaces; permissions inferred because koyoriIde.permissions is absent (static analysis only; activation success requires the packaged run)"
+      : "compatible entrypoint, declared permissions, and known vscode API namespaces (static analysis only; activation success requires the packaged run)";
     return record;
   } finally {
     await archive.close();

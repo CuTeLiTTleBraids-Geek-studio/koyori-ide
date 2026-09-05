@@ -17,9 +17,9 @@ package services
 //   - 操作日志审计：每次不可逆操作记录到审计日志（Step 7）
 //   - G-SEC-12：默认 Enabled=false，启用需 explicitApproval（Step 8）
 //
-// 原生操作通过平台特定文件实现：
-//   - computer_use_windows.go：Windows 截图/鼠标键盘（gdi32/user32）
-//   - computer_use_unix.go：Linux/macOS stub（返回 ErrPlatformUnsupported）
+// Windows：screenshot / mouse / keyboard 走 gdi32/user32（默认 Enabled=false，
+// 仍需审批）。Unix 保持 stub + ErrPlatformUnsupported。启用开关不会默认打开
+// 桌面控制；测试必须绑定专用窗口，禁止操作任意桌面。
 //
 // 配置持久化用 atomicWriteJSON（0600），复用既有原子写实现。
 
@@ -229,7 +229,7 @@ func NewComputerUseService(configDir string) *ComputerUseService {
 	svc := &ComputerUseService{
 		config:           defaultComputerUseConfig(),
 		configDir:        configDir,
-		platform:         newPlatformExecutor(), // 平台 stub
+		platform:         newPlatformExecutor(),
 		approveOperation: nativeComputerUseApproval,
 		approvals:        make(map[string]computerUseApproval),
 		configGeneration: 1,
@@ -420,6 +420,29 @@ func isHotkeyForbidden(forbidden []string, keys string) bool {
 }
 
 // isPointInForbiddenZone 检查坐标是否落入禁止区域。
+var computerUseForegroundProcess = foregroundProcessNameForComputerUse
+
+func foregroundProcessNameForComputerUse() (string, error) {
+	return platformForegroundProcessName()
+}
+
+func enforceComputerUseProcessWhitelist(cfg ComputerUseConfig) error {
+	if len(cfg.AppWhitelist) == 0 {
+		return nil
+	}
+	name, err := computerUseForegroundProcess()
+	if err != nil {
+		return fmt.Errorf("computer use whitelist lookup failed: %w", ErrNotAllowed)
+	}
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	for _, allowed := range cfg.AppWhitelist {
+		if strings.ToLower(strings.TrimSpace(allowed)) == normalized {
+			return nil
+		}
+	}
+	return fmt.Errorf("foreground process %q is not in the Computer Use whitelist: %w", name, ErrNotAllowed)
+}
+
 func isPointInForbiddenZone(zones []ForbiddenZone, x, y int) bool {
 	for _, z := range zones {
 		if x >= z.X && x < z.X+z.W && y >= z.Y && y < z.Y+z.H {
@@ -450,6 +473,9 @@ func (s *ComputerUseService) checkSafetyAtGeneration(action string, args interfa
 func validateComputerUseSafety(cfg ComputerUseConfig, action string, args interface{}) error {
 	if !cfg.Enabled {
 		return fmt.Errorf("computer use is disabled (G-SEC-12): %w", ErrNotAllowed)
+	}
+	if err := enforceComputerUseProcessWhitelist(cfg); err != nil {
+		return err
 	}
 
 	switch action {
@@ -580,7 +606,16 @@ func (s *ComputerUseService) keyboardHotkey(ctx context.Context, keys string) er
 
 // RequestOperationApproval creates a short-lived, single-use capability bound
 // to one canonical action payload and the current configuration generation.
+// Public callers always require the native confirmation dialog.
 func (s *ComputerUseService) RequestOperationApproval(action, details string) (string, error) {
+	return s.requestOperationApproval(action, details, true, true)
+}
+
+// requestOperationApproval is used by the trusted Agent adapter after the
+// session-level backend approver has made the user-policy decision. It never
+// bypasses operation parsing, enabled/config-generation checks, the HMAC-bound
+// one-time token, or execution-time safety validation.
+func (s *ComputerUseService) requestOperationApproval(action, details string, requireConfirmation, confirmedByUser bool) (string, error) {
 	action = strings.TrimSpace(action)
 	canonicalDetails, safetyArg, _, err := parseComputerUseOperation(action, details)
 	if err != nil {
@@ -592,13 +627,12 @@ func (s *ComputerUseService) RequestOperationApproval(action, details string) (s
 		return "", err
 	}
 
-	s.mu.RLock()
-	approve := s.approveOperation
-	s.mu.RUnlock()
-	if approve == nil || !approve(action, canonicalDetails) {
-		err := fmt.Errorf("computer use operation was not approved: %w", ErrNotAllowed)
-		s.recordAudit(action, computerUseAuditSummary(action, canonicalDetails), false, false, err.Error())
-		return "", err
+	if requireConfirmation {
+		if !s.confirmOperation(action, canonicalDetails) {
+			err := fmt.Errorf("computer use operation was not approved: %w", ErrNotAllowed)
+			s.recordAudit(action, computerUseAuditSummary(action, canonicalDetails), false, false, err.Error())
+			return "", err
+		}
 	}
 
 	if !s.approvalKeyReady {
@@ -610,7 +644,7 @@ func (s *ComputerUseService) RequestOperationApproval(action, details string) (s
 		details:          canonicalDetails,
 		configGeneration: generation,
 		expiresAt:        now.Add(computerUseApprovalTTL),
-		confirmedByUser:  true,
+		confirmedByUser:  confirmedByUser,
 	}
 	for attempts := 0; attempts < 4; attempts++ {
 		token, err := newComputerUseApprovalToken()
@@ -641,6 +675,13 @@ func (s *ComputerUseService) RequestOperationApproval(action, details string) (s
 		return token, nil
 	}
 	return "", fmt.Errorf("create unique computer use approval token: %w", ErrInvalidInput)
+}
+
+func (s *ComputerUseService) confirmOperation(action, canonicalDetails string) bool {
+	s.mu.RLock()
+	approve := s.approveOperation
+	s.mu.RUnlock()
+	return approve != nil && approve(action, canonicalDetails)
 }
 
 // ExecuteApprovedOperation atomically consumes a backend-issued capability and
@@ -965,3 +1006,7 @@ func (s *ComputerUseService) recordAction(action, args string) {
 		Args:      args,
 	})
 }
+
+// ---------------------------------------------------------------------------
+// 辅助：PNG 编码（Step 2，供平台实现使用）
+// ---------------------------------------------------------------------------

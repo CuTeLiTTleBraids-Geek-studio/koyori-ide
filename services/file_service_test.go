@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ func newFileServiceAt(t *testing.T, root string) *FileService {
 	if err := svc.setWorkspaceRoot(root); err != nil {
 		t.Fatalf("SetWorkspaceRoot(%q): %v", root, err)
 	}
+	t.Cleanup(func() { _ = svc.close() })
 	return svc
 }
 
@@ -83,6 +85,44 @@ func TestFileService_ReadFileRejectsOversizedFile(t *testing.T) {
 	}
 }
 
+func TestFileService_ReadFileLeafReplacementUsesOpenedHandle(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	detached := filepath.Join(dir, "target-detached.txt")
+	if err := os.WriteFile(target, []byte("opened-object"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := newFileServiceAt(t, dir)
+	svc.readFileAfterStat = func() error {
+		if err := os.Rename(target, detached); err != nil {
+			return err
+		}
+		replacement, err := os.Create(target)
+		if err != nil {
+			return err
+		}
+		if err := replacement.Truncate(maxReadableFileBytes + 1); err != nil {
+			_ = replacement.Close()
+			return err
+		}
+		return replacement.Close()
+	}
+	content, err := svc.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile after leaf replacement: %v", err)
+	}
+	if content != "opened-object" {
+		t.Fatalf("ReadFile returned replacement content (%d bytes), want opened object", len(content))
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != maxReadableFileBytes+1 {
+		t.Fatalf("replacement size = %d, want %d", info.Size(), maxReadableFileBytes+1)
+	}
+}
+
 func TestFileService_WriteFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.txt")
@@ -99,6 +139,363 @@ func TestFileService_WriteFile(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "written content" {
 		t.Errorf("expected 'written content', got '%s'", string(data))
+	}
+}
+
+func TestFileService_WriteFileCreatesMissingParents(t *testing.T) {
+	dir := t.TempDir()
+	svc := newFileServiceAt(t, dir)
+	target := filepath.Join(dir, "missing", "deep", "file.txt")
+	if err := svc.WriteFile(target, "nested content"); err != nil {
+		t.Fatalf("WriteFile with missing parents: %v", err)
+	}
+	assertFileContent(t, target, "nested content")
+}
+
+// TestFileService_H1_InitialBypass_ParentSymlinkSwapAfterValidation captures
+// H1's initial bypass condition. A pathname write after validation would follow
+// the replacement link and modify outsideFile. This test describes that bypass
+// case; it does not claim a historical test execution or result.
+func TestFileService_H1_InitialBypass_ParentSymlinkSwapAfterValidation(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	parent := filepath.Join(workspace, "parent")
+	if err := os.Mkdir(parent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(workspace, "symlink-probe")
+	if !trySymlinkOrFail(t, probe, outside) {
+		return
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(parent, "escape.txt")
+	outsideFile := filepath.Join(outside, "escape.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside-original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	movedParent := parent + "-old"
+	swapped := false
+	svc := newFileServiceAt(t, workspace)
+	svc.rootOperationHook = func(operation string) error {
+		if operation != "WriteFile" {
+			return nil
+		}
+		if err := os.Rename(parent, movedParent); err != nil {
+			return err
+		}
+		if err := os.Symlink(outside, parent); err != nil {
+			return err
+		}
+		swapped = true
+		return nil
+	}
+
+	if err := svc.WriteFile(target, "must not leave workspace"); err == nil {
+		t.Fatal("WriteFile succeeded through a parent replaced by an external symlink")
+	}
+	if !swapped {
+		t.Fatal("test hook did not replace the validated parent")
+	}
+	gotOutside, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotOutside) != "outside-original" {
+		t.Fatalf("outside file was modified after parent replacement: %q", gotOutside)
+	}
+	if _, err := os.Stat(filepath.Join(movedParent, "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("detached parent was modified: %v", err)
+	}
+}
+
+func TestFileService_H1_WriteFile_RootSymlinkSwapAfterValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 的 os.Root 目录句柄会阻止 rename（本地探针验证：句柄打开期间 rename 恒失败），无法用 rename 模拟 root 替换攻击；该平台的绑定根保护由句柄本身强制，强于 unix 的路径解析检查。unix CI 腿仍然执行本测试。")
+	}
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "escape.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside-original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(workspace, "escape.txt")
+	oldWorkspace := workspace + "-old"
+	probe := filepath.Join(workspace, "symlink-probe")
+	if !trySymlinkOrFail(t, probe, outside) {
+		return
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+	swapped := false
+	svc := newFileServiceAt(t, workspace)
+	svc.rootOperationHook = func(operation string) error {
+		if operation != "WriteFile" {
+			return nil
+		}
+		if err := os.Rename(workspace, oldWorkspace); err != nil {
+			return err
+		}
+		if err := os.Symlink(outside, workspace); err != nil {
+			return err
+		}
+		swapped = true
+		return nil
+	}
+
+	writeErr := svc.WriteFile(target, "must stay in workspace")
+	if !swapped {
+		t.Fatal("test hook did not replace the validated root")
+	}
+	gotOutside, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotOutside) != "outside-original" {
+		t.Fatalf("outside file was modified after parent replacement: %q", gotOutside)
+	}
+	if writeErr != nil {
+		t.Fatalf("WriteFile: %v", writeErr)
+	}
+	gotInside, err := os.ReadFile(filepath.Join(oldWorkspace, "escape.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotInside) != "must stay in workspace" {
+		t.Fatalf("bound workspace file = %q", gotInside)
+	}
+}
+
+func TestFileService_H1_ParentSwap_AllOperationsStayInsideRoot(t *testing.T) {
+	operations := []struct {
+		name string
+		run  func(*FileService, string) error
+	}{
+		{"ReadFile", func(s *FileService, parent string) error {
+			_, err := s.ReadFile(filepath.Join(parent, "item.txt"))
+			return err
+		}},
+		{"WriteFile", func(s *FileService, parent string) error {
+			return s.WriteFile(filepath.Join(parent, "item.txt"), "changed")
+		}},
+		{"CreateFile", func(s *FileService, parent string) error { return s.CreateFile(filepath.Join(parent, "created.txt")) }},
+		{"CreateDirectory", func(s *FileService, parent string) error {
+			return s.CreateDirectory(filepath.Join(parent, "created-dir"))
+		}},
+		{"DeletePath", func(s *FileService, parent string) error { return s.DeletePath(filepath.Join(parent, "item.txt")) }},
+		{"RenamePath", func(s *FileService, parent string) error {
+			return s.RenamePath(filepath.Join(parent, "item.txt"), filepath.Join(parent, "renamed.txt"))
+		}},
+		{"ListDirectory", func(s *FileService, parent string) error { _, err := s.ListDirectory(parent); return err }},
+		{"ListAllFiles", func(s *FileService, parent string) error { _, err := s.ListAllFiles(parent); return err }},
+		{"WriteFileIfUnchanged", func(s *FileService, parent string) error {
+			return s.WriteFileIfUnchanged(filepath.Join(parent, "item.txt"), "changed", contentHash([]byte("inside")))
+		}},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			base := t.TempDir()
+			workspace := filepath.Join(base, "workspace")
+			outside := filepath.Join(base, "outside")
+			parent := filepath.Join(workspace, "parent")
+			if err := os.MkdirAll(parent, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(outside, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(parent, "item.txt"), []byte("inside"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			outsideFile := filepath.Join(outside, "item.txt")
+			if err := os.WriteFile(outsideFile, []byte("outside-sentinel"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !trySymlinkOrFail(t, filepath.Join(workspace, "probe"), outside) {
+				return
+			}
+			if err := os.Remove(filepath.Join(workspace, "probe")); err != nil {
+				t.Fatal(err)
+			}
+			detached := parent + "-detached"
+			svc := newFileServiceAt(t, workspace)
+			svc.rootOperationHook = func(got string) error {
+				if got != operation.name {
+					return nil
+				}
+				if err := os.Rename(parent, detached); err != nil {
+					return err
+				}
+				return os.Symlink(outside, parent)
+			}
+			if err := operation.run(svc, parent); err == nil {
+				t.Fatalf("%s succeeded after parent swap", operation.name)
+			}
+			assertFileContent(t, outsideFile, "outside-sentinel")
+			if _, err := os.Stat(filepath.Join(outside, "created.txt")); !os.IsNotExist(err) {
+				t.Fatalf("outside create result changed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(outside, "created-dir")); !os.IsNotExist(err) {
+				t.Fatalf("outside mkdir result changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileService_H1_RootSwap_AllOperationsUseBoundRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 的 os.Root 目录句柄会阻止 rename（本地探针验证：句柄打开期间 rename 恒失败），无法用 rename 模拟 root 替换攻击；该平台的绑定根保护由句柄本身强制，强于 unix 的路径解析检查。unix CI 腿仍然执行本测试。")
+	}
+	operations := []struct {
+		name string
+		run  func(*FileService, string) error
+	}{
+		{"ReadFile", func(s *FileService, root string) error {
+			_, err := s.ReadFile(filepath.Join(root, "item.txt"))
+			return err
+		}},
+		{"WriteFile", func(s *FileService, root string) error {
+			return s.WriteFile(filepath.Join(root, "item.txt"), "changed")
+		}},
+		{"CreateFile", func(s *FileService, root string) error { return s.CreateFile(filepath.Join(root, "created.txt")) }},
+		{"CreateDirectory", func(s *FileService, root string) error { return s.CreateDirectory(filepath.Join(root, "created-dir")) }},
+		{"DeletePath", func(s *FileService, root string) error { return s.DeletePath(filepath.Join(root, "item.txt")) }},
+		{"RenamePath", func(s *FileService, root string) error {
+			return s.RenamePath(filepath.Join(root, "item.txt"), filepath.Join(root, "renamed.txt"))
+		}},
+		{"ListDirectory", func(s *FileService, root string) error { _, err := s.ListDirectory(root); return err }},
+		{"ListAllFiles", func(s *FileService, root string) error { _, err := s.ListAllFiles(root); return err }},
+		{"WriteFileIfUnchanged", func(s *FileService, root string) error {
+			return s.WriteFileIfUnchanged(filepath.Join(root, "item.txt"), "changed", contentHash([]byte("inside")))
+		}},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			base := t.TempDir()
+			workspace := filepath.Join(base, "workspace")
+			outside := filepath.Join(base, "outside")
+			if err := os.MkdirAll(workspace, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(outside, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workspace, "item.txt"), []byte("inside"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			outsideFile := filepath.Join(outside, "item.txt")
+			if err := os.WriteFile(outsideFile, []byte("outside-sentinel"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !trySymlinkOrFail(t, filepath.Join(workspace, "probe"), outside) {
+				return
+			}
+			if err := os.Remove(filepath.Join(workspace, "probe")); err != nil {
+				t.Fatal(err)
+			}
+			detached := workspace + "-detached"
+			svc := newFileServiceAt(t, workspace)
+			svc.rootOperationHook = func(got string) error {
+				if got != operation.name {
+					return nil
+				}
+				if err := os.Rename(workspace, detached); err != nil {
+					return err
+				}
+				return os.Symlink(outside, workspace)
+			}
+			if err := operation.run(svc, workspace); err != nil {
+				t.Fatalf("%s on bound root: %v", operation.name, err)
+			}
+			assertFileContent(t, outsideFile, "outside-sentinel")
+			if _, err := os.Stat(filepath.Join(outside, "created.txt")); !os.IsNotExist(err) {
+				t.Fatalf("outside create result changed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(outside, "created-dir")); !os.IsNotExist(err) {
+				t.Fatalf("outside mkdir result changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileService_H1_WorkspaceSwitchRetiresRootsAfterCapabilityRelease(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	svc := newFileServiceAt(t, rootA)
+	capability, err := svc.acquireCapability(filepath.Join(rootA, "held.txt"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := capability.workspace
+	if err := svc.setWorkspaceRoot(rootB); err != nil {
+		t.Fatal(err)
+	}
+	if old.roots[0].root == nil {
+		t.Fatal("retired root closed while an operation still held a capability")
+	}
+	if err := capability.withCurrent(func() error { return nil }); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("old capability error = %v, want ErrNotAllowed", err)
+	}
+	capability.releaseCapability()
+	if old.roots[0].root != nil {
+		t.Fatal("retired root handle remained open after capability release")
+	}
+}
+
+func TestFileService_H1_SetWorkspaceRootsFailureRollsBack(t *testing.T) {
+	root := canonicalTestPath(t, t.TempDir())
+	svc := newFileServiceAt(t, root)
+	previous := svc.secureWorkspace
+	err := svc.setWorkspaceRoots([]string{t.TempDir(), filepath.Join(t.TempDir(), "missing")})
+	if err == nil {
+		t.Fatal("SetWorkspaceRoots accepted a missing secondary root")
+	}
+	if svc.secureWorkspace != previous || svc.WorkspaceRoots()[0] != root {
+		t.Fatal("failed root set changed the active workspace")
+	}
+	capability, err := svc.acquireCapability(root, false)
+	if err != nil {
+		t.Fatalf("acquire root after failed switch: %v", err)
+	}
+	defer capability.releaseCapability()
+	if _, err := capability.root.root.Stat("."); err != nil {
+		t.Fatalf("active root was closed by failed switch: %v", err)
+	}
+}
+
+func TestFileService_H1_MultiRootRenameFailsClosed(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	source := filepath.Join(rootA, "source.txt")
+	destination := filepath.Join(rootB, "destination.txt")
+	if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewFileService()
+	t.Cleanup(func() { _ = svc.close() })
+	if err := svc.setWorkspaceRoots([]string{rootA, rootB}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RenamePath(source, destination); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("cross-root rename error = %v, want ErrNotAllowed", err)
+	}
+	assertFileContent(t, source, "source")
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("cross-root destination changed: %v", err)
+	}
+}
+
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+	if string(data) != want {
+		t.Fatalf("%s = %q, want %q", path, data, want)
 	}
 }
 
@@ -212,10 +609,7 @@ func TestFileService_WorkspaceAllowsInsidePath(t *testing.T) {
 	workspace := t.TempDir()
 	innerFile := filepath.Join(workspace, "inside.txt")
 
-	svc := &FileService{}
-	if err := svc.setWorkspaceRoot(workspace); err != nil {
-		t.Fatalf("SetWorkspaceRoot failed: %v", err)
-	}
+	svc := newFileServiceAt(t, workspace)
 	if err := svc.WriteFile(innerFile, "data"); err != nil {
 		t.Fatalf("WriteFile inside workspace should succeed: %v", err)
 	}
@@ -1027,7 +1421,7 @@ func TestEvalSymlinksAllowMissing_NonExistentFileWithExistentParent(t *testing.T
 }
 
 func TestEvalSymlinksAllowMissing_NonExistentParent(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonicalTestPath(t, t.TempDir())
 	// Both the file and its parent don't exist.
 	file := filepath.Join(dir, "missing-subdir", "newfile.txt")
 	got, err := evalSymlinksAllowMissing(file)
@@ -1049,10 +1443,7 @@ func TestFileService_N56_RejectsTraversalPath_Lexical(t *testing.T) {
 	os.Mkdir(filepath.Join(workspace, "subdir"), 0755)
 	traversalPath := filepath.Join(workspace, "subdir", "..", "..", "outside.txt")
 
-	svc := &FileService{}
-	if err := svc.setWorkspaceRoot(workspace); err != nil {
-		t.Fatalf("SetWorkspaceRoot failed: %v", err)
-	}
+	svc := newFileServiceAt(t, workspace)
 	if _, err := svc.ReadFile(traversalPath); err == nil {
 		t.Error("ReadFile with lexical traversal should fail")
 	}
@@ -1131,7 +1522,7 @@ func TestFileService_P4_MultiRootValidation(t *testing.T) {
 // TestFileService_P4_SingleRootDegradation 验证多根接口在传入单个根时
 // 退化为单根行为，且 rootDir 字段同步更新。
 func TestFileService_P4_SingleRootDegradation(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	svc := &FileService{}
 	if err := svc.setWorkspaceRoots([]string{root}); err != nil {
 		t.Fatalf("SetWorkspaceRoots(single) failed: %v", err)

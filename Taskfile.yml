@@ -27,11 +27,13 @@ tasks:
       - node scripts/generate-bindings.mjs
 
   bindings:check:
-    summary: Verify the complete generated tree, export policy, and drift failures
+    summary: Verify the generated tree, export policy, drift, and import layering (P19 P1-07)
     dir: .
     cmds:
       - node --test scripts/wails-bindings.test.mjs
+      - node --test scripts/check-bindings-imports.test.mjs
       - node scripts/check-bindings.mjs
+      - node scripts/check-bindings-imports.mjs
 
   docs:check:
     summary: Verify README numbers match code constants (MAX_TOOL_CALLS)
@@ -63,9 +65,11 @@ tasks:
 
   build:
     summary: Builds the application
+    preconditions:
+      - sh: '{{if or (eq .DEV "") (eq .DEV "true") (eq .DEV "false")}}true{{else}}false{{end}}'
+        msg: 'DEV must be "true" or "false" (for a development build, use: wails3 build DEV=true)'
     cmds:
       - task: "{{.GOOS}}:build"
-
   package:
     summary: Packages a production build of the application
     cmds:
@@ -102,6 +106,10 @@ tasks:
       - task: common:build:docker
 
   run:docker:
-    summary: Builds and runs the Docker image
+    summary: Runs the authenticated Docker server on host loopback
+    desc: |
+      Set KOYORI_SERVER_TOKEN to a random value of at least 32 bytes before
+      running this task. The host mapping is fixed to 127.0.0.1:8080 by
+      default; use the documented TLS/private-proxy deployment for remote use.
     cmds:
       - task: common:run:docker

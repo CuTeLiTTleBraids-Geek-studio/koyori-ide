@@ -329,7 +329,7 @@ func pathToURI(p string) string {
 	// Windows (filepath.Abs would incorrectly prefix the drive).
 	if !filepath.IsAbs(p) {
 		isPOSIXAbs := strings.HasPrefix(p, "/")
-		if runtime.GOOS != "windows" || !isPOSIXAbs {
+		if !(runtime.GOOS == "windows" && isPOSIXAbs) {
 			if abs, err := filepath.Abs(p); err == nil {
 				p = abs
 			}

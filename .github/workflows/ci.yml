@@ -49,6 +49,12 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Check repository text encoding
         run: node scripts/check-encoding.mjs
+      - name: Check for personal filesystem paths
+        run: node scripts/check-personal-paths.mjs
+      - name: Enforce bindings import layering (P19 P1-07)
+        run: node scripts/check-bindings-imports.mjs
+      - name: Check single package manager (npm only)
+        run: node scripts/check-package-manager.mjs
       - name: Packaged E2E driver source contract (not an artifact run)
         shell: bash
         run: |
@@ -75,7 +81,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -92,7 +98,7 @@ jobs:
       - name: Verify Wails pin consistency
         run: node scripts/check-wails-pin.mjs
       - name: Test pin, entrypoint ownership, drift, FQN, and forbidden-export failures
-        run: node --test scripts/wails-bindings.test.mjs
+        run: node --test scripts/wails-bindings.test.mjs scripts/check-bindings-imports.test.mjs
       - name: Generate untracked bindings with the pinned CLI
         run: node scripts/generate-bindings.mjs
       - name: Check generated bindings
@@ -115,7 +121,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
+
+      - name: Set up Node.js for binding generation
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
 
       # G-CI-01: `go build .` embeds all:frontend/dist, so the frontend must
       # be built before compiling. `npm run build` regenerates the Wails
@@ -143,6 +154,31 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # P19 CI repair: the root package imports wails v3, whose Linux webview
+      # binding is cgo — vet/build/test of `.` needs the gtk/webkit headers.
+      - name: Install Linux GUI build deps (root package cgo)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
+
+      # TestMCPServiceRendererBindingContract asserts the generated
+      # mcpservice.ts against the deny-only surface, so the go-test legs need
+      # the same untracked bindings tree the wails-bindings job verifies.
+      - name: Generate untracked Wails bindings
+        run: node scripts/generate-bindings.mjs
+
+      # The root package embeds frontend/dist (go:embed in main.go). Go-only
+      # CI legs do not build the frontend, so a placeholder index.html is
+      # provided to satisfy the embed pattern — BOTH `go vet` (which loads
+      # the root package via `.`) and `go build`/`go test` resolve it. The
+      # real asset pipeline is exercised by the wails-build job.
+      - name: Provide placeholder frontend assets for go:embed
+        shell: bash
+        run: |
+          mkdir -p frontend/dist
+          printf '<!doctype html>\n' > frontend/dist/index.html
+
       # N-129: vet the root package, services, and the repository governance
       # tests (internal/repo). We avoid `./...` because it would also traverse
       # frontend/node_modules (which contains third-party Go files like
@@ -151,17 +187,18 @@ jobs:
       - name: Vet
         run: go vet ./services/... . ./internal/repo/...
 
+      # P19 CI 修复：`go build .` 会把二进制落在仓库根目录，G17 卫生测试
+      # 会因此报 "koyori-ide.exe still exists"。输出到 runner 临时目录。
       - name: Build
-        # Output to bin/ (gitignored): on Windows `go build .` would leave
-        # koyori-ide.exe in the repo root, failing the G17 hygiene test.
-        run: go build -o bin/ .
+        shell: bash
+        run: go build -o "${RUNNER_TEMP}/koyori-ide-ci-build" .
 
       # N-129: test the root package (main_test.go covers CSP nonce
       # injection), services, and the repository governance tests. The
       # previous `./services/...` skipped the root. We don't use `./...` for
       # the same reason as Vet.
       # G-CI-14: GitHub Windows runners point TEMP/TMP at the 8.3 short path
-      # (C:\Users\RUNNER~1\...). Services resolve symlinks and return the long
+      # (C:\Users\<runner-shortname>\...). Services resolve symlinks and return the long
       # name, so tests comparing os.TempDir()-derived expectations fail with a
       # RUNNER~1 vs runneradmin mismatch. runner.temp is the canonical runner
       # path, free of short-name aliases.
@@ -199,35 +236,31 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
-      # G-CI-07: golangci-lint's typecheck linter compiles the root package,
-      # which embeds all:frontend/dist — build the frontend first (same as
-      # the go-test job) or lint fails with "pattern all:frontend/dist: no
-      # matching files found".
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "20.19"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install Linux GUI build deps
+          go-version: "1.26.6"
+      # P19 CI repair: golangci-lint's SSA loader (buildir) needs export data
+      # for wails v3's internal/assetserver/webview, whose Linux build is cgo
+      # and fails to compile without the gtk/webkit headers ("no export data").
+      - name: Install Linux GUI build deps (root package cgo)
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
-      - name: Build frontend for embedded assets
+      # golangci-lint type-checks the root package, whose go:embed needs
+      # frontend/dist to resolve on a fresh checkout.
+      - name: Provide placeholder frontend assets for go:embed
+        shell: bash
         run: |
-          npm ci --registry=https://registry.npmjs.org
-          npm run build
-        working-directory: frontend
+          mkdir -p frontend/dist
+          printf '<!doctype html>\n' > frontend/dist/index.html
       - name: golangci-lint
-        # G-CI-03: golangci-lint v2 is required — every v1.x release is built
-        # with go < 1.25 and cannot load a go.mod with `go 1.25.0`.
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: v2.12.2
-          # Scope to project packages: root + services. Avoids traversing
-          # frontend/node_modules and build/ scaffolding.
-          args: --timeout=10m ./services/... .
+        # P19 CI repair: the golangci-lint-action ships v1.62.0 built with
+        # go1.23, which refuses a go.mod targeting 1.25 ("Go language version
+        # used to build golangci-lint is lower than the targeted Go version").
+        # Installing the last v1-line release with the runner's own Go
+        # satisfies that check without migrating .golangci.yml to the v2
+        # schema.
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          golangci-lint run --timeout=10m ./services/... .
       # P3: gofmt + goimports format check. golangci-lint intentionally
       # does not enable gofmt/goimports linters (they produce noisy diffs
       # on existing code). Instead we run a dedicated formatter pass that
@@ -269,7 +302,7 @@ jobs:
       - name: Set up Go for pinned binding generation
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Node.js
@@ -288,6 +321,15 @@ jobs:
       - name: Install dependencies
         run: npm ci --registry=https://registry.npmjs.org
         working-directory: frontend
+
+      # P19 CI repair: the pinned wails3 CLI is a cgo program on Linux —
+      # `go install` needs gtk4/webkitgtk pkg-config entries or it fails with
+      # "Package gtk4 was not found in the pkg-config search path".
+      - name: Install Linux GUI build deps (wails3 CLI pkg-config)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
 
       - name: Generate untracked Wails bindings
         run: node scripts/generate-bindings.mjs
@@ -332,7 +374,7 @@ jobs:
       - name: Set up Go for pinned binding generation
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
           cache: true
 
       - name: Set up Node.js
@@ -350,6 +392,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --registry=https://registry.npmjs.org
         working-directory: frontend
+
+      # P19 CI repair: same as the frontend matrix — the wails3 CLI install
+      # behind generate-bindings.mjs needs gtk/webkit pkg-config on Linux.
+      - name: Install Linux GUI build deps (wails3 CLI pkg-config)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
 
       - name: Generate untracked Wails bindings
         run: node scripts/generate-bindings.mjs
@@ -381,7 +430,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -399,12 +448,26 @@ jobs:
         run: npm ci --registry=https://registry.npmjs.org
         working-directory: frontend
 
-      # Match the wails v3 version pinned in go.mod (v3.0.0-beta.5).
+      # Match the wails v3 version pinned in go.mod (v3.0.0-alpha2.111).
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
+
+      # P19 CI repair: the alpha2.111 build pipeline's common:go:mod:verify
+      # task runs `go list .` BEFORE build:frontend produces the real assets,
+      # and `go list` resolves the root package's go:embed of frontend/dist.
+      # A placeholder index.html satisfies the pattern at that point; vite's
+      # emptyOutDir then replaces it wholesale during build:frontend.
+      - name: Provide placeholder frontend assets for go:embed
+        shell: bash
+        run: |
+          mkdir -p frontend/dist
+          printf '<!doctype html>\n' > frontend/dist/index.html
 
       - name: Wails build
-        run: wails3 build -tags desktop,production
+        # P19 CI repair: alpha2.111's build Taskfile requires an explicit DEV
+        # variable ("task: DEV must be \"true\" or \"false\"") — production
+        # builds pass DEV=false.
+        run: wails3 build -tags desktop,production DEV=false
 
   # GOAL-P0-06: packaged desktop E2E against the real built artifact.
   #
@@ -433,7 +496,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: "1.25"
+          go-version: "1.26.6"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -456,7 +519,7 @@ jobs:
       # Must match the wails v3 version pinned in go.mod. check-wails-pin.mjs
       # enforces that this stays in sync.
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 
       - name: Install real Go language server fixture dependency
         run: go install golang.org/x/tools/gopls@v0.21.1
@@ -484,23 +547,23 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
           cache: true
-      # G-CI-04: install the pinned tool first (the module cache from
-      # setup-go makes this a no-op on later runs) instead of `go run @version`
-      # every time, which re-resolves and recompiles on each run and is
-      # vulnerable to transient network hiccups.
-      # G-CI-08: govulncheck type-checks packages with go/packages; the pinned
-      # wails v3 uses cgo on Linux, so the GUI dev headers must be present or
-      # the scan fails with "could not import C (no metadata for C)".
+      # P19 CI repair: govulncheck type-checks the wails dependency tree,
+      # whose Linux cgo files need gtk/webkit pkg-config ("could not import C
+      # (no metadata for C)"), and loading the root package requires the
+      # frontend/dist embed pattern to resolve.
       - name: Install Linux GUI build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: Provide placeholder frontend assets for go:embed
+        shell: bash
+        run: |
+          mkdir -p frontend/dist
+          printf '<!doctype html>\n' > frontend/dist/index.html
       - name: Govulncheck
-        run: govulncheck ./services/... .
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./services/... .
 
   # G-PERF-04: Performance comparison. Runs Go benchmarks on the services
   # package and uses benchstat to report statistical differences from a
@@ -514,7 +577,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
           cache: true
       - name: Run benchmarks
         run: |
@@ -583,7 +646,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.25'
+          go-version: '1.26.6'
+      # P19 CI repair: `go test ./services/` compiles the wails dependency
+      # tree, whose Linux cgo files need gtk/webkit pkg-config headers.
+      - name: Install Linux GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev pkg-config
       - name: Install gopls
         run: go install golang.org/x/tools/gopls@v0.21.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

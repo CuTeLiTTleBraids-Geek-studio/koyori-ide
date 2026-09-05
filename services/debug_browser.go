@@ -285,7 +285,7 @@ func allocateBrowserDebugPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = listener.Close() }()
+	defer listener.Close()
 	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
 	if !ok || tcpAddr.Port < 1 || tcpAddr.Port > 65535 {
 		return 0, fmt.Errorf("invalid allocated browser debugger port")
@@ -535,7 +535,7 @@ func enumerateBrowserTargets(ctx context.Context, address string, timeout time.D
 	if err != nil {
 		return nil, fmt.Errorf("enumerate browser targets: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBrowserTargetResponseSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read browser targets: %w", err)

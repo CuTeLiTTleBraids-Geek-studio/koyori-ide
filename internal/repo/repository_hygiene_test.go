@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -45,11 +47,11 @@ func TestG17RepositoryHygieneAndIgnoreRules(t *testing.T) {
 func TestG17LocalClaudeSettingsContainOnlyPermissions(t *testing.T) {
 	raw, err := os.ReadFile("../../.claude/settings.local.json")
 	if err != nil {
-		if os.IsNotExist(err) {
-			// G-CI-05: .claude/ is gitignored and only present on developer
-			// machines; a fresh checkout (e.g. CI) never has it. This is a
-			// local-only hygiene gate, so skip instead of failing.
-			t.Skip("local-only check: .claude/settings.local.json not present in this checkout")
+		// 该文件是开发者本机的 .claude 本地配置（被 /.claude/ 规则
+		// gitignore）。文件不存在（CI、全新 clone）时无从守护，直接跳过；
+		// 存在时必须只含 permissions 键。
+		if errors.Is(err, fs.ErrNotExist) {
+			t.Skip(".claude/settings.local.json is not present on this machine")
 		}
 		t.Fatal(err)
 	}

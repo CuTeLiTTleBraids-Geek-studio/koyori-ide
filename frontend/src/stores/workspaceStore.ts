@@ -106,7 +106,10 @@ export function isCodeWorkspacePath(path: string): boolean {
  * @param baseDir .code-workspace 文件所在目录的绝对路径，用于解析相对路径
  * @returns 解析后的绝对路径列表（已去重，顺序保留）
  */
-export function parseCodeWorkspaceContent(content: string, baseDir: string): string[] {
+export function parseCodeWorkspaceContent(
+  content: string,
+  baseDir: string,
+): string[] {
   if (!content.trim()) {
     throw new Error("code-workspace content is empty");
   }
@@ -114,7 +117,9 @@ export function parseCodeWorkspaceContent(content: string, baseDir: string): str
   try {
     ws = JSON.parse(content) as CodeWorkspaceFile;
   } catch (e) {
-    throw new Error(`parse code-workspace JSON: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(
+      `parse code-workspace JSON: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
   if (!ws || !Array.isArray(ws.folders)) {
     throw new Error("code-workspace file missing 'folders' array");
@@ -122,17 +127,29 @@ export function parseCodeWorkspaceContent(content: string, baseDir: string): str
   const out: string[] = [];
   const seen = new Set<string>();
   for (let i = 0; i < ws.folders.length; i++) {
-    const f = ws.folders[i] || {};
-    let raw = f.path;
-    if (!raw && f.uri) {
-      raw = uriToLocalPath(f.uri);
+    const f = ws.folders[i];
+    if (!f || typeof f !== "object") {
+      throw new Error(`code-workspace folder[${i}]: expected an object`);
+    }
+    const pathValue = f.path;
+    const uriValue = f.uri;
+    if (pathValue !== undefined && typeof pathValue !== "string") {
+      throw new Error(`code-workspace folder[${i}]: path must be a string`);
+    }
+    if (uriValue !== undefined && typeof uriValue !== "string") {
+      throw new Error(`code-workspace folder[${i}]: uri must be a string`);
+    }
+    let raw = pathValue;
+    if (!raw && uriValue) {
+      raw = uriToLocalPath(uriValue);
     }
     if (!raw) {
       throw new Error(`code-workspace folder[${i}]: missing path/uri`);
     }
     const abs = resolveCodeWorkspaceFolder(raw, baseDir);
-    if (!seen.has(abs)) {
-      seen.add(abs);
+    const identity = workspacePathIdentity(abs);
+    if (!seen.has(identity)) {
+      seen.add(identity);
       out.push(abs);
     }
   }
@@ -149,8 +166,15 @@ export function parseCodeWorkspaceContent(content: string, baseDir: string): str
  */
 function resolveCodeWorkspaceFolder(path: string, baseDir: string): string {
   let p = path;
-  if (p.startsWith("file://")) {
+  if (isFileURI(p)) {
     p = uriToLocalPath(p);
+  }
+  // The browser cannot resolve a drive-relative path (`C:foo`) or a
+  // drive-root-relative path (`\\foo`) without a process drive context.
+  // Publishing either as a workspace root would silently target the wrong
+  // location, so reject them rather than guessing.
+  if (/^[a-zA-Z]:[^\\/]/.test(p) || /^\\(?!\\)/.test(p)) {
+    throw new Error(`unsupported drive-relative workspace path: ${path}`);
   }
   if (!isAbsolutePath(p)) {
     // 用 '/' 拼接再规范化（去除 './' 与多余分隔符）。
@@ -163,19 +187,84 @@ function resolveCodeWorkspaceFolder(path: string, baseDir: string): string {
 
 /**
  * uriToLocalPath 将 file:// URI 转换为本地文件路径。
- * 跨平台兼容：file:///C:/... → C:/...（Windows）。
+ *
+ * URI 的 authority 不能被当成相对路径：`file://server/share/repo`
+ * 是 Windows/UNC 风格的 `//server/share/repo`，而不是当前工作区下的
+ * `server/share/repo`。localhost 按 RFC 8089 视为本机路径。
  */
 function uriToLocalPath(uri: string): string {
-  if (!uri.startsWith("file://")) {
+  if (!isFileURI(uri)) {
     return uri;
   }
-  let p = uri.slice("file://".length);
-  // file:///C:/... → C:/...
-  if (p.length >= 3 && p[0] === "/" && /^[a-zA-Z]$/.test(p[1]) && p[2] === ":") {
-    p = p.slice(1);
+
+  // Windows tooling sometimes emits backslashes in an otherwise file URI.
+  const normalizedURI = uri.replace(/\\/g, "/");
+  const match = /^file:\/\/([^/?#]*)([^?#]*)([?#].*)?$/i.exec(normalizedURI);
+  if (!match) {
+    throw new Error("invalid file URI");
   }
-  // 统一把正斜杠转成当前平台的分隔符由调用方处理；这里返回正斜杠形式。
-  return p;
+  if (match[3]) {
+    throw new Error("file URI must not contain a query or fragment");
+  }
+
+  const authority = decodeURIComponentSafely(match[1]);
+  const path = decodeFileURIPath(match[2] || "");
+  if (authority && authority.toLowerCase() !== "localhost") {
+    if (
+      authority.includes("/") ||
+      authority.includes("\\") ||
+      authority.includes("\0")
+    ) {
+      throw new Error("invalid file URI authority");
+    }
+    // Some producers use file://C:/... (two slashes) for a drive path.
+    if (/^[a-zA-Z]:$/.test(authority)) {
+      return `${authority}${path.startsWith("/") ? path : `/${path}`}`;
+    }
+    return `//${authority}${path.startsWith("/") ? path : `/${path}`}`;
+  }
+
+  // file:///C:/... (and file://localhost/C:/...) → C:/...
+  if (
+    path.length >= 3 &&
+    path[0] === "/" &&
+    /^[a-zA-Z]$/.test(path[1]) &&
+    path[2] === ":"
+  ) {
+    return path.slice(1);
+  }
+  return path || "/";
+}
+
+function isFileURI(value: string): boolean {
+  return /^file:\/\//i.test(value);
+}
+
+function decodeURIComponentSafely(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch (error) {
+    throw new Error(
+      `invalid file URI escape: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function decodeFileURIPath(rawPath: string): string {
+  return rawPath
+    .split("/")
+    .map((segment) => {
+      const decoded = decodeURIComponentSafely(segment);
+      if (
+        decoded.includes("/") ||
+        decoded.includes("\\") ||
+        decoded.includes("\0")
+      ) {
+        throw new Error("file URI contains an encoded path separator or NUL");
+      }
+      return decoded;
+    })
+    .join("/");
 }
 
 /**
@@ -184,9 +273,16 @@ function uriToLocalPath(uri: string): string {
  */
 function isAbsolutePath(p: string): boolean {
   if (!p) return false;
-  if (p.startsWith("/")) return true;
+  if (p.startsWith("\\\\")) return true;
+  const slashed = p.replace(/\\/g, "/");
+  if (slashed.startsWith("/")) return true;
   // Windows drive: C:\ or C:/
-  if (p.length >= 3 && /^[a-zA-Z]$/.test(p[0]) && p[1] === ":" && (p[2] === "\\" || p[2] === "/")) {
+  if (
+    slashed.length >= 3 &&
+    /^[a-zA-Z]$/.test(slashed[0]) &&
+    slashed[1] === ":" &&
+    slashed[2] === "/"
+  ) {
     return true;
   }
   return false;
@@ -194,26 +290,73 @@ function isAbsolutePath(p: string): boolean {
 
 /**
  * normalizePath 规范化路径：去除多余的 './' 与连续分隔符，统一分隔符为
- * 正斜杠。简单实现，不处理 '..'（跨平台 '..' 解析需要 fs/path，浏览器端
- * 不可用；.code-workspace 一般不会出现 .. 模式，由后端二次校验把关）。
+ * 正斜杠。按路径风格保留 POSIX 根、Windows 盘符根和 UNC authority 根；
+ * 并在根边界内解析 '..'；越过根边界时拒绝，避免发布非 canonical 根。
  */
 function normalizePath(p: string): string {
-  // 统一分隔符为 '/'。
-  let s = p.replace(/\\/g, "/");
-  // 去除连续分隔符（但保留开头的双斜杠用于 UNC 路径——这里不处理 UNC）。
-  s = s.replace(/\/+/g, "/");
-  // 去除路径段中的 './'。
-  const parts = s.split("/").filter((seg, i) => {
-    if (seg === "." && i > 0) return false;
-    if (seg === "" && i > 0 && s[i - 1] === "/") return false;
-    return true;
-  });
-  // 重新拼接，保留开头的 '/'（POSIX 绝对路径）或 drive:（Windows 绝对路径）。
-  let out = parts.join("/");
-  if (s.startsWith("/") && !out.startsWith("/")) {
-    out = "/" + out;
+  const slashed = p.replace(/\\/g, "/");
+  if (/^\/\/(?:\?|\.)\//.test(slashed)) {
+    throw new Error(`unsupported device path: ${p}`);
   }
-  return out;
+  if (/^\/\/[^/]+(?:\/|$)/.test(slashed) && !isUNCPath(p)) {
+    throw new Error(`invalid UNC workspace path: ${p}`);
+  }
+  const unc = isUNCPath(p);
+  let prefix = "";
+  let body = slashed;
+  let protectedRootSegments = 0;
+
+  if (unc) {
+    prefix = "//";
+    body = slashed.replace(/^\/+/, "");
+    // A UNC root consists of the server and share components. Do not allow
+    // a dot segment to walk above that authority boundary.
+    protectedRootSegments = 2;
+  } else if (/^[a-zA-Z]:\//.test(slashed)) {
+    prefix = `${slashed.slice(0, 2)}/`;
+    body = slashed.slice(3);
+  } else if (slashed.startsWith("/")) {
+    prefix = "/";
+    body = slashed.replace(/^\/+/, "");
+  }
+
+  const parts: string[] = [];
+  for (const segment of body.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      if (
+        parts.length > protectedRootSegments &&
+        parts[parts.length - 1] !== ".."
+      ) {
+        parts.pop();
+        continue;
+      }
+      if (prefix) {
+        throw new Error(`path escapes workspace root: ${p}`);
+      }
+    }
+    parts.push(segment);
+  }
+  return prefix + parts.join("/");
+}
+
+function isUNCPath(p: string): boolean {
+  const slashed = p.replace(/\\/g, "/");
+  // Keep an authority-looking double slash, but canonicalize ordinary POSIX
+  // roots such as "///tmp" to "/tmp".
+  return (
+    /^\/\/[^/]+\/[^/]+(?:\/|$)/.test(slashed) &&
+    !/^\/\/(?:\?|\.)\//.test(slashed)
+  );
+}
+
+function workspacePathIdentity(path: string): string {
+  // Windows drive and UNC paths are case-insensitive. POSIX roots retain
+  // case-sensitive identity so two legitimate Unix paths are not merged.
+  const slashed = path.replace(/\\/g, "/");
+  return /^[a-zA-Z]:\//.test(slashed) || isUNCPath(slashed)
+    ? slashed.toLowerCase()
+    : slashed;
 }
 
 /**
@@ -227,13 +370,26 @@ function normalizePath(p: string): string {
  * @param workspacePath .code-workspace 文件的绝对路径
  * @returns 解析后的根路径列表（已去重，顺序保留）
  */
-export async function loadWorkspaceFolders(workspacePath: string): Promise<string[]> {
+export async function loadWorkspaceFolders(
+  workspacePath: string,
+): Promise<string[]> {
   // 动态导入避免在测试环境中触发 Wails 绑定加载。
   const { fileService } = await import("@/api/services");
   const content = await fileService.readFile(workspacePath);
-  // baseDir = .code-workspace 文件所在目录。
-  const baseDir = workspacePath.substring(0, Math.max(workspacePath.lastIndexOf("/"), workspacePath.lastIndexOf("\\")));
+  // baseDir = .code-workspace 文件所在目录。保留 POSIX/drive 根目录，
+  // 避免 `/workspace.code-workspace` 被错误地解析成相对路径。
+  const baseDir = workspaceFileBaseDir(workspacePath);
   return parseCodeWorkspaceContent(content, baseDir);
+}
+
+function workspaceFileBaseDir(workspacePath: string): string {
+  const slashed = workspacePath.replace(/\\/g, "/");
+  const separator = slashed.lastIndexOf("/");
+  if (separator < 0) return "";
+  if (separator === 0) return "/";
+  const candidate = slashed.slice(0, separator);
+  if (/^[a-zA-Z]:$/.test(candidate)) return `${candidate}/`;
+  return candidate;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,30 +415,48 @@ export async function openProject(_name: string, path: string): Promise<void> {
   applyWorkspaceSnapshot(snapshot);
 }
 
-export function applyWorkspaceSnapshot(snapshot: WorkspaceAuthoritySnapshot): boolean {
+export function applyWorkspaceSnapshot(
+  snapshot: WorkspaceAuthoritySnapshot,
+): boolean {
   if (!Number.isSafeInteger(snapshot.generation) || snapshot.generation < 0) {
-    console.warn("[workspace] ignored invalid backend generation", snapshot.generation);
+    console.warn(
+      "[workspace] ignored invalid backend generation",
+      snapshot.generation,
+    );
     return false;
   }
   const roots = [...snapshot.roots];
-  if ((snapshot.root === "") !== (roots.length === 0) ||
-      (roots.length > 0 && roots[0] !== snapshot.root)) {
+  if (
+    (snapshot.root === "") !== (roots.length === 0) ||
+    (roots.length > 0 && roots[0] !== snapshot.root)
+  ) {
     console.warn("[workspace] ignored inconsistent backend snapshot", snapshot);
     return false;
   }
 
-  const currentMatches = appState.workspaceGeneration === snapshot.generation &&
+  const currentMatches =
+    appState.workspaceGeneration === snapshot.generation &&
     appState.workspaceRoot === (snapshot.root || null) &&
-    appState.currentProject === (snapshot.projectPath || snapshot.root || null) &&
+    appState.currentProject ===
+      (snapshot.projectPath || snapshot.root || null) &&
     appState.projectName === (snapshot.projectName || null) &&
     appState.workspaceFolders.length === roots.length &&
     appState.workspaceFolders.every((root, index) => root === roots[index]);
-  if (authoritySnapshotApplied && snapshot.generation < appState.workspaceGeneration) {
+  if (
+    authoritySnapshotApplied &&
+    snapshot.generation < appState.workspaceGeneration
+  ) {
     return false;
   }
-  if (authoritySnapshotApplied && snapshot.generation === appState.workspaceGeneration) {
+  if (
+    authoritySnapshotApplied &&
+    snapshot.generation === appState.workspaceGeneration
+  ) {
     if (!currentMatches) {
-      console.warn("[workspace] ignored conflicting snapshot for generation", snapshot.generation);
+      console.warn(
+        "[workspace] ignored conflicting snapshot for generation",
+        snapshot.generation,
+      );
     }
     return false;
   }
@@ -310,19 +484,42 @@ export function applyWorkspaceSnapshot(snapshot: WorkspaceAuthoritySnapshot): bo
   });
 
   const primaryRoot = roots[0] ?? "";
+  // P1-03-E: an MCP workspace switch invalidates every server's discovery
+  // state and sweeps injected MCP context — even when the new workspace is
+  // empty. Lazy import avoids a static store-graph cycle.
+  void import("@/stores/mcp")
+    .then(({ markMcpWorkspaceChanged }) => {
+      markMcpWorkspaceChanged(primaryRoot);
+    })
+    .catch((error) => {
+      console.warn("[workspace] mcp store sync failed", error);
+    });
   if (!primaryRoot) return true;
   // prompt-4 Task 10: 打开项目时同步快照工作区根，激活智能回滚。
-  void import("@/stores/snapshot").then(({ setSnapshotWorkspaceRoot }) => {
-    setSnapshotWorkspaceRoot(primaryRoot);
-  }).catch((error) => {
-    console.warn("[workspace] snapshot store sync failed", error);
-  });
+  void import("@/stores/snapshot")
+    .then(({ setSnapshotWorkspaceRoot }) => {
+      setSnapshotWorkspaceRoot(primaryRoot);
+    })
+    .catch((error) => {
+      console.warn("[workspace] snapshot store sync failed", error);
+    });
   // 同步加载工作流（若 store 已就绪）
-  void import("@/stores/workflows").then(({ loadWorkflows }) => {
-    void loadWorkflows(primaryRoot);
-  }).catch((error) => {
-    console.warn("[workspace] workflow store sync failed", error);
-  });
+  void import("@/stores/workflows")
+    .then(({ cleanupWorkflowRuntime, loadWorkflows }) => {
+      cleanupWorkflowRuntime();
+      void loadWorkflows(primaryRoot);
+    })
+    .catch((error) => {
+      console.warn("[workspace] workflow store sync failed", error);
+    });
+  void import("@/stores/tasks")
+    .then(({ cleanupTaskStoreTimers, loadTasks }) => {
+      cleanupTaskStoreTimers();
+      void loadTasks(primaryRoot);
+    })
+    .catch((error) => {
+      console.warn("[workspace] task store sync failed", error);
+    });
   return true;
 }
 
@@ -332,13 +529,17 @@ export async function syncWorkspaceSnapshot(): Promise<boolean> {
 }
 
 export function handleWorkspaceChangedEvent(event: unknown): void {
-  const payload = event && typeof event === "object" && "data" in event
-    ? (event as { data: unknown }).data
-    : event;
+  const payload =
+    event && typeof event === "object" && "data" in event
+      ? (event as { data: unknown }).data
+      : event;
   if (!payload || typeof payload !== "object") return;
   const snapshot = payload as Partial<WorkspaceAuthoritySnapshot>;
-  if (typeof snapshot.root !== "string" || !Array.isArray(snapshot.roots) ||
-      typeof snapshot.generation !== "number") {
+  if (
+    typeof snapshot.root !== "string" ||
+    !Array.isArray(snapshot.roots) ||
+    typeof snapshot.generation !== "number"
+  ) {
     return;
   }
   applyWorkspaceSnapshot(snapshot as WorkspaceAuthoritySnapshot);
@@ -354,13 +555,15 @@ export function resetWorkspaceAuthorityForTesting(): void {
  */
 function triggerWorkspaceContainsForFolders(folders: string[]): void {
   if (!folders || folders.length === 0) return;
-  void import("@/lib/vscodeExtensionActivation").then(
-    ({ activateOnWorkspaceContains }) => {
+  void import("@/lib/vscodeExtensionActivation")
+    .then(({ activateOnWorkspaceContains }) => {
       for (const folder of folders) {
         if (folder) {
           void activateOnWorkspaceContains(folder);
         }
       }
-    },
-  ).catch((err) => console.warn("[F-3] activateOnWorkspaceContains failed:", err));
+    })
+    .catch((err) =>
+      console.warn("[F-3] activateOnWorkspaceContains failed:", err),
+    );
 }

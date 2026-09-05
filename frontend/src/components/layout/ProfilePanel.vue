@@ -344,7 +344,7 @@ function formatValue(unit: string, value: number): string {
   padding: 2px 8px;
   border-radius: 4px;
   border: 1px solid var(--color-border, #444);
-  background: var(--color-bg-elevated, #2a2a2c);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: inherit;
   cursor: pointer;
 }

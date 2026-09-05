@@ -17,6 +17,7 @@ import {
   parseSyncOrigin,
 } from "@/lib/windowOrigin";
 import { subscribeCrossWindowEvent } from "@/lib/crossWindowSync";
+import { aiState, isConversationTransitionBlocked } from "@/stores/ai";
 
 const props = defineProps<{
   width: number;
@@ -28,6 +29,12 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const conversationBusy = computed(() => {
+  void aiState.streaming;
+  void aiState.globalStreamBusy;
+  void aiState.activeStreamId;
+  return isConversationTransitionBlocked();
+});
 const CONVERSATION_PAGE_SIZE = 50;
 const conversations = ref<Conversation[]>([]);
 const hasMoreConversations = ref(true);
@@ -157,11 +164,12 @@ function onConversationSaved(event: unknown): void {
 }
 
 function handleSelect(id: string): void {
-  if (showTrash.value) return; // selecting in trash view does nothing
+  if (showTrash.value || conversationBusy.value) return;
   emit("select", id);
 }
 
 function handleNew(): void {
+  if (conversationBusy.value) return;
   emit("select", "");
 }
 
@@ -416,7 +424,7 @@ onUnmounted(() => {
     :style="{ width: props.embedded ? '100%' : `${props.width}px` }"
   >
     <div class="ai-conv-sidebar__top">
-      <button class="ai-conv-sidebar__new" @click="handleNew">
+      <button class="ai-conv-sidebar__new" :disabled="conversationBusy" @click="handleNew">
         + {{ t("aiAssistant.newConversation") }}
       </button>
       <input
@@ -462,7 +470,8 @@ onUnmounted(() => {
         }"
         :draggable="!showTrash"
         role="button"
-        tabindex="0"
+        :tabindex="conversationBusy ? -1 : 0"
+        :aria-disabled="conversationBusy"
         :aria-label="c.title"
         @click="handleSelect(c.id)"
         @contextmenu="openContextMenu($event, c)"
@@ -554,7 +563,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--color-border-subtle, #2a2a2a);
-  background: var(--color-bg-surface, #1e1e1e);
+  background: var(--color-bg-surface, #fafafc);
   flex-shrink: 0;
   overflow: hidden;
   position: relative;
@@ -589,7 +598,7 @@ onUnmounted(() => {
   width: 100%;
   padding: 5px 8px;
   font-size: 12px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-primary, #e0e0e0);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 4px;
@@ -618,7 +627,7 @@ onUnmounted(() => {
   flex: 1;
   padding: 3px;
   font-size: 11px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-primary, #e0e0e0);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 4px;
@@ -642,7 +651,7 @@ onUnmounted(() => {
   transition: background 0.1s;
 }
 .ai-conv-sidebar__item:hover {
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
 }
 .ai-conv-sidebar__item:focus-visible,
 .ai-conv-sidebar__ctx li:focus-visible {
@@ -695,7 +704,7 @@ onUnmounted(() => {
 .ai-conv-sidebar__item-group,
 .ai-conv-sidebar__item-mode {
   padding: 1px 5px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   border-radius: 3px;
 }
 .ai-conv-sidebar__item-tags {
@@ -726,7 +735,7 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .ai-conv-sidebar__trash-toggle--active {
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-primary, #e0e0e0);
 }
 .ai-conv-sidebar__trash-hint {
@@ -741,7 +750,7 @@ onUnmounted(() => {
   list-style: none;
   margin: 0;
   padding: 4px 0;
-  background: var(--color-bg-elevated, #2a2a2a);
+  background: var(--color-bg-elevated, #f5f5f7);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);

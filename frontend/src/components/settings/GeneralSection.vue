@@ -6,6 +6,7 @@ import { appState, saveSettings } from "@/stores/app";
 import { fileService, logLevelService } from "@/api/services";
 import { Folder, Document, Warning } from "@element-plus/icons-vue";
 import { useI18n } from "@/lib/i18n";
+import { isProductionSandboxRequired } from "@/lib/pluginRegistry";
 import { ElMessageBox } from "element-plus";
 // Priority 10: 崩溃报告查看器（list + view detail + delete）。
 import {
@@ -21,6 +22,10 @@ import {
 } from "@/stores/updateCrash";
 
 const { t } = useI18n();
+const pluginSandboxForced = isProductionSandboxRequired();
+const pluginSandboxHintKey = pluginSandboxForced
+  ? "general.pluginSandboxForcedHint"
+  : "general.pluginSandboxHint";
 
 async function handleBrowseFolder() {
   try {
@@ -183,10 +188,11 @@ function formatTime(ts: string): string {
       <div class="setting-control">
         <el-switch
           v-model="appState.enablePluginSandbox"
+          :disabled="pluginSandboxForced"
           :aria-label="t('general.pluginSandbox')"
           @change="saveSettings"
         />
-        <span class="setting-hint">{{ t("general.pluginSandboxHint") }}</span>
+        <span class="setting-hint">{{ t(pluginSandboxHintKey) }}</span>
       </div>
     </div>
 
@@ -369,7 +375,7 @@ function formatTime(ts: string): string {
 .log-pre {
   margin: 0;
   padding: 12px;
-  background: var(--color-bg-surface-container, #1e1e1e);
+  background: var(--color-bg-surface-container, #f5f5f7);
   color: var(--color-text-primary, #d4d4d4);
   font-family: var(--font-mono, monospace);
   font-size: 12px;
@@ -413,7 +419,7 @@ function formatTime(ts: string): string {
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  background: var(--color-bg-surface-container, #1e1e1e);
+  background: var(--color-bg-surface-container, #f5f5f7);
   border-radius: 4px;
 }
 
@@ -450,7 +456,7 @@ function formatTime(ts: string): string {
 .crash-message {
   margin: 0;
   padding: 12px;
-  background: var(--color-bg-surface-container, #1e1e1e);
+  background: var(--color-bg-surface-container, #f5f5f7);
   color: var(--color-danger, #f56c6c);
   font-family: var(--font-mono, monospace);
   font-size: 12px;
@@ -463,7 +469,7 @@ function formatTime(ts: string): string {
 .crash-stack {
   margin: 0;
   padding: 12px;
-  background: var(--color-bg-surface-container, #1e1e1e);
+  background: var(--color-bg-surface-container, #f5f5f7);
   color: var(--color-text-primary, #d4d4d4);
   font-family: var(--font-mono, monospace);
   font-size: 12px;

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -39,26 +40,30 @@ import (
 )
 
 const (
-	envOptIn                     = "KOYORI_IDE_E2E"
-	envToken                     = "KOYORI_IDE_E2E_TOKEN"
-	envHandshake                 = "KOYORI_IDE_E2E_HANDSHAKE"
-	windowID                     = "packaged-e2e"
-	httpClientResultEvent        = "e2e:http-client-result"
-	recoveryResultEvent          = "e2e:recovery-result"
-	workspaceResultEvent         = "e2e:g05-workspace-result"
-	runtimeRoleResultEvent       = "e2e:g06-runtime-role-result"
-	monacoResultEvent            = "e2e:g10-monaco-result"
-	extensionAPIResultEvent      = "e2e:g13-extension-api-result"
-	testExplorerResultEvent      = "e2e:g15-test-explorer-result"
-	terminalReconnectResultEvent = "e2e:g16-terminal-reconnect-result"
-	extensionHostG24ResultEvent  = "e2e:g24-extension-host-result"
-	bodyLimit                    = 2 << 20
+	envOptIn                       = "KOYORI_IDE_E2E"
+	envToken                       = "KOYORI_IDE_E2E_TOKEN"
+	envHandshake                   = "KOYORI_IDE_E2E_HANDSHAKE"
+	envRunID                       = "KOYORI_IDE_E2E_RUN_ID"
+	windowID                       = "packaged-e2e"
+	httpClientResultEvent          = "e2e:http-client-result"
+	recoveryResultEvent            = "e2e:recovery-result"
+	workspaceResultEvent           = "e2e:g05-workspace-result"
+	runtimeRoleResultEvent         = "e2e:g06-runtime-role-result"
+	monacoResultEvent              = "e2e:g10-monaco-result"
+	extensionAPIResultEvent        = "e2e:g13-extension-api-result"
+	testExplorerResultEvent        = "e2e:g15-test-explorer-result"
+	terminalReconnectResultEvent   = "e2e:g16-terminal-reconnect-result"
+	extensionHostG24ResultEvent    = "e2e:g24-extension-host-result"
+	agentToolRoundResultEvent      = "e2e:agent-tool-round-result"
+	conversationHandoffResultEvent = "e2e:conversation-handoff-result"
+	bodyLimit                      = 2 << 20
 )
 
 type handshake struct {
 	URL       string `json:"url"`
 	PID       int    `json:"pid"`
 	StartedAt string `json:"startedAt"`
+	RunID     string `json:"runId"`
 }
 
 type command struct {
@@ -101,6 +106,18 @@ type server struct {
 	probeResults map[string]chan map[string]interface{}
 }
 
+type rendererExecutor func(string) bool
+
+func mainRendererExecutor(execute func(string)) rendererExecutor {
+	return func(script string) bool {
+		if execute == nil {
+			return false
+		}
+		execute(script)
+		return true
+	}
+}
+
 // Start launches the loopback-only E2E automation server when KOYORI_IDE_E2E=1
 // is present, writes the handshake file, and returns a cleanup func. It
 // returns (nil, nil) when the opt-in env var is unset — mirroring the stub's
@@ -118,6 +135,11 @@ func Start(set ServiceSet) (func(), error) {
 	if err := validateToken(token); err != nil {
 		return nil, err
 	}
+	runID := os.Getenv(envRunID)
+	if err := validateRunID(runID); err != nil {
+		return nil, err
+	}
+
 	handshakePath := os.Getenv(envHandshake)
 	if handshakePath == "" || !filepath.IsAbs(handshakePath) {
 		return nil, errors.New("KOYORI_IDE_E2E_HANDSHAKE must be an absolute path")
@@ -141,6 +163,8 @@ func Start(set ServiceSet) (func(), error) {
 	var removeTestExplorerProbeListener func()
 	var removeTerminalReconnectProbeListener func()
 	var removeExtensionHostG24ProbeListener func()
+	var removeAgentToolRoundProbeListener func()
+	var removeConversationHandoffProbeListener func()
 	if app := application.Get(); app != nil {
 		removeHTTPProbeListener = app.Event.On(httpClientResultEvent, automation.receiveRendererProbeResult)
 		removeRecoveryProbeListener = app.Event.On(recoveryResultEvent, automation.receiveRendererProbeResult)
@@ -151,6 +175,8 @@ func Start(set ServiceSet) (func(), error) {
 		removeTestExplorerProbeListener = app.Event.On(testExplorerResultEvent, automation.receiveRendererProbeResult)
 		removeTerminalReconnectProbeListener = app.Event.On(terminalReconnectResultEvent, automation.receiveRendererProbeResult)
 		removeExtensionHostG24ProbeListener = app.Event.On(extensionHostG24ResultEvent, automation.receiveRendererProbeResult)
+		removeAgentToolRoundProbeListener = app.Event.On(agentToolRoundResultEvent, automation.receiveRendererProbeResult)
+		removeConversationHandoffProbeListener = app.Event.On(conversationHandoffResultEvent, automation.receiveRendererProbeResult)
 	}
 	srv := &http.Server{
 		Handler:           automation,
@@ -163,6 +189,7 @@ func Start(set ServiceSet) (func(), error) {
 		URL:       "http://" + listener.Addr().String(),
 		PID:       os.Getpid(),
 		StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		RunID:     runID,
 	}
 	if err := writeHandshake(handshakePath, hs); err != nil {
 		_ = listener.Close()
@@ -174,7 +201,7 @@ func Start(set ServiceSet) (func(), error) {
 			slog.Error("E2E automation server stopped", "err", err)
 		}
 	}()
-	slog.Info("E2E automation listening on loopback", "address", listener.Addr().String())
+	slog.Info("E2E automation listening on loopback", "address", listener.Addr().String(), "runId", runID)
 
 	var once sync.Once
 	return func() {
@@ -206,6 +233,12 @@ func Start(set ServiceSet) (func(), error) {
 			if removeExtensionHostG24ProbeListener != nil {
 				removeExtensionHostG24ProbeListener()
 			}
+			if removeAgentToolRoundProbeListener != nil {
+				removeAgentToolRoundProbeListener()
+			}
+			if removeConversationHandoffProbeListener != nil {
+				removeConversationHandoffProbeListener()
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			_ = srv.Shutdown(ctx)
@@ -228,6 +261,24 @@ func nextToken() (string, error) {
 		return "", fmt.Errorf("generate next E2E token: %w", err)
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+func validateRunID(runID string) error {
+	if len(runID) != 64 || runID != strings.ToLower(runID) {
+		return errors.New("KOYORI_IDE_E2E_RUN_ID must contain 32 random bytes encoded as lowercase hex")
+	}
+	decoded, err := hex.DecodeString(runID)
+	if err != nil || len(decoded) != 32 {
+		return errors.New("KOYORI_IDE_E2E_RUN_ID must contain 32 random bytes encoded as lowercase hex")
+	}
+	var nonZero byte
+	for _, value := range decoded {
+		nonZero |= value
+	}
+	if nonZero == 0 {
+		return errors.New("KOYORI_IDE_E2E_RUN_ID must not be all zeroes")
+	}
+	return nil
 }
 
 func writeHandshake(path string, hs handshake) error {
@@ -367,6 +418,10 @@ func (s *server) execute(cmd command) (interface{}, error) {
 		return s.runSettingsConcurrent(cmd)
 	case "ai-request-context-probe":
 		return s.runAIRequestContextProbe(cmd)
+	case "agent-tool-round-probe":
+		return s.runAgentToolRoundProbe(cmd)
+	case "conversation-handoff-probe":
+		return s.runConversationHandoffProbe(cmd)
 	case "extension-api-g13-probe":
 		return s.runExtensionAPIG13Probe(cmd)
 	case "debug-g14-probe":
@@ -425,7 +480,7 @@ func (s *server) runG05WorkspaceProbe(cmd command) (interface{}, error) {
 	if err := waitForRecoveryResolved(s.services.Recovery, secondSnapshot.Generation); err != nil {
 		return nil, err
 	}
-	mainResult, err := s.runWorkspaceRendererProbe("main", s.services.ExecJS, cmd)
+	mainResult, err := s.runWorkspaceRendererProbe("main", mainRendererExecutor(s.services.ExecJS), cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +508,7 @@ func (s *server) runG06RuntimeRoleProbe() (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	mainResult, err := s.runRuntimeRoleRendererProbe("main", s.services.ExecJS, forgedToken)
+	mainResult, err := s.runRuntimeRoleRendererProbe("main", mainRendererExecutor(s.services.ExecJS), forgedToken)
 	if err != nil {
 		return nil, err
 	}
@@ -488,6 +543,288 @@ func (s *server) runG06RuntimeRoleProbe() (interface{}, error) {
 	}, nil
 }
 
+func (s *server) runConversationHandoffProbe(cmd command) (interface{}, error) {
+	if s.services.Window == nil || s.services.ExecJS == nil || s.services.ExecAIJS == nil {
+		return nil, errors.New("conversation handoff automation is not fully wired")
+	}
+	if strings.TrimSpace(cmd.Marker) == "" {
+		return nil, errors.New("conversation handoff probe requires a marker")
+	}
+
+	s.services.Window.OpenAIWindow()
+	if err := waitForAIWindowState(s.services.Window, true); err != nil {
+		return nil, fmt.Errorf("open AI window for conversation handoff: %w", err)
+	}
+	ready, err := s.runConversationHandoffRendererProbe(
+		s.services.ExecAIJS,
+		map[string]interface{}{"action": "ready"},
+	)
+	if err != nil {
+		return nil, err
+	}
+	rendererInstanceID, err := requiredRendererString(ready, "rendererInstanceId")
+	if err != nil {
+		return nil, fmt.Errorf("AI handoff ready result: %w", err)
+	}
+	windowBaseline := services.RuntimeRoleStatsForE2E(s.services.Window)
+
+	firstMarker := cmd.Marker + "_A"
+	firstMain, err := s.runConversationHandoffRendererProbe(
+		mainRendererExecutor(s.services.ExecJS),
+		map[string]interface{}{
+			"action": "handoff",
+			"marker": firstMarker,
+			"mode":   "chat",
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	firstID, err := requiredRendererString(firstMain, "conversationId")
+	if err != nil {
+		return nil, fmt.Errorf("first main handoff result: %w", err)
+	}
+	firstRevision, err := requiredRendererRevision(firstMain)
+	if err != nil {
+		return nil, fmt.Errorf("first main handoff result: %w", err)
+	}
+	firstRequestID, err := validateConversationHandoffAck(firstMain)
+	if err != nil {
+		return nil, fmt.Errorf("first main handoff result: %w", err)
+	}
+	firstMainRendererID, err := requiredRendererString(firstMain, "rendererInstanceId")
+	if err != nil {
+		return nil, fmt.Errorf("first main handoff result: %w", err)
+	}
+	firstReceiverEpoch, _ := firstMain["receiverEpoch"].(string)
+	firstAI, err := s.runConversationHandoffRendererProbe(
+		s.services.ExecAIJS,
+		map[string]interface{}{
+			"action":                     "inspect",
+			"marker":                     firstMarker,
+			"mode":                       "chat",
+			"expectedConversationId":     firstID,
+			"expectedRevision":           firstRevision,
+			"expectedRendererInstanceId": rendererInstanceID,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateConversationHandoffInspection(firstAI); err != nil {
+		return nil, fmt.Errorf("first AI handoff result: %w", err)
+	}
+
+	secondMarker := cmd.Marker + "_B"
+	secondMain, err := s.runConversationHandoffRendererProbe(
+		mainRendererExecutor(s.services.ExecJS),
+		map[string]interface{}{
+			"action": "handoff",
+			"marker": secondMarker,
+			"mode":   "agent",
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	secondID, err := requiredRendererString(secondMain, "conversationId")
+	if err != nil {
+		return nil, fmt.Errorf("second main handoff result: %w", err)
+	}
+	if secondID == firstID {
+		return nil, errors.New("second handoff reused the first conversation ID")
+	}
+	secondRevision, err := requiredRendererRevision(secondMain)
+	if err != nil {
+		return nil, fmt.Errorf("second main handoff result: %w", err)
+	}
+	secondRequestID, err := validateConversationHandoffAck(secondMain)
+	if err != nil {
+		return nil, fmt.Errorf("second main handoff result: %w", err)
+	}
+	if secondRequestID == firstRequestID {
+		return nil, errors.New("second handoff reused the first request ID")
+	}
+	secondMainRendererID, err := requiredRendererString(secondMain, "rendererInstanceId")
+	if err != nil {
+		return nil, fmt.Errorf("second main handoff result: %w", err)
+	}
+	if secondMainRendererID != firstMainRendererID {
+		return nil, errors.New("main renderer remounted between conversation handoffs")
+	}
+	if secondMainRendererID == rendererInstanceID {
+		return nil, errors.New("main and AI handoff probes reported the same renderer identity")
+	}
+	secondReceiverEpoch, _ := secondMain["receiverEpoch"].(string)
+	if secondReceiverEpoch != firstReceiverEpoch {
+		return nil, errors.New("AI conversation receiver remounted between handoffs")
+	}
+	secondAI, err := s.runConversationHandoffRendererProbe(
+		s.services.ExecAIJS,
+		map[string]interface{}{
+			"action":                     "inspect",
+			"marker":                     secondMarker,
+			"mode":                       "agent",
+			"expectedConversationId":     secondID,
+			"expectedRevision":           secondRevision,
+			"expectedRendererInstanceId": rendererInstanceID,
+			"forbiddenMarker":            firstMarker,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateConversationHandoffInspection(secondAI); err != nil {
+		return nil, fmt.Errorf("second AI handoff result: %w", err)
+	}
+	secondRendererInstanceID, err := requiredRendererString(secondAI, "rendererInstanceId")
+	if err != nil {
+		return nil, fmt.Errorf("second AI handoff result: %w", err)
+	}
+	if secondRendererInstanceID != rendererInstanceID {
+		return nil, errors.New("AI renderer remounted between conversation handoffs")
+	}
+	windowAfter := services.RuntimeRoleStatsForE2E(s.services.Window)
+	if windowAfter.AIWindowsCreated != windowBaseline.AIWindowsCreated ||
+		windowAfter.AIWindowsClosed != windowBaseline.AIWindowsClosed {
+		return nil, fmt.Errorf(
+			"AI native window identity changed during handoff: before=%+v after=%+v",
+			windowBaseline,
+			windowAfter,
+		)
+	}
+
+	return map[string]interface{}{
+		"ok":                              true,
+		"aiWindowOpen":                    s.services.Window.IsAIWindowOpen(),
+		"aiWindowVisible":                 s.services.Window.IsAIWindowVisible(),
+		"sameRendererInstance":            true,
+		"sameNativeWindow":                true,
+		"sameReceiverEpoch":               true,
+		"rendererInstanceId":              rendererInstanceID,
+		"mainRendererInstanceId":          firstMainRendererID,
+		"receiverEpoch":                   firstReceiverEpoch,
+		"windowStatsBefore":               windowBaseline,
+		"windowStatsAfter":                windowAfter,
+		"firstConversationId":             firstID,
+		"firstRevision":                   firstRevision,
+		"firstMarkerObserved":             firstAI["markerObserved"] == true,
+		"firstDOMMarkerObserved":          firstAI["domMarkerObserved"] == true,
+		"firstActiveConversationMatches":  firstAI["activeConversationMatches"] == true,
+		"firstMode":                       firstAI["mode"],
+		"firstAcknowledged":               firstMain["acknowledged"] == true,
+		"secondConversationId":            secondID,
+		"secondRevision":                  secondRevision,
+		"secondMarkerObserved":            secondAI["markerObserved"] == true,
+		"secondDOMMarkerObserved":         secondAI["domMarkerObserved"] == true,
+		"secondActiveConversationMatches": secondAI["activeConversationMatches"] == true,
+		"secondMode":                      secondAI["mode"],
+		"secondAcknowledged":              secondMain["acknowledged"] == true,
+		"mainRendererFirst":               firstMain,
+		"aiRendererFirst":                 firstAI,
+		"mainRendererSecond":              secondMain,
+		"aiRendererSecond":                secondAI,
+	}, nil
+}
+
+func (s *server) runConversationHandoffRendererProbe(
+	execute rendererExecutor,
+	configuration map[string]interface{},
+) (map[string]interface{}, error) {
+	if execute == nil {
+		return nil, errors.New("conversation handoff renderer executor is unavailable")
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	configuration["runId"] = runID
+	encoded, err := json.Marshal(configuration)
+	if err != nil {
+		return nil, fmt.Errorf("encode conversation handoff renderer configuration: %w", err)
+	}
+	resultValue, err := s.runRendererProbeWithExecutor(
+		execute,
+		"__koyoriIdeRunConversationHandoffProbe",
+		conversationHandoffResultEvent,
+		"conversation handoff",
+		encoded,
+	)
+	if err != nil {
+		return nil, err
+	}
+	result, ok := resultValue.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("conversation handoff renderer returned an invalid result")
+	}
+	if result["ok"] != true {
+		detail, _ := result["error"].(string)
+		if detail == "" {
+			detail = "renderer probe failed"
+		}
+		return nil, fmt.Errorf("conversation handoff renderer: %s", detail)
+	}
+	return result, nil
+}
+
+func requiredRendererString(result map[string]interface{}, field string) (string, error) {
+	value, _ := result[field].(string)
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("missing %s", field)
+	}
+	return value, nil
+}
+
+func requiredRendererRevision(result map[string]interface{}) (int, error) {
+	value, ok := result["revision"].(float64)
+	if !ok || value < 1 || value != float64(int(value)) {
+		return 0, errors.New("missing positive conversation revision")
+	}
+	return int(value), nil
+}
+
+func validateConversationHandoffAck(result map[string]interface{}) (string, error) {
+	if result["acknowledged"] != true {
+		return "", errors.New("conversation target was not acknowledged")
+	}
+	requestID, err := requiredRendererString(result, "requestId")
+	if err != nil {
+		return "", err
+	}
+	for _, field := range []string{"sourceOrigin", "sourceEpoch", "receiverEpoch"} {
+		if _, err := requiredRendererString(result, field); err != nil {
+			return "", err
+		}
+	}
+	recipientEpoch, err := requiredRendererString(result, "recipientEpoch")
+	if err != nil {
+		return "", err
+	}
+	receiverEpoch, _ := result["receiverEpoch"].(string)
+	if recipientEpoch != receiverEpoch {
+		return "", errors.New("acknowledgement receiver epoch does not match the target recipient")
+	}
+	sequence, ok := result["sequence"].(float64)
+	if !ok || sequence < 1 || sequence != float64(int(sequence)) {
+		return "", errors.New("acknowledgement is missing a valid target sequence")
+	}
+	return requestID, nil
+}
+
+func validateConversationHandoffInspection(result map[string]interface{}) error {
+	for _, field := range []string{
+		"markerObserved",
+		"domMarkerObserved",
+		"activeConversationMatches",
+		"windowMounted",
+	} {
+		if result[field] != true {
+			return fmt.Errorf("%s was not observed", field)
+		}
+	}
+	return nil
+}
+
 func waitForAIWindowState(window *services.WindowService, open bool) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -499,7 +836,7 @@ func waitForAIWindowState(window *services.WindowService, open bool) error {
 	return fmt.Errorf("AI window state did not settle: open=%t actual=%t", open, window.IsAIWindowOpen())
 }
 
-func (s *server) runRuntimeRoleRendererProbe(role string, execute func(string), forgedToken string) (interface{}, error) {
+func (s *server) runRuntimeRoleRendererProbe(role string, execute rendererExecutor, forgedToken string) (interface{}, error) {
 	runID, err := nextToken()
 	if err != nil {
 		return nil, err
@@ -540,7 +877,7 @@ func waitForRecoveryResolved(recovery *services.RecoveryService, generation uint
 	return fmt.Errorf("recovery scan did not settle for workspace generation %d: phase=%s currentGeneration=%d", generation, state.Phase, state.Generation)
 }
 
-func (s *server) runWorkspaceRendererProbe(role string, execute func(string), cmd command) (interface{}, error) {
+func (s *server) runWorkspaceRendererProbe(role string, execute rendererExecutor, cmd command) (interface{}, error) {
 	if execute == nil {
 		return nil, fmt.Errorf("%s renderer executor is unavailable", role)
 	}
@@ -649,12 +986,15 @@ func (s *server) runRendererProbe(
 }
 
 func (s *server) runRendererProbeWithExecutor(
-	execute func(string),
+	execute rendererExecutor,
 	globalHook,
 	resultEvent,
 	label string,
 	configuration []byte,
 ) (interface{}, error) {
+	if execute == nil {
+		return nil, fmt.Errorf("%s renderer executor is unavailable", label)
+	}
 	runID := ""
 	var decoded map[string]interface{}
 	if err := json.Unmarshal(configuration, &decoded); err != nil {
@@ -700,7 +1040,9 @@ func (s *server) runRendererProbeWithExecutor(
 	};
 	start();
 })()`, configuration, globalHook, resultEvent, label+" renderer probe hook was not installed")
-	execute(script)
+	if !execute(script) {
+		return nil, fmt.Errorf("%s renderer executor rejected the script", label)
+	}
 
 	select {
 	case result := <-resultChannel:
@@ -1013,7 +1355,7 @@ func (s *server) runG10MonacoProbe(cmd command) (interface{}, error) {
 		return nil, fmt.Errorf("encode G10 monaco probe configuration: %w", err)
 	}
 	return s.runRendererProbeWithExecutor(
-		s.services.ExecJS,
+		mainRendererExecutor(s.services.ExecJS),
 		"__koyoriIdeRunG10MonacoProbe",
 		monacoResultEvent,
 		"G10 Monaco",
@@ -1098,10 +1440,19 @@ func (s *server) runAIFailCancel(cmd command) (interface{}, error) {
 	if sendErr == nil {
 		return nil, errors.New("AI Send succeeded without credentials; fail-closed violated")
 	}
-	_, startErr := s.services.AI.StartStream([]services.ChatMessage{{Role: "user", Content: "ping"}})
+	app := application.Get()
+	if app == nil {
+		return nil, errors.New("ai-fail-cancel has no Wails application")
+	}
+	window, ok := app.Window.GetByName("main")
+	if !ok || window == nil {
+		return nil, errors.New("ai-fail-cancel has no main renderer window")
+	}
+	callerCtx := context.WithValue(context.Background(), application.WindowKey, window)
+	_, startErr := s.services.AI.StartStream(callerCtx, []services.ChatMessage{{Role: "user", Content: "ping"}})
 	stopped := true
 	if startErr == nil {
-		_ = s.services.AI.StopStream()
+		_ = s.services.AI.StopStream(callerCtx)
 		stopped = !s.services.AI.IsStreaming()
 	}
 	return map[string]interface{}{
@@ -1279,14 +1630,999 @@ func (s *server) runAIRequestContextProbe(cmd command) (interface{}, error) {
 	if !imageSeen {
 		return nil, errors.New("provider request has no image_url block")
 	}
-	return map[string]interface{}{
+	evidence := map[string]interface{}{
 		"systemPromptReachedProvider": sysOK && strings.Contains(sysText, "Active plan"),
 		"planInSystemPrompt":          strings.Contains(sysText, "Fix HTTP retry") && strings.Contains(sysText, "Extract client"),
 		"personaInSystemPrompt":       strings.Contains(sysText, "Persona: Senior Go Reviewer"),
 		"imageBlockReachedProvider":   imageSeen,
 		"captured":                    true,
+	}
+	if cmd.Workspace != "" || cmd.Path != "" || cmd.Marker != "" {
+		if cmd.Workspace == "" || cmd.Path == "" || cmd.Marker == "" {
+			return nil, errors.New("packaged AI fixture must provide the complete Agent tool-round configuration")
+		}
+		agentRound, err := s.runAgentToolRoundProbe(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("packaged Agent tool round: %w", err)
+		}
+		evidence["agentToolRounds"] = agentRound
+	}
+	return evidence, nil
+}
+
+func providerRequestHasTool(body map[string]interface{}, name string) bool {
+	tools, _ := body["tools"].([]interface{})
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]interface{})
+		function, _ := tool["function"].(map[string]interface{})
+		if function["name"] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func providerRequestMessageContains(body map[string]interface{}, role, marker string) bool {
+	messages, _ := body["messages"].([]interface{})
+	for _, raw := range messages {
+		message, _ := raw.(map[string]interface{})
+		if message["role"] != role {
+			continue
+		}
+		if content, ok := message["content"].(string); ok && strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateOpenAINativeToolResultRequest(
+	body map[string]interface{},
+	callID, toolName, arguments, marker string,
+) error {
+	messages, ok := body["messages"].([]interface{})
+	if !ok {
+		return errors.New("provider request has no messages array")
+	}
+	callIndex := -1
+	for index, raw := range messages {
+		message, _ := raw.(map[string]interface{})
+		if message["role"] == "user" {
+			if content, _ := message["content"].(string); strings.Contains(content, marker) {
+				return errors.New("provider request used a legacy user observation")
+			}
+		}
+		calls, hasCalls := message["tool_calls"].([]interface{})
+		if !hasCalls {
+			continue
+		}
+		if callIndex >= 0 {
+			return errors.New("provider request contains multiple assistant tool-call messages")
+		}
+		if message["role"] != "assistant" || len(calls) != 1 {
+			return errors.New("provider request has an invalid assistant tool-call batch")
+		}
+		call, _ := calls[0].(map[string]interface{})
+		function, _ := call["function"].(map[string]interface{})
+		if call["id"] != callID || call["type"] != "function" ||
+			function["name"] != toolName || function["arguments"] != arguments {
+			return errors.New("provider request changed the native tool-call identity")
+		}
+		callIndex = index
+	}
+	if callIndex < 0 || callIndex+1 >= len(messages) {
+		return errors.New("provider request has no assistant tool call followed by a result")
+	}
+	result, _ := messages[callIndex+1].(map[string]interface{})
+	content, _ := result["content"].(string)
+	if result["role"] != "tool" || result["tool_call_id"] != callID ||
+		!strings.Contains(content, marker) {
+		return errors.New("provider request has no matching native tool result")
+	}
+	for index, raw := range messages {
+		if index == callIndex+1 {
+			continue
+		}
+		message, _ := raw.(map[string]interface{})
+		if message["role"] == "tool" {
+			return errors.New("provider request contains an unexpected extra tool result")
+		}
+	}
+	return nil
+}
+
+type agentToolRoundSpec struct {
+	Name              string
+	ToolKind          string
+	ApprovalMode      string
+	ExpectedDecision  string
+	ExpectedOutcome   string
+	ToolCallID        string
+	FinalAssistant    string
+	InitialUserPrompt string
+	CatalogApproval   string
+	CatalogRisk       string
+	CatalogMutation   string
+	Arguments         func(relativePath, marker string) map[string]interface{}
+	Observation       func(relativePath, marker string) string
+}
+
+type agentNativeApprovalContract struct {
+	Expectation services.AgentNativeApprovalExpectationForE2E
+	ExpectCall  bool
+}
+
+func readAgentToolRoundSpec() agentToolRoundSpec {
+	return agentToolRoundSpec{
+		Name: "readAuto", ToolKind: "read", ApprovalMode: "auto-approve",
+		ExpectedDecision: "approve", ExpectedOutcome: "executed",
+		ToolCallID: "call_packaged_agent_read", FinalAssistant: "PACKAGED_AGENT_READ_ROUND_COMPLETE",
+		InitialUserPrompt: "Read the packaged Agent fixture with the read tool, then report completion after the observation.",
+		CatalogApproval:   "backend-policy", CatalogRisk: "read-only", CatalogMutation: "none",
+		Arguments: func(relativePath, _ string) map[string]interface{} {
+			return map[string]interface{}{"path": relativePath}
+		},
+		Observation: func(_, marker string) string { return marker },
+	}
+}
+
+func searchAgentToolRoundSpec() agentToolRoundSpec {
+	return agentToolRoundSpec{
+		Name: "searchAuto", ToolKind: "search", ApprovalMode: "auto-approve",
+		ExpectedDecision: "approve", ExpectedOutcome: "executed",
+		ToolCallID: "call_packaged_agent_search", FinalAssistant: "PACKAGED_AGENT_SEARCH_ROUND_COMPLETE",
+		InitialUserPrompt: "Search the packaged workspace for the unique marker, then report completion after the observation.",
+		CatalogApproval:   "backend-policy", CatalogRisk: "read-only", CatalogMutation: "none",
+		Arguments: func(_ string, marker string) map[string]interface{} {
+			return map[string]interface{}{"query": marker, "ignoreCase": false}
+		},
+		Observation: func(_, marker string) string { return marker },
+	}
+}
+
+func writeAgentToolRoundSpec(name, decision, outcome string) agentToolRoundSpec {
+	return agentToolRoundSpec{
+		Name: name, ToolKind: "write", ApprovalMode: "ask",
+		ExpectedDecision: decision, ExpectedOutcome: outcome,
+		ToolCallID:        "call_packaged_agent_write_" + decision,
+		FinalAssistant:    "PACKAGED_AGENT_WRITE_" + strings.ToUpper(decision) + "_ROUND_COMPLETE",
+		InitialUserPrompt: "Use the write tool exactly as requested, then report completion after the tool result.",
+		CatalogApproval:   "manual", CatalogRisk: "elevated", CatalogMutation: "workspace-transaction",
+		Arguments: func(relativePath, marker string) map[string]interface{} {
+			return map[string]interface{}{"path": relativePath, "content": marker}
+		},
+		Observation: func(relativePath, _ string) string {
+			if outcome == "rejected" {
+				return fmt.Sprintf("User rejected the write action on %q", relativePath)
+			}
+			return "Wrote " + relativePath
+		},
+	}
+}
+
+func runAgentToolRoundSpec(name, decision, outcome, command string) agentToolRoundSpec {
+	return agentToolRoundSpec{
+		Name: name, ToolKind: "run", ApprovalMode: "ask",
+		ExpectedDecision: decision, ExpectedOutcome: outcome,
+		ToolCallID:        "call_packaged_agent_run_" + decision,
+		FinalAssistant:    "PACKAGED_AGENT_RUN_" + strings.ToUpper(decision) + "_ROUND_COMPLETE",
+		InitialUserPrompt: "Use the run tool exactly as requested, then report completion after the tool result.",
+		CatalogApproval:   "manual", CatalogRisk: "elevated", CatalogMutation: "external",
+		Arguments: func(_, _ string) map[string]interface{} {
+			return map[string]interface{}{"command": command, "cwd": "."}
+		},
+		Observation: func(_, marker string) string {
+			if outcome == "rejected" {
+				return fmt.Sprintf("User rejected the run action on %q", command)
+			}
+			return marker
+		},
+	}
+}
+
+func agentToolRoundRunCommand(relativePath, marker string) (string, error) {
+	if runtime.GOOS == "windows" {
+		systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+		if systemRoot == "" {
+			return "", errors.New("SystemRoot is unavailable for the packaged Agent run fixture")
+		}
+		executable := filepath.Join(systemRoot, "System32", "findstr.exe")
+		info, err := os.Stat(executable)
+		if err != nil {
+			return "", fmt.Errorf("resolve packaged Agent run executable: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", errors.New("packaged Agent run executable is not a regular file")
+		}
+		return fmt.Sprintf("%s /L /C:%s %s", filepath.ToSlash(executable), marker, relativePath), nil
+	}
+	const executable = "/usr/bin/grep"
+	info, err := os.Stat(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve packaged Agent run executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("packaged Agent run executable is not a regular file")
+	}
+	return fmt.Sprintf("%s -F %s %s", executable, marker, relativePath), nil
+}
+
+func validateAgentToolRoundRenderer(
+	renderer map[string]interface{},
+	spec agentToolRoundSpec,
+	expectedObservation string,
+) (string, string, error) {
+	for _, field := range []string{
+		"ok",
+		"rendererSubmitted",
+		"agentModeConfigured",
+		"storedProviderLoaded",
+		"nativeToolCallObserved",
+		"decisionObserved",
+		"nativeProtocolResultSubmitted",
+		"finalAssistantObserved",
+	} {
+		if renderer[field] != true {
+			return "", "", fmt.Errorf("Agent tool-round renderer did not prove %s: %v", field, renderer["error"])
+		}
+	}
+	if renderer["toolCallId"] != spec.ToolCallID || renderer["toolKind"] != spec.ToolKind {
+		return "", "", fmt.Errorf("Agent tool-round renderer reported unexpected tool call ID %v", renderer["toolCallId"])
+	}
+	if renderer["approvalMode"] != spec.ApprovalMode || renderer["expectedDecision"] != spec.ExpectedDecision || renderer["outcome"] != spec.ExpectedOutcome {
+		return "", "", fmt.Errorf(
+			"Agent tool-round renderer returned the wrong decision contract: mode=%v decision=%v outcome=%v",
+			renderer["approvalMode"], renderer["expectedDecision"], renderer["outcome"],
+		)
+	}
+	if assistant, _ := renderer["assistantContent"].(string); !strings.Contains(assistant, spec.FinalAssistant) {
+		return "", "", errors.New("Agent tool-round renderer did not retain the second provider completion")
+	}
+	if spec.ApprovalMode == "ask" {
+		for _, field := range []string{
+			"manualControlRequired",
+			"manualControlRendered",
+			"manualControlClicked",
+			"manualControlClickEventObserved",
+			"manualControlWasEnabled",
+		} {
+			if renderer[field] != true {
+				return "", "", fmt.Errorf("Agent tool-round renderer did not prove %s", field)
+			}
+		}
+		if renderer["manualControlAction"] != spec.ExpectedDecision ||
+			renderer["manualControlCallId"] != spec.ToolCallID ||
+			renderer["manualControlKind"] != spec.ToolKind {
+			return "", "", errors.New("Agent tool-round renderer clicked the wrong manual control")
+		}
+	} else if renderer["manualControlRequired"] != false || renderer["manualControlClicked"] == true {
+		return "", "", errors.New("auto-approved Agent round unexpectedly used a manual control")
+	}
+
+	if spec.ExpectedOutcome == "rejected" {
+		for _, field := range []string{
+			"approvalObserved",
+			"approvalPrecededExecution",
+			"backendExecutionObserved",
+			"executionUsageObserved",
+			"observationSubmitted",
+		} {
+			if renderer[field] != false {
+				return "", "", fmt.Errorf("rejected Agent round unexpectedly reported %s", field)
+			}
+		}
+		if renderer["rejectionSubmitted"] != true {
+			return "", "", errors.New("rejected Agent round did not submit a native rejection")
+		}
+		if rejection, _ := renderer["rejection"].(string); !strings.Contains(rejection, expectedObservation) {
+			return "", "", errors.New("rejected Agent round lost the rejection observation")
+		}
+		for _, field := range []string{"usageUnitId", "usageSessionId", "usageOperation"} {
+			if value, present := renderer[field]; present && value != nil && value != "" {
+				return "", "", fmt.Errorf("rejected Agent round unexpectedly returned %s", field)
+			}
+		}
+		return "", "", nil
+	}
+
+	for _, field := range []string{
+		"approvalObserved",
+		"approvalPrecededExecution",
+		"backendExecutionObserved",
+		"executionUsageObserved",
+		"usageSuccess",
+		"usageSessionMatchesRequest",
+		"usageObservationMatchesResult",
+		"observationSubmitted",
+	} {
+		if renderer[field] != true {
+			return "", "", fmt.Errorf("Agent tool-round renderer did not prove %s: %v", field, renderer["error"])
+		}
+	}
+	if renderer["rejectionSubmitted"] != false {
+		return "", "", errors.New("executed Agent round unexpectedly submitted a rejection")
+	}
+	usageUnitID, _ := renderer["usageUnitId"].(string)
+	usageSessionID, _ := renderer["usageSessionId"].(string)
+	if strings.TrimSpace(usageUnitID) == "" || strings.TrimSpace(usageSessionID) == "" {
+		return "", "", errors.New("Agent tool-round renderer did not retain backend usage identity")
+	}
+	if renderer["usageOperation"] != spec.ToolKind || renderer["usagePending"] != false {
+		return "", "", fmt.Errorf("Agent tool-round renderer returned invalid terminal usage: operation=%v pending=%v", renderer["usageOperation"], renderer["usagePending"])
+	}
+	if spec.ToolKind == "run" {
+		receiptID, _ := renderer["externalReceiptId"].(string)
+		if strings.TrimSpace(receiptID) == "" || renderer["externalReceiptReversible"] != false || renderer["externalCompensation"] != "not-needed" {
+			return "", "", errors.New("Agent run round did not retain its irreversible external receipt")
+		}
+	}
+	if observation, _ := renderer["observation"].(string); !strings.Contains(observation, expectedObservation) {
+		return "", "", errors.New("Agent tool-round renderer observation did not contain the backend result marker")
+	}
+	return usageUnitID, usageSessionID, nil
+}
+
+func (s *server) runAgentToolRoundProbe(cmd command) (result interface{}, returnErr error) {
+	workspace, fixturePath, err := resolveAgentToolRoundFixture(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(fixturePath, []byte(cmd.Marker+"\n"), 0o600); err != nil {
+		return nil, fmt.Errorf("write Agent tool-round fixture: %w", err)
+	}
+	readSpec := readAgentToolRoundSpec()
+	searchSpec := searchAgentToolRoundSpec()
+	readRound, err := s.runSingleAgentToolRoundProbe(cmd, readSpec, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read auto round: %w", err)
+	}
+	baseline, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint Agent workspace before search round: %w", err)
+	}
+	searchRound, err := s.runSingleAgentToolRoundProbe(cmd, searchSpec, nil)
+	if err != nil {
+		return nil, fmt.Errorf("search auto round: %w", err)
+	}
+	after, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint Agent workspace after search round: %w", err)
+	}
+	if baseline != after {
+		return nil, errors.New("search Agent round modified the workspace")
+	}
+
+	roundToken, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	writeApprovePath := filepath.Join(workspace, "agent-write-approve-"+roundToken[:12]+".txt")
+	writeRejectPath := filepath.Join(workspace, "agent-write-reject-"+roundToken[:12]+".txt")
+	for _, target := range []string{writeApprovePath, writeRejectPath} {
+		if _, err := os.Lstat(target); err == nil {
+			return nil, fmt.Errorf("Agent write target unexpectedly exists: %s", filepath.Base(target))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("inspect Agent write target: %w", err)
+		}
+	}
+
+	writeApproveContent := cmd.Marker + "_WRITE_APPROVE_CONTENT\n"
+	writeApproveCmd := cmd
+	writeApproveCmd.Path = writeApprovePath
+	writeApproveCmd.Marker = writeApproveContent
+	writeApproveBaseline, err := fingerprintAgentToolRoundWorkspace(workspace, writeApprovePath)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace before approved write: %w", err)
+	}
+	writeApproveSpec := writeAgentToolRoundSpec("writeManualApprove", "approve", "executed")
+	writeApproveRound, err := s.runSingleAgentToolRoundProbe(
+		writeApproveCmd,
+		writeApproveSpec,
+		&agentNativeApprovalContract{
+			Expectation: services.AgentNativeApprovalExpectationForE2E{
+				ToolKind: services.AgentNativeApprovalToolWriteForE2E,
+				Decision: true, WritePath: writeApprovePath, WriteSize: int64(len([]byte(writeApproveContent))),
+			},
+			ExpectCall: true,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("write manual approve round: %w", err)
+	}
+	written, err := os.ReadFile(writeApprovePath)
+	if err != nil {
+		return nil, fmt.Errorf("read approved Agent write target: %w", err)
+	}
+	if string(written) != writeApproveContent {
+		return nil, errors.New("approved Agent write target does not match the exact requested content")
+	}
+	writeApproveAfter, err := fingerprintAgentToolRoundWorkspace(workspace, writeApprovePath)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace after approved write: %w", err)
+	}
+	if writeApproveBaseline != writeApproveAfter {
+		return nil, errors.New("approved Agent write changed an unrelated workspace file")
+	}
+	writeApproveDigest := sha256.Sum256(written)
+	writeApproveRound["beforeExists"] = false
+	writeApproveRound["afterExists"] = true
+	writeApproveRound["afterSha256"] = hex.EncodeToString(writeApproveDigest[:])
+	writeApproveRound["expectedContentSha256"] = hex.EncodeToString(writeApproveDigest[:])
+	writeApproveRound["diskMatchesRequestedContent"] = true
+	writeApproveRound["unrelatedWorkspaceUnchanged"] = true
+
+	writeRejectCmd := cmd
+	writeRejectCmd.Path = writeRejectPath
+	writeRejectCmd.Marker = cmd.Marker + "_WRITE_REJECT_CONTENT\n"
+	writeRejectBaseline, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace before rejected write: %w", err)
+	}
+	writeRejectSpec := writeAgentToolRoundSpec("writeManualReject", "reject", "rejected")
+	writeRejectRound, err := s.runSingleAgentToolRoundProbe(
+		writeRejectCmd,
+		writeRejectSpec,
+		&agentNativeApprovalContract{
+			Expectation: services.AgentNativeApprovalExpectationForE2E{
+				ToolKind: services.AgentNativeApprovalToolWriteForE2E,
+				Decision: false, WritePath: writeRejectPath, WriteSize: int64(len([]byte(writeRejectCmd.Marker))),
+			},
+			ExpectCall: false,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("write manual reject round: %w", err)
+	}
+	if _, err := os.Lstat(writeRejectPath); !errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("rejected Agent write created or changed its target")
+	}
+	writeRejectAfter, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace after rejected write: %w", err)
+	}
+	if writeRejectBaseline != writeRejectAfter {
+		return nil, errors.New("rejected Agent write changed the workspace")
+	}
+	writeRejectRound["beforeExists"] = false
+	writeRejectRound["afterExists"] = false
+	writeRejectRound["diskUnchanged"] = true
+	writeRejectRound["workspaceUnchanged"] = true
+
+	relativeFixture, err := filepath.Rel(workspace, fixturePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Agent run fixture: %w", err)
+	}
+	runCommand, err := agentToolRoundRunCommand(filepath.ToSlash(relativeFixture), cmd.Marker)
+	if err != nil {
+		return nil, err
+	}
+	runCheck := s.services.Agent.CheckCommand(runCommand)
+	if runCheck.Blocked {
+		return nil, fmt.Errorf("packaged Agent run fixture is blocked: %s", runCheck.BlockReason)
+	}
+	runBaseline, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace before approved run: %w", err)
+	}
+	runApproveSpec := runAgentToolRoundSpec("runManualApprove", "approve", "executed", runCommand)
+	runApproveRound, err := s.runSingleAgentToolRoundProbe(
+		cmd,
+		runApproveSpec,
+		&agentNativeApprovalContract{
+			Expectation: services.AgentNativeApprovalExpectationForE2E{
+				ToolKind: services.AgentNativeApprovalToolRunForE2E,
+				Decision: true, RunCommand: runCommand, RunCwd: workspace, RunRiskLevel: runCheck.RiskLevel,
+			},
+			ExpectCall: true,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("run manual approve round: %w", err)
+	}
+	runAfter, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace after approved run: %w", err)
+	}
+	if runBaseline != runAfter {
+		return nil, errors.New("approved Agent run changed the workspace")
+	}
+	runApproveRound["processOutputObserved"] = strings.Contains(fmt.Sprint(runApproveRound["backendObservation"]), cmd.Marker)
+	runApproveRound["workspaceUnchanged"] = true
+
+	runRejectBaseline, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace before rejected run: %w", err)
+	}
+	runRejectSpec := runAgentToolRoundSpec("runManualReject", "reject", "rejected", runCommand)
+	runRejectRound, err := s.runSingleAgentToolRoundProbe(
+		cmd,
+		runRejectSpec,
+		&agentNativeApprovalContract{
+			Expectation: services.AgentNativeApprovalExpectationForE2E{
+				ToolKind: services.AgentNativeApprovalToolRunForE2E,
+				Decision: false, RunCommand: runCommand, RunCwd: workspace, RunRiskLevel: runCheck.RiskLevel,
+			},
+			ExpectCall: false,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("run manual reject round: %w", err)
+	}
+	runRejectAfter, err := fingerprintAgentToolRoundWorkspace(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint workspace after rejected run: %w", err)
+	}
+	if runRejectBaseline != runRejectAfter {
+		return nil, errors.New("rejected Agent run changed the workspace")
+	}
+	runRejectRound["processOutputObserved"] = false
+	runRejectRound["workspaceUnchanged"] = true
+
+	return map[string]interface{}{
+		"readAuto":           readRound,
+		"searchAuto":         searchRound,
+		"writeManualApprove": writeApproveRound,
+		"writeManualReject":  writeRejectRound,
+		"runManualApprove":   runApproveRound,
+		"runManualReject":    runRejectRound,
+		"workspaceUnchanged": true,
 	}, nil
 }
+
+func resolveAgentToolRoundFixture(cmd command) (string, string, error) {
+	if cmd.Workspace == "" || cmd.Path == "" || cmd.Marker == "" {
+		return "", "", errors.New("Agent tool-round probe requires workspace, path, and marker")
+	}
+	workspace, err := filepath.Abs(cmd.Workspace)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve Agent tool-round workspace: %w", err)
+	}
+	fixturePath, err := filepath.Abs(cmd.Path)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve Agent tool-round fixture path: %w", err)
+	}
+	relativePath, err := filepath.Rel(workspace, fixturePath)
+	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("Agent tool-round fixture must be inside the active workspace")
+	}
+	return workspace, fixturePath, nil
+}
+
+func fingerprintAgentToolRoundWorkspace(workspace string, ignoredPaths ...string) (string, error) {
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	ignored := make(map[string]struct{}, len(ignoredPaths))
+	for _, value := range ignoredPaths {
+		path := value
+		if filepath.IsAbs(path) {
+			path, err = filepath.Rel(workspace, path)
+			if err != nil || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+				return "", fmt.Errorf("ignored fingerprint path is outside the workspace: %q", value)
+			}
+		}
+		ignored[filepath.ToSlash(filepath.Clean(path))] = struct{}{}
+	}
+	digest := sha256.New()
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == "." || entry.IsDir() {
+			return nil
+		}
+		if _, skip := ignored[filepath.ToSlash(filepath.Clean(path))]; skip {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("workspace fingerprint rejects symlink %q", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("workspace fingerprint rejects non-regular file %q", path)
+		}
+		_, _ = io.WriteString(digest, filepath.ToSlash(path))
+		digest.Write([]byte{0})
+		file, err := root.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(digest, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		digest.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func (s *server) runSingleAgentToolRoundProbe(
+	cmd command,
+	spec agentToolRoundSpec,
+	nativeApproval *agentNativeApprovalContract,
+) (result map[string]interface{}, returnErr error) {
+	if s.services.Settings == nil || s.services.ExecJS == nil {
+		return nil, errors.New("Agent tool-round renderer automation is not fully wired")
+	}
+	if s.services.Agent == nil {
+		return nil, errors.New("Agent tool-round backend authority is not wired")
+	}
+	workspace, fixturePath, err := resolveAgentToolRoundFixture(cmd)
+	if err != nil {
+		return nil, err
+	}
+	relativePath, err := filepath.Rel(workspace, fixturePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Agent tool-round relative fixture: %w", err)
+	}
+	relativePath = filepath.ToSlash(relativePath)
+
+	arguments := spec.Arguments(relativePath, cmd.Marker)
+	toolArguments, err := json.Marshal(arguments)
+	if err != nil {
+		return nil, fmt.Errorf("encode Agent tool arguments: %w", err)
+	}
+	expectedObservation := spec.Observation(relativePath, cmd.Marker)
+	if strings.TrimSpace(expectedObservation) == "" {
+		return nil, errors.New("Agent tool-round expected observation is empty")
+	}
+
+	var providerMu sync.Mutex
+	providerRequests := make([]map[string]interface{}, 0, 2)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+			http.Error(w, "unexpected provider request", http.StatusNotFound)
+			return
+		}
+		var body map[string]interface{}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, bodyLimit))
+		if err := decoder.Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		providerMu.Lock()
+		requestIndex := len(providerRequests)
+		providerRequests = append(providerRequests, body)
+		providerMu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		var payload map[string]interface{}
+		switch requestIndex {
+		case 0:
+			payload = map[string]interface{}{
+				"choices": []interface{}{map[string]interface{}{
+					"delta": map[string]interface{}{
+						"tool_calls": []interface{}{map[string]interface{}{
+							"index": 0,
+							"id":    spec.ToolCallID,
+							"type":  "function",
+							"function": map[string]interface{}{
+								"name":      spec.ToolKind,
+								"arguments": string(toolArguments),
+							},
+						}},
+					},
+				}},
+			}
+		case 1:
+			if protocolErr := validateOpenAINativeToolResultRequest(
+				body,
+				spec.ToolCallID,
+				spec.ToolKind,
+				string(toolArguments),
+				expectedObservation,
+			); protocolErr != nil {
+				http.Error(w, protocolErr.Error(), http.StatusBadRequest)
+				return
+			}
+			payload = map[string]interface{}{
+				"choices": []interface{}{map[string]interface{}{
+					"delta": map[string]interface{}{"content": spec.FinalAssistant},
+				}},
+			}
+		default:
+			http.Error(w, "unexpected third provider turn", http.StatusConflict)
+			return
+		}
+		encoded, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			http.Error(w, marshalErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", encoded)
+	}))
+	defer provider.Close()
+
+	originalSettings, err := s.services.Settings.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("load settings before Agent tool-round probe: %w", err)
+	}
+	runID, err := nextToken()
+	if err != nil {
+		return nil, err
+	}
+	providerID := "packaged-agent-" + spec.ToolKind + "-" + runID[:12]
+	probeSettings := originalSettings
+	probeSettings.AIProviderConfigs = append(
+		[]services.AIProviderConfig(nil),
+		originalSettings.AIProviderConfigs...,
+	)
+	probeSettings.AIProviderConfigs = append(probeSettings.AIProviderConfigs, services.AIProviderConfig{
+		ID:          providerID,
+		Name:        "Packaged Agent Tool Round",
+		Provider:    "openai",
+		Protocol:    "openai",
+		APIKey:      "packaged-e2e-key",
+		BaseURL:     provider.URL,
+		Model:       "packaged-agent-loopback",
+		Temperature: 0,
+		MaxTokens:   128,
+	})
+	probeSettings.ActiveAIConfigID = providerID
+	probeSettings.AIBaseURL = provider.URL
+	probeSettings.AIModel = "packaged-agent-loopback"
+	probeSettings.AIProvider = "openai"
+	probeSettings.Temperature = 0
+	probeSettings.MaxTokens = 128
+	if spec.ApprovalMode == "auto-approve" {
+		probeSettings.AgentPermissionMode = "assist"
+	} else {
+		probeSettings.AgentPermissionMode = "always-ask"
+	}
+	expectedVersion := originalSettings.Version
+	probeSettings.ExpectedVersion = &expectedVersion
+	if err := s.services.Settings.SaveSettings(probeSettings); err != nil {
+		return nil, fmt.Errorf("save Agent tool-round provider settings: %w", err)
+	}
+	defer func() {
+		current, err := s.services.Settings.LoadSettings()
+		if err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("reload settings after Agent tool-round probe: %w", err))
+			return
+		}
+		restored := originalSettings
+		restoreVersion := current.Version
+		restored.ExpectedVersion = &restoreVersion
+		if err := s.services.Settings.SaveSettings(restored); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("restore settings after Agent tool-round probe: %w", err))
+		}
+	}()
+
+	var approvalProbe *services.AgentNativeApprovalProbeForE2E
+	var restoreApproval func()
+	if nativeApproval != nil {
+		approvalProbe, restoreApproval, err = services.InstallAgentNativeApprovalSequenceForE2E(
+			s.services.Agent,
+			[]services.AgentNativeApprovalExpectationForE2E{nativeApproval.Expectation},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("install Agent native approval probe: %w", err)
+		}
+		defer func() {
+			if restoreApproval != nil {
+				restoreApproval()
+			}
+		}()
+	}
+
+	configuration, err := json.Marshal(map[string]string{
+		"runId":                  runID,
+		"providerId":             providerID,
+		"providerBaseUrl":        provider.URL,
+		"providerModel":          "packaged-agent-loopback",
+		"prompt":                 spec.InitialUserPrompt,
+		"toolKind":               spec.ToolKind,
+		"approvalMode":           spec.ApprovalMode,
+		"expectedDecision":       spec.ExpectedDecision,
+		"expectedOutcome":        spec.ExpectedOutcome,
+		"expectedUsageOperation": spec.ToolKind,
+		"expectedToolCallId":     spec.ToolCallID,
+		"expectedObservation":    expectedObservation,
+		"expectedFinalAssistant": spec.FinalAssistant,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode Agent tool-round renderer configuration: %w", err)
+	}
+	rendererRaw, err := s.runRendererProbeWithExecutor(
+		mainRendererExecutor(s.services.ExecJS),
+		"__koyoriIdeRunAgentToolRoundProbe",
+		agentToolRoundResultEvent,
+		"Agent tool round",
+		configuration,
+	)
+	if err != nil {
+		return nil, err
+	}
+	nativeApprovalEvidence := map[string]interface{}{
+		"backendNativeApprovalObserved":  false,
+		"backendNativeApprovalCallCount": 0,
+	}
+	if approvalProbe != nil {
+		restoreApproval()
+		restoreApproval = nil
+		nativeApprovalEvidence, err = validateAgentNativeApprovalProbe(
+			approvalProbe.Snapshot(),
+			nativeApproval.Expectation,
+			nativeApproval.ExpectCall,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	renderer, ok := rendererRaw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Agent tool-round renderer returned %T", rendererRaw)
+	}
+	usageUnitID, usageSessionID, err := validateAgentToolRoundRenderer(
+		renderer,
+		spec,
+		expectedObservation,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	providerMu.Lock()
+	captured := append([]map[string]interface{}(nil), providerRequests...)
+	providerMu.Unlock()
+	if len(captured) != 2 {
+		return nil, fmt.Errorf("Agent loopback provider captured %d requests, want 2", len(captured))
+	}
+	firstOfferedTool := providerRequestHasTool(captured[0], spec.ToolKind)
+	firstContainedUserTurn := providerRequestMessageContains(captured[0], "user", spec.InitialUserPrompt)
+	secondNativeProtocol := validateOpenAINativeToolResultRequest(
+		captured[1],
+		spec.ToolCallID,
+		spec.ToolKind,
+		string(toolArguments),
+		expectedObservation,
+	) == nil
+	if !firstOfferedTool || !firstContainedUserTurn || !secondNativeProtocol {
+		return nil, fmt.Errorf(
+			"Agent provider request chain was incomplete: tool=%t userTurn=%t nativeToolResult=%t",
+			firstOfferedTool,
+			firstContainedUserTurn,
+			secondNativeProtocol,
+		)
+	}
+	backendPolicyObserved, err := validateAgentToolRoundCatalog(s.services.Agent, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	roundResult := map[string]interface{}{
+		"ok":                                  true,
+		"round":                               spec.Name,
+		"toolKind":                            spec.ToolKind,
+		"approvalMode":                        spec.ApprovalMode,
+		"expectedDecision":                    spec.ExpectedDecision,
+		"outcome":                             spec.ExpectedOutcome,
+		"providerRequestCount":                len(captured),
+		"firstRequestOfferedTool":             firstOfferedTool,
+		"firstRequestContainedUserTurn":       firstContainedUserTurn,
+		"backendApprovalPolicyObserved":       backendPolicyObserved,
+		"backendCatalogPolicyObserved":        backendPolicyObserved,
+		"nativeToolCallObserved":              renderer["nativeToolCallObserved"],
+		"decisionObserved":                    renderer["decisionObserved"],
+		"approvalObserved":                    renderer["approvalObserved"],
+		"approvalPrecededExecution":           renderer["approvalPrecededExecution"],
+		"backendCapabilityExecutionObserved":  renderer["backendExecutionObserved"],
+		"executionUsageObserved":              renderer["executionUsageObserved"],
+		"usageUnitId":                         usageUnitID,
+		"usageSessionId":                      usageSessionID,
+		"usageOperation":                      renderer["usageOperation"],
+		"usageSuccess":                        renderer["usageSuccess"],
+		"usagePending":                        renderer["usagePending"],
+		"usageSessionMatchesRequest":          renderer["usageSessionMatchesRequest"],
+		"usageObservationMatchesResult":       renderer["usageObservationMatchesResult"],
+		"externalReceiptId":                   renderer["externalReceiptId"],
+		"externalReceiptReversible":           renderer["externalReceiptReversible"],
+		"externalCompensation":                renderer["externalCompensation"],
+		"nativeProtocolResultSubmitted":       renderer["nativeProtocolResultSubmitted"],
+		"backendObservation":                  renderer["observation"],
+		"backendRejection":                    renderer["rejection"],
+		"observationSubmitted":                renderer["observationSubmitted"],
+		"rejectionSubmitted":                  renderer["rejectionSubmitted"],
+		"secondRequestContainedObservation":   secondNativeProtocol,
+		"secondRequestUsedNativeToolProtocol": secondNativeProtocol,
+		"finalAssistantObserved":              true,
+		"finalAssistant":                      renderer["assistantContent"],
+		"toolCallId":                          spec.ToolCallID,
+		"fixturePath":                         relativePath,
+		"manualControlRequired":               renderer["manualControlRequired"],
+		"manualControlRendered":               renderer["manualControlRendered"],
+		"manualControlClicked":                renderer["manualControlClicked"],
+		"manualControlClickEventObserved":     renderer["manualControlClickEventObserved"],
+		"manualControlWasEnabled":             renderer["manualControlWasEnabled"],
+		"manualControlAction":                 renderer["manualControlAction"],
+		"manualControlCallId":                 renderer["manualControlCallId"],
+		"manualControlKind":                   renderer["manualControlKind"],
+		"renderer":                            renderer,
+	}
+	for key, value := range nativeApprovalEvidence {
+		roundResult[key] = value
+	}
+	return roundResult, nil
+}
+
+func validateAgentToolRoundCatalog(agent *services.AgentService, spec agentToolRoundSpec) (bool, error) {
+	catalog, err := agent.GetAgentToolCatalog(context.Background())
+	if err != nil {
+		return false, fmt.Errorf("load Agent tool catalog for %s: %w", spec.Name, err)
+	}
+	for _, tool := range catalog.Tools {
+		if tool.ID != spec.ToolKind {
+			continue
+		}
+		if tool.Source != "builtin" || tool.Approval != spec.CatalogApproval || tool.Risk != spec.CatalogRisk || tool.Mutation != spec.CatalogMutation {
+			return false, fmt.Errorf(
+				"Agent %s ToolDef policy changed: source=%s approval=%s risk=%s mutation=%s",
+				spec.ToolKind, tool.Source, tool.Approval, tool.Risk, tool.Mutation,
+			)
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("Agent catalog did not contain %s", spec.ToolKind)
+}
+
+func validateAgentNativeApprovalProbe(
+	snapshot services.AgentNativeApprovalSnapshotForE2E,
+	expectation services.AgentNativeApprovalExpectationForE2E,
+	expectCall bool,
+) (map[string]interface{}, error) {
+	if snapshot.Expected != 1 || !snapshot.Restored {
+		return nil, fmt.Errorf("Agent native approval probe lifecycle is incomplete: %+v", snapshot)
+	}
+	result := map[string]interface{}{
+		"backendApprovalSource":              "e2e-exact-native-approver",
+		"backendNativeApprovalObserved":      expectCall,
+		"backendNativeApprovalCallCount":     len(snapshot.Calls),
+		"backendNativeApprovalExpectedCalls": 0,
+	}
+	if !expectCall {
+		if snapshot.Consumed != 0 || snapshot.Remaining != 1 || snapshot.Complete || len(snapshot.Calls) != 0 {
+			return nil, fmt.Errorf("rejected renderer round reached backend native approval: %+v", snapshot)
+		}
+		return result, nil
+	}
+	result["backendNativeApprovalExpectedCalls"] = 1
+	if snapshot.Consumed != 1 || snapshot.Remaining != 0 || !snapshot.Complete || len(snapshot.Calls) != 1 {
+		return nil, fmt.Errorf("Agent native approval was not consumed exactly once: %+v", snapshot)
+	}
+	call := snapshot.Calls[0]
+	if !call.Matched || !call.Consumed || call.Decision != expectation.Decision || call.ToolKind != expectation.ToolKind {
+		return nil, fmt.Errorf("Agent native approval identity or decision changed: %+v", call)
+	}
+	result["backendNativeApprovalDecision"] = call.Decision
+	result["backendNativeApprovalSequence"] = call.Sequence
+	switch expectation.ToolKind {
+	case services.AgentNativeApprovalToolWriteForE2E:
+		result["approvedPath"] = call.WritePath
+		result["approvedBytes"] = call.WriteSize
+	case services.AgentNativeApprovalToolRunForE2E:
+		result["approvedCommand"] = call.RunCommand
+		result["approvedCwd"] = call.RunCwd
+		result["approvedRisk"] = call.RunRiskLevel
+	default:
+		return nil, fmt.Errorf("Agent native approval returned unsupported tool kind %q", expectation.ToolKind)
+	}
+	return result, nil
+}
+
 func (s *server) runExtensionAPIG13Probe(cmd command) (interface{}, error) {
 	if s.services.ExecJS == nil {
 		return nil, errors.New("G13 extension API automation is not fully wired")
@@ -1300,7 +2636,7 @@ func (s *server) runExtensionAPIG13Probe(cmd command) (interface{}, error) {
 		return nil, fmt.Errorf("encode G13 extension API probe configuration: %w", err)
 	}
 	return s.runRendererProbeWithExecutor(
-		s.services.ExecJS,
+		mainRendererExecutor(s.services.ExecJS),
 		"__koyoriIdeRunG13ExtensionApiProbe",
 		extensionAPIResultEvent,
 		"G13 extension API",
@@ -1361,7 +2697,7 @@ func (s *server) runTestExplorerG15Probe(cmd command) (interface{}, error) {
 		return nil, fmt.Errorf("encode G15 Test Explorer probe: %w", err)
 	}
 	return s.runRendererProbeWithExecutor(
-		s.services.ExecJS,
+		mainRendererExecutor(s.services.ExecJS),
 		"__koyoriIdeRunG15TestExplorerProbe",
 		testExplorerResultEvent,
 		"G15 Test Explorer",
@@ -1583,10 +2919,19 @@ func (s *server) runTerminalExitProbe(cmd command) (interface{}, error) {
 	})
 	defer remove()
 
-	// Use cmd.exe (whitelisted): its interactive shell exits deterministically
-	// with the requested code, unlike PowerShell which swallows early `exit`.
-	if err := s.services.Terminal.StartSession("g16-exit", cmd.Workspace, "cmd"); err != nil {
-		return nil, fmt.Errorf("start cmd shell: %w", err)
+	// Windows: cmd.exe (whitelisted) exits deterministically with the
+	// requested code, unlike PowerShell which swallows early `exit`.
+	// Linux/other: sh is whitelisted and `exit 7` (LF) terminates it
+	// deterministically as well. P20 P0-04: the probe previously hardcoded
+	// cmd.exe and could not start on the Linux qualification runner.
+	shell := "sh"
+	exitInput := "exit 7\n"
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		exitInput = "exit 7\r\n"
+	}
+	if err := s.services.Terminal.StartSession("g16-exit", cmd.Workspace, shell); err != nil {
+		return nil, fmt.Errorf("start %s shell: %w", shell, err)
 	}
 	defer s.services.Terminal.KillSession("g16-exit")
 	if err := s.services.Terminal.ResizeSession("g16-exit", 100, 30); err != nil {
@@ -1595,8 +2940,8 @@ func (s *server) runTerminalExitProbe(cmd command) (interface{}, error) {
 	// Let the shell banner finish before sending input; a command written
 	// during startup can be swallowed by the banner.
 	time.Sleep(1200 * time.Millisecond)
-	// cmd exits with the given code via `exit 7` (CRLF line ending).
-	if err := s.services.Terminal.WriteSession("g16-exit", "exit 7\r\n"); err != nil {
+	// The shell exits with the given code (`exit 7`; CRLF on Windows).
+	if err := s.services.Terminal.WriteSession("g16-exit", exitInput); err != nil {
 		return nil, fmt.Errorf("write exit command: %w", err)
 	}
 	select {

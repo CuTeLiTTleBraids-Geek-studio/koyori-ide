@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,10 +17,78 @@ import (
 // Stale locks (crash / Task Manager kill / GUI exit without Release) are
 // detected by checking whether the PID written in the lock file is still alive.
 type InstanceLock struct {
-	mu       sync.Mutex
-	released bool
-	lockPath string
+	mu         sync.Mutex
+	released   bool
+	releaseErr error
+	lockPath   string
+	lockName   string
+	stateRoot  *os.Root
+	file       *os.File
+
+	beforeRootRemoveForTest func()
+}
+
+var errEmptyInstanceLock = errors.New("empty lock")
+
+const instanceStateGuardName = ".koyori-ide.lock.guard"
+
+var instanceStateGuardProcessMu sync.Mutex
+
+type instanceStateGuard struct {
 	file     *os.File
+	platform *instanceStatePlatformGuard
+}
+
+func (l *InstanceLock) acquireStateGuard() (*instanceStateGuard, error) {
+	if l.stateRoot == nil {
+		return nil, nil
+	}
+	instanceStateGuardProcessMu.Lock()
+	file, err := openAgentStateRegularFile(
+		l.stateRoot, instanceStateGuardName, os.O_CREATE|os.O_RDWR, 0o600,
+	)
+	if err != nil {
+		instanceStateGuardProcessMu.Unlock()
+		return nil, fmt.Errorf("open instance state guard: %w", err)
+	}
+	platform, err := acquireInstanceStatePlatformGuard(file)
+	if err != nil {
+		closeErr := file.Close()
+		instanceStateGuardProcessMu.Unlock()
+		return nil, errors.Join(err, closeErr)
+	}
+	opened, statErr := file.Stat()
+	named, lstatErr := l.stateRoot.Lstat(instanceStateGuardName)
+	if statErr != nil || lstatErr != nil || !os.SameFile(opened, named) {
+		unlockErr := releaseInstanceStatePlatformGuard(file, platform)
+		closeErr := file.Close()
+		instanceStateGuardProcessMu.Unlock()
+		return nil, errors.Join(
+			fmt.Errorf("instance state guard identity changed: %w", ErrUsagePersistencePoisoned),
+			statErr, lstatErr, unlockErr, closeErr,
+		)
+	}
+	return &instanceStateGuard{file: file, platform: platform}, nil
+}
+
+func (g *instanceStateGuard) release() error {
+	if g == nil {
+		return nil
+	}
+	unlockErr := releaseInstanceStatePlatformGuard(g.file, g.platform)
+	closeErr := g.file.Close()
+	instanceStateGuardProcessMu.Unlock()
+	return errors.Join(unlockErr, closeErr)
+}
+
+// NewInstanceLockWithRoot binds lock creation, stale cleanup and release to a
+// retained state capability. It is trusted package wiring, not a renderer API.
+func NewInstanceLockWithRoot(configDir string, stateRoot *os.Root) *InstanceLock {
+	return &InstanceLock{
+		lockPath:  filepath.Join(configDir, "koyori-ide.lock"),
+		lockName:  "koyori-ide.lock",
+		stateRoot: stateRoot,
+	}
 }
 
 // lockInfo 描述持锁进程的身份信息，用于检测 PID 复用 (H-5)。
@@ -45,9 +114,16 @@ func (l *InstanceLock) LockPath() string {
 // another *live* instance is already running. Removes stale lock files when
 // the recorded PID is not running (common after GUI crash / Force-quit),
 // or when the PID has been reused by a different process (H-5).
-func (l *InstanceLock) Acquire() error {
+func (l *InstanceLock) Acquire() (resultErr error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	guard, err := l.acquireStateGuard()
+	if err != nil {
+		return err
+	}
+	if guard != nil {
+		defer func() { resultErr = errors.Join(resultErr, guard.release()) }()
+	}
 
 	if err := l.tryCreateExclusive(); err == nil {
 		return nil
@@ -56,11 +132,13 @@ func (l *InstanceLock) Acquire() error {
 	}
 
 	// 锁文件已存在 — 检查是否为过期锁
-	info, readErr := readLockInfo(l.lockPath)
+	info, lockIdentity, _, readErr := l.readLockInfo()
 	if readErr == nil && info.PID > 0 {
 		if lockIsStale(info) {
 			// 过期：进程已退出或 PID 被复用
-			_ = os.Remove(l.lockPath)
+			if err := l.removeLockFile(lockIdentity); err != nil {
+				return fmt.Errorf("remove stale lock file: %w", err)
+			}
 			if err := l.tryCreateExclusive(); err != nil {
 				if os.IsExist(err) {
 					return fmt.Errorf("another koyori-ide instance is already running (lock file: %s)", l.lockPath)
@@ -73,10 +151,31 @@ func (l *InstanceLock) Acquire() error {
 		return fmt.Errorf("another koyori-ide instance is already running (pid %d, lock: %s)", info.PID, l.lockPath)
 	}
 
-	// 不可读/空锁 — 尝试清除后重试
-	data, _ := os.ReadFile(l.lockPath)
-	if len(strings.TrimSpace(string(data))) == 0 || readErr != nil {
-		_ = os.Remove(l.lockPath)
+	// A process can crash after O_EXCL creation but before writing its PID. The
+	// opened identity makes that exact empty file safe to remove; malformed
+	// non-empty root-bound locks remain fail-closed.
+	if errors.Is(readErr, errEmptyInstanceLock) && lockIdentity != nil {
+		if err := l.removeLockFile(lockIdentity); err != nil {
+			return fmt.Errorf("remove empty lock file: %w", err)
+		}
+		if err := l.tryCreateExclusive(); err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("another koyori-ide instance is already running (lock file: %s)", l.lockPath)
+			}
+			return fmt.Errorf("create lock file after empty cleanup: %w", err)
+		}
+		return nil
+	}
+
+	// Pathname-based desktop compatibility may clean up an unreadable lock;
+	// the root-bound headless host refuses unknown identities and parse errors.
+	if l.stateRoot != nil && readErr != nil {
+		return fmt.Errorf("inspect root-bound lock file: %w", errors.Join(ErrUsagePersistencePoisoned, readErr))
+	}
+	if readErr != nil {
+		if err := l.removeLockFile(lockIdentity); err != nil {
+			return fmt.Errorf("remove unreadable lock file: %w", err)
+		}
 		if err := l.tryCreateExclusive(); err == nil {
 			return nil
 		}
@@ -85,7 +184,13 @@ func (l *InstanceLock) Acquire() error {
 }
 
 func (l *InstanceLock) tryCreateExclusive() error {
-	f, err := os.OpenFile(l.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	var f *os.File
+	var err error
+	if l.stateRoot != nil {
+		f, err = openAgentStateRegularFile(l.stateRoot, l.lockName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	} else {
+		f, err = os.OpenFile(l.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	}
 	if err != nil {
 		return err
 	}
@@ -99,12 +204,89 @@ func (l *InstanceLock) tryCreateExclusive() error {
 	}
 	// 检查写入错误 (H-5)
 	if writeErr != nil {
-		closeErr := f.Close()
-		removeErr := os.Remove(l.lockPath)
-		return fmt.Errorf("write lock file: %w", errors.Join(writeErr, closeErr, removeErr))
+		identity, _ := f.Stat()
+		_ = f.Close()
+		_ = l.removeLockFile(identity)
+		return fmt.Errorf("write lock file: %w", writeErr)
 	}
 	l.file = f
 	l.released = false
+	return nil
+}
+
+func (l *InstanceLock) readLockInfo() (lockInfo, os.FileInfo, []byte, error) {
+	if l.stateRoot == nil {
+		data, err := os.ReadFile(l.lockPath)
+		if err != nil {
+			return lockInfo{}, nil, nil, err
+		}
+		info, err := os.Lstat(l.lockPath)
+		if err != nil {
+			return lockInfo{}, nil, data, err
+		}
+		parsed, err := parseLockInfo(data)
+		return parsed, info, data, err
+	}
+	file, err := openAgentStateRegularFile(l.stateRoot, l.lockName, os.O_RDONLY, 0)
+	if err != nil {
+		return lockInfo{}, nil, nil, err
+	}
+	defer file.Close()
+	identity, err := file.Stat()
+	if err != nil {
+		return lockInfo{}, nil, nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 64<<10))
+	if err != nil {
+		return lockInfo{}, identity, nil, err
+	}
+	parsed, err := parseLockInfo(data)
+	return parsed, identity, data, err
+}
+
+func (l *InstanceLock) removeLockFile(expected os.FileInfo) error {
+	if l.stateRoot == nil {
+		if expected != nil {
+			current, err := os.Lstat(l.lockPath)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				return err
+			}
+			if !os.SameFile(expected, current) {
+				return fmt.Errorf("lock file identity changed")
+			}
+		}
+		return os.Remove(l.lockPath)
+	}
+	if expected == nil {
+		return fmt.Errorf("root-bound lock identity is unavailable: %w", ErrUsagePersistencePoisoned)
+	}
+	current, err := openAgentStateRegularFile(l.stateRoot, l.lockName, os.O_RDONLY, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("open root-bound lock for identity removal: %w", errors.Join(ErrUsagePersistencePoisoned, err))
+	}
+	currentIdentity, statErr := current.Stat()
+	closeErr := current.Close()
+	if statErr != nil {
+		return fmt.Errorf("stat root-bound lock identity: %w", errors.Join(ErrUsagePersistencePoisoned, statErr))
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close root-bound lock handle: %w", errors.Join(ErrUsagePersistencePoisoned, closeErr))
+	}
+	if !os.SameFile(expected, currentIdentity) {
+		return fmt.Errorf("root-bound lock identity changed: %w", ErrUsagePersistencePoisoned)
+	}
+	if l.beforeRootRemoveForTest != nil {
+		l.beforeRootRemoveForTest()
+	}
+	if err := l.stateRoot.Remove(l.lockName); err != nil {
+		return fmt.Errorf("remove root-bound lock: %w", errors.Join(ErrUsagePersistencePoisoned, err))
+	}
 	return nil
 }
 
@@ -115,9 +297,13 @@ func readLockInfo(path string) (lockInfo, error) {
 	if err != nil {
 		return lockInfo{}, err
 	}
-	text := strings.TrimSpace(string(b))
+	return parseLockInfo(b)
+}
+
+func parseLockInfo(data []byte) (lockInfo, error) {
+	text := strings.TrimSpace(string(data))
 	if text == "" {
-		return lockInfo{}, fmt.Errorf("empty lock")
+		return lockInfo{}, errEmptyInstanceLock
 	}
 	lines := strings.Split(text, "\n")
 	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
@@ -174,24 +360,52 @@ func lockIsStale(info lockInfo) bool {
 }
 
 // Release releases the single-instance lock.
-func (l *InstanceLock) Release() error {
+func (l *InstanceLock) Release() (resultErr error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if l.released {
-		return nil
+		return l.releaseErr
 	}
-	l.released = true
+	guard, err := l.acquireStateGuard()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if guard != nil {
+			guardErr := guard.release()
+			if guardErr != nil && !errors.Is(guardErr, ErrUsagePersistencePoisoned) {
+				guardErr = errors.Join(ErrUsagePersistencePoisoned, guardErr)
+			}
+			resultErr = errors.Join(resultErr, guardErr)
+		}
+		l.releaseErr = resultErr
+		l.released = true
+	}()
 
 	var firstErr error
+	var identity os.FileInfo
 	if l.file != nil {
-		if err := l.file.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		identity, err = l.file.Stat()
+		if err != nil {
+			if l.stateRoot != nil {
+				err = errors.Join(ErrUsagePersistencePoisoned, err)
+			}
+			firstErr = errors.Join(firstErr, err)
+		}
+		if err := l.file.Close(); err != nil {
+			if l.stateRoot != nil {
+				err = errors.Join(ErrUsagePersistencePoisoned, err)
+			}
+			firstErr = errors.Join(firstErr, err)
 		}
 		l.file = nil
 	}
-	if err := os.Remove(l.lockPath); err != nil && !os.IsNotExist(err) && firstErr == nil {
-		firstErr = err
+	if err := l.removeLockFile(identity); err != nil && !os.IsNotExist(err) {
+		if l.stateRoot != nil && !errors.Is(err, ErrUsagePersistencePoisoned) {
+			err = errors.Join(ErrUsagePersistencePoisoned, err)
+		}
+		firstErr = errors.Join(firstErr, err)
 	}
 	return firstErr
 }

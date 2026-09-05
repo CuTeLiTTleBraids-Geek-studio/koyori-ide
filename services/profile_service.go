@@ -504,8 +504,11 @@ func (s *ProfileService) SetProfileDescription(name, description string) error {
 	return nil
 }
 
-// ProfileExport contains a profile's settings and optional metadata in the
-// versioned format saved by the frontend.
+// ExportProfile returns the JSON content of a profile's settings.json
+// along with optional metadata, packaged as a single JSON blob for
+// the frontend to save as a file. Returns an error if the profile
+// does not exist.
+//
 // G25: the export carries an explicit schema version and never includes
 // sensitive fields (secrets stay in the keyring-backed settings surface).
 type ProfileExport struct {
@@ -516,8 +519,6 @@ type ProfileExport struct {
 	ExportedAt    int64           `json:"exportedAt"`
 }
 
-// ExportProfile returns a profile's settings and optional metadata. It returns
-// an error if the profile does not exist.
 func (s *ProfileService) ExportProfile(name string) (ProfileExport, error) {
 	if !profileNameRe.MatchString(name) {
 		return ProfileExport{}, fmt.Errorf("invalid profile name %q: must be lowercase kebab-case", name)

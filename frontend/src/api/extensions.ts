@@ -309,8 +309,8 @@ export function fromBindingExtensionManifest(
 
 // G-VSC-01: VS Code extension marketplace client (Open VSX by default).
 // Installed extensions live under <configDir>/koyori-ide/extensions/ and are
-// disabled by default (G-SEC-12 req. 2). Downloads are SHA-256 verified
-// (req. 3); a mismatch aborts the install.
+// disabled by default (G-SEC-12 req. 2). Downloads must pass a SHA-256
+// integrity check (req. 3); a mismatch aborts the install.
 export const marketplaceService = {
   // Search the registry for extensions matching a query. page is 1-based.
   searchExtensions: (query: string, page: number, pageSize: number) =>
@@ -328,8 +328,8 @@ export const marketplaceService = {
       versions: detail.versions ?? [],
     };
   },
-  // Download, SHA-256 verify, and install a VSIX. Newly installed extensions
-  // start disabled. Pass an empty version to install the latest.
+  // Download a VSIX, run its SHA-256 integrity check, and install it. Newly
+  // installed extensions start disabled. Pass an empty version to install the latest.
   downloadAndInstallExtension: (publisher: string, name: string, version: string) =>
     MarketplaceServiceBindings.DownloadAndInstallExtension(publisher, name, version) as Promise<void>,
   // Replace an installed extension through the backend's staged transaction.

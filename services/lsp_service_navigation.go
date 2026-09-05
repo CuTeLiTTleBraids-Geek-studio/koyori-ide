@@ -522,14 +522,12 @@ func (s *LSPService) CallHierarchyOutgoingCalls(req LSPCompletionRequest, item L
 	return parseCallHierarchyOutgoingCalls(raw, item.FilePath), nil
 }
 
-// GetCallHierarchyIncoming is the prompt-1 API name for incoming calls. The
-// original CallHierarchyIncomingCalls method remains for existing Wails bindings.
+// GetCallHierarchyIncoming/Outgoing are the prompt-1 API names. The original
+// CallHierarchy* methods remain for existing Wails bindings.
 func (s *LSPService) GetCallHierarchyIncoming(req LSPCompletionRequest, item LSPCallHierarchyItem) ([]LSPCallHierarchyIncomingCall, error) {
 	return s.CallHierarchyIncomingCalls(req, item)
 }
 
-// GetCallHierarchyOutgoing is the prompt-1 API name for outgoing calls. The
-// original CallHierarchyOutgoingCalls method remains for existing Wails bindings.
 func (s *LSPService) GetCallHierarchyOutgoing(req LSPCompletionRequest, item LSPCallHierarchyItem) ([]LSPCallHierarchyOutgoingCall, error) {
 	return s.CallHierarchyOutgoingCalls(req, item)
 }

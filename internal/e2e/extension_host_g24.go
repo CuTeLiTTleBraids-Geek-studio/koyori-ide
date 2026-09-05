@@ -106,7 +106,7 @@ func (s *server) runExtensionHostG24Probe(_ command) (interface{}, error) {
 			return nil, marshalErr
 		}
 		value, probeErr := s.runRendererProbeWithExecutor(
-			s.services.ExecJS,
+			mainRendererExecutor(s.services.ExecJS),
 			"__koyoriIdeRunG24ExtensionHostProbe",
 			extensionHostG24ResultEvent,
 			"G24 Extension Host",
@@ -192,6 +192,7 @@ func buildG24VSIX(version string) ([]byte, string, error) {
 	const commandPrefix = g24Publisher + "." + g24Name
 	commands := []map[string]string{
 		{"command": commandPrefix + ".version", "title": "G24 Version"},
+		{"command": commandPrefix + ".runtime", "title": "G24 Runtime Identity"},
 		{"command": commandPrefix + ".permission", "title": "G24 Permission"},
 		{"command": commandPrefix + ".forge", "title": "G24 Forged Token"},
 		{"command": commandPrefix + ".crash", "title": "G24 Crash"},
@@ -215,12 +216,16 @@ func buildG24VSIX(version string) ([]byte, string, error) {
 	}
 	source := fmt.Sprintf(`const vscode = require("vscode");
 const prefix = %q;
+const runtimeEntropy = new Uint32Array(4);
+globalThis.crypto.getRandomValues(runtimeEntropy);
+const runtimeId = Array.from(runtimeEntropy, (value) => value.toString(16).padStart(8, "0")).join("");
 module.exports = {
   activate(context) {
     const register = (suffix, callback) => {
       context.subscriptions.push(vscode.commands.registerCommand(prefix + "." + suffix, callback));
     };
     register("version", () => %q);
+    register("runtime", () => runtimeId);
     register("permission", async () => {
       try {
         await vscode.workspace.fs.readFile({ scheme: "file", fsPath: "C:/g24-permission-denied.txt" });

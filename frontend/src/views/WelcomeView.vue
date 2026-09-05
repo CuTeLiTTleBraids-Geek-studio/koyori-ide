@@ -7,6 +7,7 @@ import { fileService } from "@/api/services";
 import { openProject } from "@/stores/app";
 import { useI18n } from "@/lib/i18n";
 import { isCancellationError } from "@/lib/errors";
+import { ElMessageBox } from "element-plus";
 
 const { t } = useI18n();
 // P9-G08: VERSION is injected at build time (vite define). Binding it here
@@ -48,7 +49,13 @@ function handleQuickAction(action: string) {
       router.push("/settings");
       break;
     case "docs":
-      window.open("https://v3.wails.io/", "_blank");
+      // Desktop has no in-app docs site. Do not open the Wails marketing
+      // site as if it were Koyori documentation (P13-G02 / UI-2).
+      void ElMessageBox.alert(
+        t("welcome.docsLocalPath"),
+        t("welcome.docs"),
+        { confirmButtonText: t("common.ok") },
+      );
       break;
   }
 }
@@ -118,9 +125,9 @@ function handleQuickAction(action: string) {
         </button>
       </div>
 
-      <!-- Footer -->
+      <!-- Footer: same VERSION SSOT as the hero (P13-G01 / UI-1). -->
       <div class="welcome-footer anim-5">
-        <span>v0.1.0</span>
+        <span data-testid="welcome-footer-version">v{{ appVersion }}</span>
       </div>
     </div>
   </div>

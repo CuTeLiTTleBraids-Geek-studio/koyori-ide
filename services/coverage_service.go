@@ -310,7 +310,7 @@ func readBoundedCoverageJSON(root, reportPath string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open coverage report: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat coverage report: %w", err)
@@ -495,10 +495,10 @@ func normalizeIstanbulFinalFile(filePath string, source istanbulFinalFile) Cover
 	hits := make([]CoverageHit, 0, len(lineUnits))
 	for line, units := range lineUnits {
 		status := CoverageStatusPartial
-		switch units.covered {
-		case 0:
+		switch {
+		case units.covered == 0:
 			status = CoverageStatusUncovered
-		case units.total:
+		case units.covered == units.total:
 			status = CoverageStatusCovered
 		}
 		hits = append(hits, CoverageHit{
@@ -601,10 +601,9 @@ func BuildVitestCoverageCommand(workspaceRoot string) (CoverageCommand, error) {
 		"vitest", "run", "--coverage", "--coverage.reporter=json", "--coverage.reportsDirectory=coverage",
 	}
 	prefix := []string{"exec"}
-	switch manager {
-	case "npm":
+	if manager == "npm" {
 		prefix = []string{"exec", "--"}
-	case "bun":
+	} else if manager == "bun" {
 		prefix = []string{"x"}
 	}
 	return CoverageCommand{
@@ -641,7 +640,7 @@ func (c *CoverageService) workspaceForVitestLease(requested string) (string, wor
 	}
 	validated, err := ValidatePathWithinRoot(configured, requested)
 	if err != nil {
-		return "", workspaceLease{}, fmt.Errorf("vitest workspace is outside the active workspace: %w", err)
+		return "", workspaceLease{}, fmt.Errorf("Vitest workspace is outside the active workspace: %w", err)
 	}
 	requested = validated
 	abs, err := filepath.Abs(requested)
@@ -653,7 +652,7 @@ func (c *CoverageService) workspaceForVitestLease(requested string) (string, wor
 		return "", workspaceLease{}, fmt.Errorf("open Vitest workspace: %w", err)
 	}
 	if !info.IsDir() {
-		return "", workspaceLease{}, errors.New("vitest workspace is not a directory")
+		return "", workspaceLease{}, errors.New("Vitest workspace is not a directory")
 	}
 	return filepath.Clean(abs), lease, nil
 }
@@ -830,11 +829,13 @@ func (c *CoverageService) ParseCoverProfile(profilePath string) ([]CoverageHit, 
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 	var out []CoverageHit
 	sc := bufio.NewScanner(f)
-	// Skip the mode line.
-	sc.Scan()
+	// skip mode line
+	if sc.Scan() {
+		_ = sc.Text() // 跳过 mode 行
+	}
 	for sc.Scan() {
 		line := sc.Text()
 		parts := strings.Fields(line)
@@ -919,7 +920,7 @@ func (c *CoverageService) RunPackageCoverage(packageDir string) (CoverageRunResu
 	if err != nil {
 		return CoverageRunResult{}, err
 	}
-	defer func() { _ = os.Remove(profile) }()
+	defer os.Remove(profile)
 	if err := tmp.Close(); err != nil {
 		return CoverageRunResult{}, fmt.Errorf("close coverage profile: %w", err)
 	}

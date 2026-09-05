@@ -15,17 +15,38 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func newTestIMService(t *testing.T) *IMService {
 	t.Helper()
+	// Fixture 覆盖：允许环回 httptest webhook URL，并把 client 换成可打
+	// 环回的传输（保留 no-redirect 策略）。生产校验/传输由下方 P19 P0-02
+	// 专项测试在恢复包级默认后单独覆盖。
+	originalClient, originalValidator := newIMHTTPClient, validateIMWebhookURL
+	t.Cleanup(func() {
+		newIMHTTPClient, validateIMWebhookURL = originalClient, originalValidator
+	})
+	newIMHTTPClient = func() *http.Client {
+		return &http.Client{
+			Timeout:       30 * time.Second,
+			CheckRedirect: noRedirectPolicy,
+		}
+	}
+	validateIMWebhookURL = func(raw string) (*url.URL, error) {
+		if err := ValidateBaseURL(raw); err != nil {
+			return nil, err
+		}
+		return url.Parse(raw)
+	}
 	dir := t.TempDir()
 	svc := NewIMService(dir)
 	svc.approve = func() bool { return true }
@@ -60,6 +81,13 @@ func TestIMService_UpdateConfig_PersistsProviders(t *testing.T) {
 	}
 	if err := svc.UpdateConfig(cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	// P19 P0-02：首次配置 webhook 目的地即变更出站目的地，必须撤销批准。
+	if svc.IsApproved() {
+		t.Error("configuring webhook destinations must revoke approval until re-approved")
+	}
+	if err := svc.Approve(); err != nil {
+		t.Fatalf("re-Approve failed: %v", err)
 	}
 	// 重新加载验证持久化 + 解密。
 	svc2 := NewIMService(svc.configDir)
@@ -429,7 +457,9 @@ func TestIMService_ConcurrentSaveConfigDoesNotMutateProviders(t *testing.T) {
 func TestIMService_ConcurrentCallerMutationIsIsolated(t *testing.T) {
 	svc := newTestIMService(t)
 	cfg := IMConfig{
-		Providers:         []IMProvider{{Name: "stable", BotToken: "stable-token"}},
+		// P20 P1-03：save 现在要求已配置 provider 的 Type 在白名单内，
+		// fixture 相应补全。
+		Providers:         []IMProvider{{Type: "slack", Name: "stable", BotToken: "stable-token"}},
 		NotificationRules: []NotificationRule{{Channel: "stable-channel"}},
 	}
 	if err := svc.UpdateConfig(cfg); err != nil {
@@ -588,6 +618,10 @@ func TestIMService_SecurityAuditExcludesMessagesAndSecrets(t *testing.T) {
 		{Type: "slack", Name: "success-provider", WebhookURL: webhookSecret, BotToken: tokenSecret, Enabled: true},
 		{Type: "slack", Name: "failure-provider", WebhookURL: server.URL + "/fail", Enabled: true},
 	}}); err != nil {
+		t.Fatal(err)
+	}
+	// P19 P0-02：webhook 目的地变更后需重新批准才能发送。
+	if err := svc.Approve(); err != nil {
 		t.Fatal(err)
 	}
 	messageSecret := "im-message-secret"
@@ -754,4 +788,283 @@ func TestIMConfigView_NoSecretFields(t *testing.T) {
 // jsonMarshalSafe 是测试辅助。
 func jsonMarshalSafe(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+// --- P19 P0-02：SSRF 安全传输 / no-redirect / 私网 fail-closed /
+// wechat_work token 真实发送 / Webhook URL 变更重新审批 ---
+
+func TestIMService_ProductionClientIsSSRFSafeAndNoRedirect(t *testing.T) {
+	// 不经 newTestIMService（fixture 覆盖），直接检查生产构造出的 client。
+	svc := NewIMService(t.TempDir())
+	client := svc.http
+	if client.CheckRedirect == nil {
+		t.Fatal("production IM client must set a no-redirect policy")
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CheckRedirect(req, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("CheckRedirect = %v, want http.ErrUseLastResponse", err)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil || transport.DialContext == nil {
+		t.Fatal("production IM client must use an SSRF-safe transport with dial-time revalidation")
+	}
+	if client.Timeout != 30*time.Second {
+		t.Fatalf("production IM client timeout = %v, want 30s", client.Timeout)
+	}
+}
+
+func TestIMService_UpdateConfig_RejectsPrivateWebhookURLs(t *testing.T) {
+	svc := newTestIMService(t)
+	// 恢复生产 URL 策略：私网/环回/链路本地/元数据地址一律 fail-closed。
+	validateIMWebhookURL = ValidateNonPrivateURL
+	for _, raw := range []string{
+		"http://169.254.169.254/aws-meta",
+		"http://10.1.2.3/hook",
+		"http://172.16.0.9/hook",
+		"http://192.168.1.4/hook",
+		"http://127.0.0.1:9/hook",
+		"http://localhost/hook",
+		"ftp://example.com/hook",
+	} {
+		err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+			{Type: "slack", Name: "bad", WebhookURL: raw, Enabled: true},
+		}})
+		if err == nil {
+			t.Errorf("webhook %q must be rejected", raw)
+			continue
+		}
+		if !strings.Contains(err.Error(), "webhook url rejected") {
+			t.Errorf("webhook %q rejected with unexpected error: %v", raw, err)
+		}
+	}
+	if len(svc.LoadConfig().Providers) != 0 {
+		t.Error("rejected webhook config must not be persisted")
+	}
+}
+
+func TestIMService_UpdateConfig_WebhookURLChangeRequiresReapproval(t *testing.T) {
+	svc := newTestIMService(t)
+	validateIMWebhookURL = ValidateNonPrivateURL
+	// 公网 https IP 字面量：生产校验无需 DNS，断言确定性。
+	const urlA = "https://93.184.216.34/hook-a"
+	const urlB = "https://93.184.216.34/hook-b"
+	if err := svc.Approve(); err != nil {
+		t.Fatalf("Approve failed: %v", err)
+	}
+	cfg := IMConfig{Providers: []IMProvider{
+		{Type: "slack", Name: "dest", WebhookURL: urlA, Enabled: true},
+	}}
+	if err := svc.UpdateConfig(cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	if svc.IsApproved() {
+		t.Fatal("webhook destination change must revoke approval (G-SEC-12)")
+	}
+	if err := svc.SendMessage(context.Background(), "dest", "", "hello", nil); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("SendMessage after revocation = %v, want ErrNotAllowed", err)
+	}
+	if err := svc.Approve(); err != nil {
+		t.Fatalf("re-Approve failed: %v", err)
+	}
+	// 同名 provider 更换 webhook URL → 再次撤销。
+	cfg.Providers[0].WebhookURL = urlB
+	if err := svc.UpdateConfig(cfg); err != nil {
+		t.Fatalf("UpdateConfig with new URL failed: %v", err)
+	}
+	if svc.IsApproved() {
+		t.Fatal("changing the webhook URL must require re-approval")
+	}
+	// 不含目的地变更的保存（如频道微调）不撤销既有批准。
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Providers[0].ChannelID = "C2"
+	if err := svc.UpdateConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.IsApproved() {
+		t.Fatal("saving without a webhook destination change must keep approval")
+	}
+}
+
+func TestIMService_SendMessage_RedirectingWebhookRejected(t *testing.T) {
+	var hits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		http.Redirect(w, r, "/moved", http.StatusFound)
+	}))
+	defer target.Close()
+
+	svc := newTestIMService(t)
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "slack", Name: "redirector", WebhookURL: target.URL, Enabled: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	err := svc.SendMessage(context.Background(), "redirector", "", "hello", nil)
+	if err == nil {
+		t.Fatal("redirecting webhook must not be treated as success")
+	}
+	if !strings.Contains(err.Error(), "redirects are not followed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("redirect target hit %d times, want exactly 1 (no follow-up request)", atomic.LoadInt32(&hits))
+	}
+}
+
+func TestIMService_SendMessage_WechatWorkTokenSentViaQuery(t *testing.T) {
+	var mu sync.Mutex
+	var gotKey, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotKey = r.URL.Query().Get("key")
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	svc := newTestIMService(t)
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "wechat_work", Name: "wecom", WebhookURL: server.URL + "/cgi-bin/webhook/send", BotToken: "wecom-key-123", Enabled: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SendMessage(context.Background(), "wecom", "", "hello", nil); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotKey != "wecom-key-123" {
+		t.Errorf("wechat_work key query = %q, want wecom-key-123", gotKey)
+	}
+	if gotAuth != "" {
+		t.Errorf("wechat_work must not send an Authorization header, got %q", gotAuth)
+	}
+}
+
+func TestIMService_SendMessage_TokenHeaderPerProvider(t *testing.T) {
+	cases := []struct {
+		providerType string
+		wantAuth     string
+	}{
+		{"slack", "Bearer slack-tok"},
+		{"discord", "Bot discord-tok"},
+		{"feishu", "Bearer feishu-tok"},
+	}
+	var mu sync.Mutex
+	got := make(map[string]string)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		got[strings.TrimPrefix(r.URL.Path, "/")] = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	svc := newTestIMService(t)
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	var providers []IMProvider
+	for _, c := range cases {
+		providers = append(providers, IMProvider{
+			Type: c.providerType, Name: c.providerType,
+			WebhookURL: server.URL + "/" + c.providerType, BotToken: c.providerType + "-tok",
+			Enabled: true,
+		})
+	}
+	if err := svc.UpdateConfig(IMConfig{Providers: providers}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if err := svc.SendMessage(context.Background(), c.providerType, "", "hello", nil); err != nil {
+			t.Fatalf("send to %s failed: %v", c.providerType, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, c := range cases {
+		if got[c.providerType] != c.wantAuth {
+			t.Errorf("%s Authorization = %q, want %q", c.providerType, got[c.providerType], c.wantAuth)
+		}
+	}
+}
+
+// --- P20 P1-03: unknown provider Type fail-closed ---
+
+// TestIMService_UpdateConfig_RejectsUnknownProviderType 保存时拒绝未知
+// provider 类型：未知 Type 的 BotToken 曾被加密存储但从不发送（静默死配
+// 置），与 wechat_work 原缺陷同类，必须在 save 时 fail-closed。
+func TestIMService_UpdateConfig_RejectsUnknownProviderType(t *testing.T) {
+	svc := newTestIMService(t)
+	err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "slack", Name: "ok", WebhookURL: "https://hooks.example.com/svc", Enabled: true},
+		{Type: "teams", Name: "unknown", WebhookURL: "https://hooks.example.com/teams", BotToken: "tok", Enabled: true},
+	}})
+	if err == nil {
+		t.Fatal("unknown provider type must be rejected at save")
+	}
+	if !strings.Contains(err.Error(), "unsupported type") || !strings.Contains(err.Error(), "teams") {
+		t.Errorf("error should name the unknown type, got %v", err)
+	}
+	// 空 WebhookURL+BotToken 的草稿 provider 不参与发送，放行（不打扰 UI 草稿流）。
+	if err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "someday", Name: "draft"},
+	}}); err != nil {
+		t.Errorf("empty draft provider must stay allowed, got %v", err)
+	}
+}
+
+// TestIMService_SendMessage_UnknownTypeFailsClosed 覆盖发送路径：即使未知
+// 类型经旧版持久化配置进入内存（绕过新的 UpdateConfig 白名单），发送也必须
+// 返回 ErrNotAllowed，且不产生任何出站请求。
+func TestIMService_SendMessage_UnknownTypeFailsClosed(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	svc := newTestIMService(t)
+	if err := svc.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	// 直接注入内存配置，模拟"旧版本保存的未知类型 provider"。
+	svc.mu.Lock()
+	svc.config = IMConfig{Approved: true, Providers: []IMProvider{
+		{Type: "teams", Name: "legacy", WebhookURL: server.URL + "/hook", BotToken: "tok", Enabled: true},
+		{Type: "", Name: "empty-type", WebhookURL: server.URL + "/hook2", Enabled: true},
+	}}
+	svc.mu.Unlock()
+
+	for _, name := range []string{"legacy", "empty-type"} {
+		err := svc.SendMessage(context.Background(), name, "", "hello", nil)
+		if !errors.Is(err, ErrNotAllowed) {
+			t.Errorf("provider %s: error = %v, want ErrNotAllowed", name, err)
+		}
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Error("unknown provider types must never produce an outbound request")
+	}
 }

@@ -43,6 +43,10 @@ import DebugPanel from "@/components/layout/DebugPanel.vue";
 import ProfilePanel from "@/components/layout/ProfilePanel.vue";
 import "@xterm/xterm/css/xterm.css";
 
+const activeWorkspaceRoot = computed(
+  () => appState.workspaceRoot || appState.currentProject || "",
+);
+
 // BUG4b: embedded 模式用于 AI 窗口 dock。在 embedded 模式下：
 //   - 可见性始终为 true（不依赖 appState.terminalVisible）
 //   - 关闭按钮 emit('close') 而非调用全局 toggleTerminal
@@ -190,7 +194,12 @@ async function initTerminalForSession(sessionId: string) {
     getComputedStyle(document.documentElement)
       .getPropertyValue("--font-mono")
       .trim() || "JetBrains Mono";
-  const fontFamily = `${cssFont}, JetBrains Mono, Consolas, 'Courier New', monospace`;
+  // BUG1: cmd.exe output on CJK Windows (box-drawing + CJK glyphs) has no
+  // coverage in the mono fonts, so the browser fell back to an unrelated
+  // system font mid-line — cmd output visually conflicting with user input.
+  // Append CJK-capable fallbacks so those glyphs render in one consistent
+  // font stack.
+  const fontFamily = `${cssFont}, JetBrains Mono, Consolas, 'Courier New', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans Mono CJK SC', 'SimHei', monospace`;
 
   // G-PERF-03: cap xterm scrollback at 5000 lines. Combined with the
   // backend outputBuffer 1 MiB cap (output_buffer.go), this bounds peak
@@ -289,7 +298,7 @@ function switchToSession(sessionId: string) {
 
 async function initFirstSession() {
   if (terminalState.sessionOrder.length === 0) {
-    const workingDir = appState.currentProject ?? "";
+    const workingDir = activeWorkspaceRoot.value;
     await createSession(workingDir, appState.defaultShell?.trim() ?? "");
   }
   if (terminalState.activeSessionId) {
@@ -299,7 +308,7 @@ async function initFirstSession() {
 }
 
 async function handleNewTerminal() {
-  const workingDir = appState.currentProject ?? "";
+  const workingDir = activeWorkspaceRoot.value;
   const id = await createSession(workingDir, appState.defaultShell?.trim() ?? "");
   if (id) {
     await nextTick();
@@ -320,15 +329,22 @@ async function handleReconnectTerminal(sessionId: string) {
 }
 
 async function handleCloseTerminal(sessionId: string) {
-  // Dispose xterm instance
+  // Keep the xterm alive until the backend confirms termination. A failed
+  // kill deliberately retains the store session so the user can retry.
+  const killed = await killSession(sessionId);
+  if (!killed) {
+    const retained = terminals.value.get(sessionId);
+    retained?.term.focus();
+    return;
+  }
+
+  // Dispose xterm instance after the backend-owned process is gone.
   const entry = terminals.value.get(sessionId);
   if (entry) {
     entry.term.dispose();
     entry.container.remove();
     terminals.value.delete(sessionId);
   }
-
-  await killSession(sessionId);
 
   // Switch to another session if any
   if (terminalState.activeSessionId) {
@@ -447,7 +463,7 @@ async function handleProblemClick(p: ProblemEntry) {
   // prompt-10 10-D: resolve relative paths against project root; jump line via appState.
   let path = p.file;
   if (path && !/^[A-Za-z]:[\\/]/.test(path) && !path.startsWith("/")) {
-    const root = appState.currentProject;
+    const root = activeWorkspaceRoot.value;
     if (root) {
       path = root.replace(/[\\/]$/, "") + "/" + path.replace(/^[\\/]/, "");
     }
@@ -486,10 +502,10 @@ watch(
 watch(activeView, (v) => {
   if (v === "terminal") {
     nextTick(() => fitTerminal());
-  } else if (v === "tasks" && appState.currentProject) {
-    loadTasks(appState.currentProject);
-  } else if (v === "workflows" && appState.currentProject) {
-    loadWorkflows(appState.currentProject);
+  } else if (v === "tasks" && activeWorkspaceRoot.value) {
+    loadTasks(activeWorkspaceRoot.value);
+  } else if (v === "workflows" && activeWorkspaceRoot.value) {
+    loadWorkflows(activeWorkspaceRoot.value);
   }
 });
 
@@ -516,7 +532,7 @@ watch(
 
 // Reload tasks and workflows when a project is opened.
 watch(
-  () => appState.currentProject,
+  activeWorkspaceRoot,
   (root) => {
     if (root) {
       loadTasks(root);
@@ -544,16 +560,16 @@ watch(
 
 function handleRunTask(label: string) {
   const task = taskState.tasks.find((t) => t.label === label);
-  if (!task || !appState.currentProject) return;
-  runTask(task, appState.currentProject);
+  if (!task || !activeWorkspaceRoot.value) return;
+  runTask(task, activeWorkspaceRoot.value);
   // Switch to terminal view so the user sees the running command.
   activeView.value = "terminal";
 }
 
 function handleRunWorkflow(name: string) {
   const wf = workflowState.workflows.find((w) => w.name === name);
-  if (!wf || !appState.currentProject) return;
-  runWorkflow(wf, appState.currentProject);
+  if (!wf || !activeWorkspaceRoot.value) return;
+  runWorkflow(wf, activeWorkspaceRoot.value);
   // Switch to terminal view so the user sees the running steps.
   activeView.value = "terminal";
 }
@@ -617,9 +633,9 @@ onMounted(async () => {
   if (isVisible.value) {
     await initFirstSession();
   }
-  if (appState.currentProject) {
-    loadTasks(appState.currentProject);
-    loadWorkflows(appState.currentProject);
+  if (activeWorkspaceRoot.value) {
+    loadTasks(activeWorkspaceRoot.value);
+    loadWorkflows(activeWorkspaceRoot.value);
   }
   // BUG-TERM-FIT: refit every xterm when the terminal body resizes (panel
   // drag-resize, layout change). Debounced so rapid drag events don't flood

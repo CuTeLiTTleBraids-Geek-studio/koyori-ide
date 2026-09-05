@@ -88,6 +88,45 @@ func TestLanguagePackServiceUsesKoyoriConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestAIReasoningEventIsRegisteredAtWailsBoundary(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	found := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return true
+		}
+		selectorName := ""
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			selectorName = fun.Sel.Name
+		case *ast.IndexExpr:
+			if selector, ok := fun.X.(*ast.SelectorExpr); ok {
+				selectorName = selector.Sel.Name
+			}
+		case *ast.IndexListExpr:
+			if selector, ok := fun.X.(*ast.SelectorExpr); ok {
+				selectorName = selector.Sel.Name
+			}
+		}
+		if selectorName != "RegisterEvent" {
+			return true
+		}
+		literal, ok := call.Args[0].(*ast.BasicLit)
+		if ok && literal.Kind == token.STRING && strings.Trim(literal.Value, "\"") == "ai:reasoning" {
+			found = true
+		}
+		return true
+	})
+	if !found {
+		t.Fatal("Wails ai:reasoning event registration is missing")
+	}
+}
+
 func TestCleanupStackRunsBusinessBeforeLockAndLogger(t *testing.T) {
 	var order []string
 	var cleanups cleanupStack

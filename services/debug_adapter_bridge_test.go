@@ -54,7 +54,7 @@ func TestDebugAdapterBridgeRejectsOutsideWorkspaceCwd(t *testing.T) {
 }
 
 func TestDebugAdapterBridgeStartsDirectProcessWithLiteralArguments(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := canonicalTestPath(t, t.TempDir())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	process, err := startDebugAdapter(ctx, debugAdapterLaunchPolicy{

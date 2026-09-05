@@ -3,10 +3,15 @@
  * exited PTY through the existing tab without creating a duplicate session.
  */
 import { Events } from "@wailsio/runtime";
-import { terminalService } from "@/api/services";
 import router from "@/router";
 import { appState } from "@/stores/app";
-import { createSession, killSession, terminalState } from "@/stores/terminal";
+import { installAgentToolRoundProbe } from "./agentToolRoundProbe";
+import {
+  createSession,
+  killSession,
+  terminalState,
+  writeToSession,
+} from "@/stores/terminal";
 
 const resultEvent = "e2e:g16-terminal-reconnect-result";
 
@@ -65,6 +70,10 @@ function terminalSurfaceContains(marker: string): boolean {
     .some((surface) => surface.textContent?.includes(marker) ?? false);
 }
 
+function currentBackendId(sessionId: string): string {
+  return terminalState.sessions[sessionId]?.backendId ?? sessionId;
+}
+
 async function runProbe(
   config: TerminalReconnectProbeConfig,
 ): Promise<TerminalReconnectProbeResult> {
@@ -75,7 +84,9 @@ async function runProbe(
   let rawOutputEventData = "";
   const removeRawOutputListener = Events.On("terminal:output", (event) => {
     const data = event?.data ?? {};
-    if ((data as { sessionId?: string }).sessionId !== sessionId) return;
+    if ((data as { sessionId?: string }).sessionId !== currentBackendId(sessionId)) {
+      return;
+    }
     const output = (data as { data?: string }).data ?? "";
     if (output.includes(config.marker)) rawOutputEventData = output;
   });
@@ -108,7 +119,7 @@ async function runProbe(
     sessionId = await createSession(config.workspace, config.shell);
     if (!sessionId) throw new Error("createSession returned no session id");
     await sleep(1200);
-    await terminalService.writeSession(sessionId, config.exitInput);
+    await writeToSession(sessionId, config.exitInput);
 
     await waitFor(
       () => rawExitEventReceived,
@@ -152,7 +163,7 @@ async function runProbe(
       "terminal reconnect",
     );
     await sleep(1200);
-    await terminalService.writeSession(sessionId, `echo ${config.marker}\r\n`);
+    await writeToSession(sessionId, `echo ${config.marker}\r\n`);
     await waitFor(
       () => rawOutputEventData.includes(config.marker),
       15_000,
@@ -215,6 +226,7 @@ async function runProbe(
 }
 
 export function installTerminalReconnectProbe(): void {
+  installAgentToolRoundProbe();
   const target = globalThis as typeof globalThis & {
     __koyoriIdeRunTerminalReconnectProbe?: (
       config: TerminalReconnectProbeConfig,

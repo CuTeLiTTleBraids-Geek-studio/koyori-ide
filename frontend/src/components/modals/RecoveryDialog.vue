@@ -243,7 +243,7 @@ async function discardAll(): Promise<void> {
   padding: 12px;
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 6px;
-  background: var(--color-bg-surface, #232323);
+  background: var(--color-bg-surface, #fafafc);
 }
 
 .recovery-dialog__file-info {
@@ -305,7 +305,7 @@ async function discardAll(): Promise<void> {
   padding: 6px 11px;
   border: 1px solid var(--color-border-default, #464646);
   border-radius: 5px;
-  background: var(--color-bg-elevated, #303030);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-primary, #ededed);
   font: inherit;
   font-size: 12px;
@@ -313,7 +313,7 @@ async function discardAll(): Promise<void> {
 }
 
 .recovery-dialog button:hover:not(:disabled) {
-  background: var(--color-bg-hover, #3a3a3a);
+  background: var(--color-bg-surface-container-high, #f0f0f0);
 }
 
 .recovery-dialog button:disabled {

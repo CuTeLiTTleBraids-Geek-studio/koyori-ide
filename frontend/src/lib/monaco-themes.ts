@@ -7,14 +7,170 @@
 // 喵，这是 Koyori IDE 的 Monaco Themes 模块（前端实现）~
 
 import * as monaco from "monaco-editor";
+import { marketplaceService } from "@/api/services";
+import { isRecord } from "@/api/boundary";
+import { parseJSONC } from "@/lib/jsonc";
+import {
+  getActiveVscodeExtensionTheme,
+  listVscodeExtensionThemes,
+  setActiveVscodeExtensionTheme,
+  type RegisteredTheme,
+} from "@/lib/vscodeExtensions";
 
 export type AccentTheme = "blue" | "teal" | "green" | "amber" | "pink" | "purple" | "cyan" | "indigo" | "custom";
+
+let lastBuiltInMonacoThemeName = "koyoriIde-blue";
 
 export interface ThemeMeta {
   label: string;
   color: string;
   monacoTheme: string;
   monacoLightTheme: string;
+}
+
+interface VSCodeThemeFile {
+  type?: unknown;
+  include?: unknown;
+  colors?: unknown;
+  tokenColors?: unknown;
+  semanticHighlighting?: unknown;
+}
+
+function normalizeExtensionThemePath(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/");
+  if (!normalized) throw new Error("Extension theme path must not be empty");
+  if (normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized)) {
+    throw new Error(`Extension theme path must be relative: ${path}`);
+  }
+
+  const segments = normalized.split("/");
+  if (segments.includes("..")) {
+    throw new Error(`Extension theme path must not traverse outside the extension: ${path}`);
+  }
+  const relative = segments.filter((segment) => segment !== "" && segment !== ".").join("/");
+  if (!relative) throw new Error("Extension theme path must not be empty");
+  return `extension/${relative}`;
+}
+
+function extensionThemeName(theme: RegisteredTheme): string {
+  return `koyoriIde-extension:${theme.key}`;
+}
+
+function extensionThemeBase(
+  contribution: RegisteredTheme,
+  file: VSCodeThemeFile,
+): monaco.editor.BuiltinTheme {
+  const declared = contribution.uiTheme ?? file.type;
+  if (declared === "vs" || declared === "light") return "vs";
+  if (declared === "hc-black") return "hc-black";
+  if (declared === "hc-light") return "hc-light";
+  return "vs-dark";
+}
+
+function parseExtensionTheme(
+  contribution: RegisteredTheme,
+  source: string,
+): monaco.editor.IStandaloneThemeData {
+  const parsed = parseJSONC<unknown>(source);
+  if (!isRecord(parsed)) throw new Error("Extension theme must contain a JSON object");
+  const file: VSCodeThemeFile = parsed;
+  if (Object.prototype.hasOwnProperty.call(file, "include")) {
+    throw new Error("Extension theme include inheritance is not supported");
+  }
+
+  const colors: Record<string, string> = {};
+  if (isRecord(file.colors)) {
+    for (const [key, value] of Object.entries(file.colors)) {
+      if (typeof value === "string" && value.trim() !== "") colors[key] = value;
+    }
+  }
+
+  const rules: monaco.editor.ITokenThemeRule[] = [];
+  if (Array.isArray(file.tokenColors)) {
+    for (const entry of file.tokenColors) {
+      if (!isRecord(entry) || !isRecord(entry.settings)) continue;
+      const settings = entry.settings;
+      const scopes = typeof entry.scope === "string"
+        ? entry.scope.split(",").map((scope) => scope.trim()).filter(Boolean)
+        : Array.isArray(entry.scope)
+          ? entry.scope.filter((scope): scope is string => typeof scope === "string" && scope.trim() !== "")
+          : [];
+      for (const token of scopes) {
+        rules.push({
+          token,
+          ...(typeof settings.foreground === "string" ? { foreground: settings.foreground.replace(/^#/, "") } : {}),
+          ...(typeof settings.background === "string" ? { background: settings.background.replace(/^#/, "") } : {}),
+          ...(typeof settings.fontStyle === "string" ? { fontStyle: settings.fontStyle } : {}),
+        });
+      }
+    }
+  }
+
+  if (Object.keys(colors).length === 0 && rules.length === 0) {
+    throw new Error("Extension theme contains no supported colors or token rules");
+  }
+  return {
+    base: extensionThemeBase(contribution, file),
+    inherit: true,
+    rules,
+    colors,
+  };
+}
+
+function splitExtensionId(extensionId: string): [string, string] {
+  const separator = extensionId.indexOf(".");
+  if (separator <= 0 || separator === extensionId.length - 1) {
+    throw new Error(`Invalid VS Code extension id: ${extensionId}`);
+  }
+  return [extensionId.slice(0, separator), extensionId.slice(separator + 1)];
+}
+
+function isCurrentRegisteredTheme(theme: RegisteredTheme): boolean {
+  return listVscodeExtensionThemes().find((candidate) => candidate.key === theme.key) === theme;
+}
+
+function restoreCurrentMonacoTheme(): void {
+  const activeTheme = getActiveVscodeExtensionTheme();
+  monaco.editor.setTheme(
+    activeTheme ? extensionThemeName(activeTheme) : lastBuiltInMonacoThemeName,
+  );
+}
+
+export async function applyVscodeExtensionTheme(key: string): Promise<RegisteredTheme> {
+  const theme = listVscodeExtensionThemes().find((candidate) => candidate.key === key);
+  if (!theme) throw new Error(`VS Code extension theme "${key}" is not registered`);
+  const [publisher, name] = splitExtensionId(theme.extensionId);
+  const installedPath = normalizeExtensionThemePath(theme.path);
+  const bytes = await marketplaceService.readExtensionFile(publisher, name, installedPath);
+  if (!isCurrentRegisteredTheme(theme)) {
+    throw new Error(`VS Code extension theme "${key}" changed while loading`);
+  }
+  const data = parseExtensionTheme(theme, new TextDecoder().decode(bytes));
+  const monacoName = extensionThemeName(theme);
+  monaco.editor.defineTheme(monacoName, data);
+  if (!isCurrentRegisteredTheme(theme)) {
+    throw new Error(`VS Code extension theme "${key}" changed while loading`);
+  }
+  monaco.editor.setTheme(monacoName);
+  if (!isCurrentRegisteredTheme(theme)) {
+    restoreCurrentMonacoTheme();
+    throw new Error(`VS Code extension theme "${key}" changed while loading`);
+  }
+  try {
+    setActiveVscodeExtensionTheme(theme.key);
+  } catch (error) {
+    if (!isCurrentRegisteredTheme(theme)) restoreCurrentMonacoTheme();
+    throw error;
+  }
+  return theme;
+}
+
+export function clearVscodeExtensionTheme(): void {
+  setActiveVscodeExtensionTheme(undefined);
+}
+
+export function restoreBuiltInMonacoTheme(): void {
+  restoreCurrentMonacoTheme();
 }
 
 export const accentThemes: Record<AccentTheme, ThemeMeta> = {
@@ -34,6 +190,7 @@ export const accentThemes: Record<AccentTheme, ThemeMeta> = {
 function createThemeData(accent: string): monaco.editor.IStandaloneThemeData {
   return {
     base: "vs-dark",
+
     inherit: true,
     semanticHighlighting: true,
     rules: [
@@ -240,7 +397,8 @@ export function registerCustomTheme(color: string): void {
 export function applyMonacoTheme(accent: AccentTheme): void {
   const theme = accentThemes[accent];
   if (theme) {
-    monaco.editor.setTheme(theme.monacoTheme);
+    lastBuiltInMonacoThemeName = theme.monacoTheme;
+    monaco.editor.setTheme(lastBuiltInMonacoThemeName);
   }
 }
 
@@ -250,9 +408,14 @@ export function applyMonacoTheme(accent: AccentTheme): void {
 export function applyMonacoThemeForMode(accent: AccentTheme, mode: "dark" | "light"): void {
   const theme = accentThemes[accent];
   if (theme) {
-    const themeName = mode === "light" ? theme.monacoLightTheme : theme.monacoTheme;
-    monaco.editor.setTheme(themeName);
+    lastBuiltInMonacoThemeName = mode === "light" ? theme.monacoLightTheme : theme.monacoTheme;
   }
+  const extensionTheme = getActiveVscodeExtensionTheme();
+  if (extensionTheme) {
+    monaco.editor.setTheme(extensionThemeName(extensionTheme));
+    return;
+  }
+  if (theme) monaco.editor.setTheme(lastBuiltInMonacoThemeName);
 }
 
 /**
@@ -264,6 +427,8 @@ export function getMonacoThemeNameForMode(
   highContrast = false,
 ): string {
   if (highContrast) return mode === "light" ? "hc-light" : "hc-black";
+  const extensionTheme = getActiveVscodeExtensionTheme();
+  if (extensionTheme) return extensionThemeName(extensionTheme);
   const theme = accentThemes[accent];
   if (!theme) return "koyoriIde-blue";
   return mode === "light" ? theme.monacoLightTheme : theme.monacoTheme;
@@ -273,5 +438,5 @@ export function getMonacoThemeNameForMode(
  * Get the Monaco theme name for an accent.
  */
 export function getMonacoThemeName(accent: AccentTheme): string {
-  return accentThemes[accent]?.monacoTheme ?? "koyoriIde-blue";
+  return getMonacoThemeNameForMode(accent, "dark");
 }

@@ -17,7 +17,7 @@
 
 ## 1. 当前工作区和外部状态
 
-- 工作区：`C:\Users\Cute_\Downloads\Gugacode-main`
+- 工作区：`%USERPROFILE%\Downloads\Gugacode-main`
 - 平台：Windows amd64，当前日期上下文为 2026-08-10；Go `1.26.4`，项目 `go.mod` 目标 `1.25.0`；Node `v24.18.0`。
 - Wails CLI 与项目模块锁定：`v3.0.0-alpha2.111`。
 - `.git` 目录为空/不可核验，不能证明 tracked/untracked、commit、CI、tag、release 或历史；涉及这些条件统一记为 `U`。

@@ -25,6 +25,10 @@ export const gitService = {
     GitServiceBindings.Commit(path, message) as Promise<void>,
   getDiff: (path: string, filePath: string) =>
     GitServiceBindings.GetDiff(path, filePath) as Promise<string>,
+  // P1-04: diff must follow the clicked row's identity — staged rows diff
+  // HEAD vs index, unstaged rows diff index vs worktree.
+  getDiffForSide: (path: string, filePath: string, staged: boolean) =>
+    GitServiceBindings.GetDiffForSide(path, filePath, staged) as Promise<string>,
   // G-BLAME-01: inline git blame for editor decoration.
   getBlame: (path: string, filePath: string, startLine = 0, endLine = 0, revision = "") =>
     unwrapNullable(GitServiceBindings.GetBlameAtRevision(

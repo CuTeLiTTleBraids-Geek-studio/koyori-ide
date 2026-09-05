@@ -21,6 +21,12 @@
 
 import { reactive, computed, ref } from "vue";
 import { errorMessage } from "@/lib/errors";
+import {
+  agentService,
+  type AgentToolCatalog,
+  type AgentToolExecutionRequest,
+  type AgentToolExecutionResult,
+} from "@/api/automation";
 
 // ---------------------------------------------------------------------------
 // 类型 — 镜像 Go 结构体（services/skills_service.go）
@@ -103,15 +109,26 @@ export interface SkillsBackend {
   listSkills(): Promise<Skill[]>;
   getSkill(id: string): Promise<Skill>;
   matchTriggers(message: string): Promise<Skill[]>;
-  activateSkill(id: string): Promise<void>;
   isApproved(id: string): Promise<boolean>;
 }
 
+export interface SkillAgentBackend {
+  getToolCatalog(): Promise<AgentToolCatalog>;
+  executeAgentTool(request: AgentToolExecutionRequest): Promise<AgentToolExecutionResult>;
+	createSession?: (kind: "chat" | "plan" | "goal" | "workflow") => Promise<string>;
+	closeSession?: (sessionId: string) => Promise<void>;
+}
+
 let backend: SkillsBackend | null = null;
+let skillAgentBackend: SkillAgentBackend = agentService;
 
 /** 注入 backend 适配器。测试注入 mock；应用启动时注入默认 Wails 适配器。 */
 export function setSkillsBackend(b: SkillsBackend | null): void {
   backend = b;
+}
+
+export function setSkillAgentBackend(b: SkillAgentBackend | null): void {
+  skillAgentBackend = b ?? agentService;
 }
 
 interface SkillsBindingsShape {
@@ -119,7 +136,6 @@ interface SkillsBindingsShape {
   ListSkills(): Promise<Skill[]>;
   GetSkill(id: string): Promise<Skill>;
   MatchTriggers(message: string): Promise<Skill[]>;
-  ActivateSkill(id: string): Promise<void>;
   IsApproved(id: string): Promise<boolean>;
 }
 
@@ -151,10 +167,6 @@ function getDefaultBackend(): SkillsBackend {
     async matchTriggers(message) {
       const b = await loadBindings();
       return (await b.MatchTriggers(message)) ?? [];
-    },
-    async activateSkill(id) {
-      const b = await loadBindings();
-      await b.ActivateSkill(id);
     },
     async isApproved(id) {
       const b = await loadBindings();
@@ -204,15 +216,45 @@ export async function refreshSkillsList(): Promise<void> {
  * 批准一个项目级技能（G-SEC-03）。
  * 调用此方法后该技能的 SystemPrompt 才会在 MatchTriggers 命中时注入。
  */
-export async function activateSkill(id: string): Promise<boolean> {
+export async function activateSkill(id: string, sessionId?: string): Promise<boolean> {
   skillsState.error = null;
+	let ephemeralSession = "";
   try {
-    await getBackend().activateSkill(id);
+	let activationSession = sessionId ?? "";
+	if (!activationSession.trim() && typeof skillAgentBackend.createSession === "function") {
+		activationSession = await skillAgentBackend.createSession("chat");
+		ephemeralSession = activationSession;
+	}
+	if (!activationSession.trim()) activationSession = `skill-activation:${id}`;
+	if (activationSession.trim() === "") {
+		throw new Error("Skill activation requires an Agent session");
+	}
+    const catalog = await skillAgentBackend.getToolCatalog();
+    const tool = catalog.tools.find(
+      (candidate) => candidate.source === "skill" && candidate.metadata?.skillId === id,
+    );
+    if (!tool) {
+      throw new Error(`Skill "${id}" is not available in the Agent tool catalog`);
+    }
+    await skillAgentBackend.executeAgentTool({
+	  sessionId: activationSession,
+      catalogRevision: catalog.revision,
+      toolId: tool.id,
+      arguments: {},
+    });
     await refreshSkillsList();
     return true;
   } catch (e: unknown) {
     skillsState.error = errorMessage(e);
     return false;
+	} finally {
+		if (ephemeralSession.trim() && typeof skillAgentBackend.closeSession === "function") {
+			try {
+				await skillAgentBackend.closeSession(ephemeralSession);
+			} catch {
+				// Activation result is already determined; cleanup is best effort.
+			}
+		}
   }
 }
 
@@ -243,5 +285,6 @@ export function resetSkillsStore(): void {
   skillsState.error = null;
   editingSkill.value = null;
   backend = null;
+  skillAgentBackend = agentService;
   bindingsCache = null;
 }

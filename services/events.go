@@ -20,10 +20,12 @@
 //
 // Event channels:
 //
+//	ai:reasoning        {streamId, data}    — provider-declared reasoning summary
+//
 //	ai:chunk            {streamId, data}    — a streamed token from the AI
 //	ai:done             {streamId, data}    — finish reason (data may be "")
 //	ai:error            {streamId, data}    — error message
-//	ai:stream-busy      {streamId, busy}    — process-wide stream mutex (prompt-5/6)
+//	ai:stream-busy      {busy}             — process-wide stream mutex; intentionally omits the owner stream ID
 //	ai:tool_calls       {streamId, data}    — JSON array of native tool calls
 //	ai:selection        {code,language,...} — main → AI window selection
 //	ai:apply-to-editor  {code,filePath,...} — AI window → main apply request
@@ -41,7 +43,7 @@
 // The frontend types are:
 //
 //	type WailsEvent<T> = { data: T; name?: string }
-//	type AIStreamPayload      = { streamId: string; data?: string; busy?: boolean }
+//	type AIStreamPayload      = { streamId?: string; data?: string; busy?: boolean }
 //	type AIChunkEvent         = WailsEvent<AIStreamPayload | string>
 //	type AIDoneEvent          = WailsEvent<AIStreamPayload | string>
 //	type AIErrorEvent         = WailsEvent<AIStreamPayload | string>

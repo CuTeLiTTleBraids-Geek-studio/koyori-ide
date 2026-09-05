@@ -256,6 +256,48 @@ func TestIsPathOutsideRoot_BooleanForm(t *testing.T) {
 	}
 }
 
+func TestValidatePathWithinRootReturnsOriginalAbsNotResolved(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "file.txt")
+	got, err := ValidatePathWithinRoot(root, inside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs(inside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ValidatePathWithinRoot returned %q, want original abs %q (H1 still returns abs, not os.Root)", got, want)
+	}
+}
+
+func TestValidateMutatingPathWithinRootRejectsEmptyRoot(t *testing.T) {
+	if _, err := ValidateMutatingPathWithinRoot("", filepath.Join(t.TempDir(), "x")); err == nil {
+		t.Fatal("empty root must fail closed for mutations")
+	}
+}
+
+func TestP13G03H1InventoryDocumentsRemainingAbsCallers(t *testing.T) {
+	mustContain := map[string]string{
+		"settings_service.go":           "ValidateMutatingPathWithinRoot",
+		"workspace_edit_transaction.go": "ValidateMutatingPathWithinRoot",
+		"workflow_service.go":           "ValidateMutatingPathWithinRoot",
+		"file_service.go":               "ValidatePathWithinRoot",
+		"local_host.go":                 "ValidatePathWithinRoot",
+		"git_service.go":                "ValidatePathWithinRoot",
+	}
+	for name, needle := range mustContain {
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !strings.Contains(string(body), needle) {
+			t.Errorf("%s must still contain %s (H1 inventory)", name, needle)
+		}
+	}
+}
+
 // Note: evalSymlinksAllowMissing behavior is covered by existing tests in
 // file_service_test.go (TestEvalSymlinksAllowMissing_ExistingPath,
 // TestEvalSymlinksAllowMissing_NonExistentFileWithExistentParent,

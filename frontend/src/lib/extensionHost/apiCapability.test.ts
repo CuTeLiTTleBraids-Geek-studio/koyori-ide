@@ -31,9 +31,17 @@ describe("G13 extension API capability matrix", () => {
     expect(capabilityOf("workspace.saveAll")?.status).toBe("implemented");
   });
 
-  it("marks InputBox/QuickPick unsupported (no fake success)", () => {
-    expect(capabilityOf("window.showInputBox")?.status).toBe("unsupported");
-    expect(capabilityOf("window.showQuickPick")?.status).toBe("unsupported");
+  it("marks notifications partial when no host UI is wired", () => {
+    expect(capabilityOf("window.showInformationMessage")?.status).toBe("partial");
+    expect(capabilityOf("window.showWarningMessage")?.status).toBe("partial");
+    expect(capabilityOf("window.showErrorMessage")?.status).toBe("partial");
+  });
+
+  it("marks InputBox/QuickPick implemented only through real host callbacks", () => {
+    expect(capabilityOf("window.showInputBox")?.status).toBe("implemented");
+    expect(capabilityOf("window.showQuickPick")?.status).toBe("implemented");
+    expect(capabilityOf("window.withProgress")?.status).toBe("implemented");
+    expect(capabilityOf("workspace.createFileSystemWatcher")?.status).toBe("implemented");
   });
 
   it("the unsupported error code matches the matrix constant", () => {

@@ -47,8 +47,16 @@ import {
   type InputBoxOptions,
   type LanguageProviderKind,
   type OutputChannel,
+  type Progress,
+  type ProgressOptions,
   type QuickPickItem,
   type QuickPickOptions,
+  type StatusBarItem,
+  type FileSystemWatcher,
+  type ConfigurationChangeEvent,
+  type DecorationRenderOptions,
+  type TextEditorDecorationType,
+  type TextEditorSelectionChangeEvent,
   type SourceControl,
   type SourceControlInputBox,
   type SourceControlResourceGroup,
@@ -63,6 +71,7 @@ import {
   type TextEditor,
   type TextSearchQuery,
   type TextSearchResult,
+  type Thenable,
   type TreeDataProvider,
   type Uri,
   type VscodeAPI,
@@ -120,9 +129,9 @@ export interface MonacoBridge {
     registerHoverProvider(language: string, provider: unknown): Disposable;
     registerDefinitionProvider?(language: string, provider: unknown): Disposable;
     registerCodeActionProvider?(language: string, provider: unknown): Disposable;
-    // F-6 (task-3.md): 17 additional Monaco language provider registrations.
-    // All optional — when Monaco lacks a method, the host falls back to a
-    // no-op disposable (provider is still tracked for cleanup).
+    // F-6 (task-3.md): additional Monaco language-provider registrations.
+    // The methods are optional on the bridge shape, but using a missing method
+    // fails closed with KOYORI_IDE_EXT_API_UNSUPPORTED.
     registerReferenceProvider?(language: string, provider: unknown): Disposable;
     registerCodeLensProvider?(language: string, provider: unknown): Disposable;
     registerDocumentFormattingEditProvider?(
@@ -146,10 +155,9 @@ export interface MonacoBridge {
     registerWorkspaceSymbolProvider?(
       provider: unknown,
     ): Disposable;
-    registerDocumentLinkProvider?(
-      language: string,
-      provider: unknown,
-    ): Disposable;
+    registerLinkProvider?(language: string, provider: unknown): Disposable;
+    /** Legacy bridge alias retained for test/host adapters. */
+    registerDocumentLinkProvider?(language: string, provider: unknown): Disposable;
     registerColorProvider?(language: string, provider: unknown): Disposable;
     registerFoldingRangeProvider?(
       language: string,
@@ -173,6 +181,10 @@ export interface MonacoBridge {
       provider: unknown,
     ): Disposable;
     registerDocumentSemanticTokensProvider?(
+      language: string,
+      provider: unknown,
+    ): Disposable;
+    registerDocumentRangeSemanticTokensProvider?(
       language: string,
       provider: unknown,
     ): Disposable;
@@ -221,6 +233,8 @@ export interface ExtensionHostOptions {
    * 返回 undefined 表示无活跃编辑器。
    */
   onGetActiveTextEditor?: () => TextEditor | undefined;
+  /** Get the current single-root workspace folder, if one is open. */
+  onGetWorkspaceFolders?: () => WorkspaceFolder[] | undefined;
   /**
    * BUG-FIX-2d: 回调获取扩展配置。
    * 由宿主 Vue App 注入，连接 settings store 与扩展宿主。
@@ -241,6 +255,29 @@ export interface ExtensionHostOptions {
    * UI success).
    */
   onNotify?: (level: "info" | "warn" | "error", message: string) => void;
+  /** G39: host-owned input dialog. Undefined means explicit cancellation. */
+  onShowInputBox?: (options?: InputBoxOptions) => Promise<string | undefined>;
+  /** G39: host-owned picker. Undefined means explicit cancellation. */
+  onShowQuickPick?: (
+    items: string[] | QuickPickItem[],
+    options?: QuickPickOptions,
+  ) => Promise<string | QuickPickItem | (string | QuickPickItem)[] | undefined>;
+  /** G39: visible status-bar message surface. */
+  onSetStatusBarMessage?: (text: string, hideAfter?: number) => Disposable;
+  /** G39: visible extension status-bar item surface. */
+  onCreateStatusBarItem?: () => StatusBarItem;
+  /** G39: visible output channel surface. */
+  onOutput?: (channel: string, action: "append" | "appendLine" | "clear" | "show" | "hide" | "dispose", value?: string) => void;
+  /** G39: progress surface. The callback must be awaited by the host. */
+  onWithProgress?: <R>(
+    options: ProgressOptions,
+    task: (progress: Progress<{ message?: string; increment?: number }>) => Thenable<R>,
+  ) => Thenable<R>;
+  /** G39: real Monaco-backed decoration type surface. */
+  onCreateTextEditorDecorationType?: (
+    extensionId: string,
+    options: DecorationRenderOptions,
+  ) => TextEditorDecorationType;
 }
 
 // ---------------------------------------------------------------------------
@@ -548,14 +585,21 @@ function randomHexId(length: number): string {
     .join("");
 }
 
-// Keep lazy loading for the extension host, but share the module namespace
-// across concurrent terminal starts. Separate dynamic-import instances can
-// otherwise expose distinct service objects in test/runtime module loaders,
-// making two approved terminals observe different backend call surfaces.
-let terminalServicesPromise: Promise<typeof import("@/api/services")> | null = null;
-function loadTerminalServices(): Promise<typeof import("@/api/services")> {
-  terminalServicesPromise ??= import("@/api/services");
-  return terminalServicesPromise;
+// Keep terminal dependencies lazy until approval, but let every concurrent
+// start resume from the same module-resolution promise.
+let terminalRuntimePromise: Promise<{
+  terminalService: (typeof import("@/api/services"))["terminalService"];
+  appState: (typeof import("@/stores/app"))["appState"];
+}> | null = null;
+function loadTerminalRuntime(): NonNullable<typeof terminalRuntimePromise> {
+  terminalRuntimePromise ??= Promise.all([
+    import("@/api/services"),
+    import("@/stores/app"),
+  ]).then(([services, app]) => ({
+    terminalService: services.terminalService,
+    appState: app.appState,
+  }));
+  return terminalRuntimePromise;
 }
 
 /** Serialize one argv value for AgentService's POSIX shlex parser. */
@@ -711,6 +755,10 @@ interface ExtensionHostState {
   onDidSaveTextDocumentEmitter: SimpleEmitter<TextDocument>;
   onDidChangeTextDocumentEmitter: SimpleEmitter<TextDocumentChangeEvent>;
   onDidOpenTextDocumentEmitter: SimpleEmitter<TextDocument>;
+  onDidCloseTextDocumentEmitter: SimpleEmitter<TextDocument>;
+  onDidChangeActiveTextEditorEmitter: SimpleEmitter<TextEditor | undefined>;
+  onDidChangeTextEditorSelectionEmitter: SimpleEmitter<TextEditorSelectionChangeEvent>;
+  onDidChangeConfigurationEmitter: SimpleEmitter<ConfigurationChangeEvent>;
 }
 
 function createExtensionHostState(
@@ -729,6 +777,10 @@ function createExtensionHostState(
     onDidSaveTextDocumentEmitter: new SimpleEmitter<TextDocument>(),
     onDidChangeTextDocumentEmitter: new SimpleEmitter<TextDocumentChangeEvent>(),
     onDidOpenTextDocumentEmitter: new SimpleEmitter<TextDocument>(),
+    onDidCloseTextDocumentEmitter: new SimpleEmitter<TextDocument>(),
+    onDidChangeActiveTextEditorEmitter: new SimpleEmitter<TextEditor | undefined>(),
+    onDidChangeTextEditorSelectionEmitter: new SimpleEmitter<TextEditorSelectionChangeEvent>(),
+    onDidChangeConfigurationEmitter: new SimpleEmitter<ConfigurationChangeEvent>(),
   };
 }
 
@@ -753,6 +805,10 @@ export class ExtensionHost {
   private get onDidSaveTextDocumentEmitter() { return this.state.onDidSaveTextDocumentEmitter; }
   private get onDidChangeTextDocumentEmitter() { return this.state.onDidChangeTextDocumentEmitter; }
   private get onDidOpenTextDocumentEmitter() { return this.state.onDidOpenTextDocumentEmitter; }
+  private get onDidCloseTextDocumentEmitter() { return this.state.onDidCloseTextDocumentEmitter; }
+  private get onDidChangeActiveTextEditorEmitter() { return this.state.onDidChangeActiveTextEditorEmitter; }
+  private get onDidChangeTextEditorSelectionEmitter() { return this.state.onDidChangeTextEditorSelectionEmitter; }
+  private get onDidChangeConfigurationEmitter() { return this.state.onDidChangeConfigurationEmitter; }
   // F-6 (task-3.md): env API — stable per-machine and per-session IDs.
   // machineId is persisted in localStorage so it survives reloads; sessionId
   // is regenerated each time the host is constructed (per process/tab).
@@ -765,6 +821,28 @@ export class ExtensionHost {
     // F-6 (task-3.md): generate/persist machineId + sessionId.
     this._machineId = getOrCreateMachineId();
     this._sessionId = generateSessionId();
+  }
+
+  /** Forward a real settings-store change to workspace.onDidChangeConfiguration. */
+  notifyConfigurationChange(section?: string): void {
+    const normalizedSection = section?.trim() || undefined;
+    const snapshot = this.options.onGetConfiguration?.() ?? {};
+    this.onDidChangeConfigurationEmitter.emit({
+      __koyoriIdeType: "ConfigurationChangeEvent",
+      section: normalizedSection,
+      configuration: snapshot,
+      affectsConfiguration(candidate: string): boolean {
+        if (!normalizedSection) return true;
+        return candidate === normalizedSection
+          || candidate.startsWith(normalizedSection + ".")
+          || normalizedSection.startsWith(candidate + ".");
+      },
+    } as ConfigurationChangeEvent);
+  }
+
+  /** Forward a real Monaco selection change to window.onDidChangeTextEditorSelection. */
+  notifyTextEditorSelectionChange(event: TextEditorSelectionChangeEvent): void {
+    this.onDidChangeTextEditorSelectionEmitter.emit(event);
   }
 
   /** F-6 (task-3.md): stable per-machine ID (persisted in localStorage). */
@@ -905,6 +983,9 @@ export class ExtensionHost {
       this.onDidSaveTextDocumentEmitter.dispose();
       this.onDidChangeTextDocumentEmitter.dispose();
       this.onDidOpenTextDocumentEmitter.dispose();
+      this.onDidCloseTextDocumentEmitter.dispose();
+      this.onDidChangeActiveTextEditorEmitter.dispose();
+      this.onDidChangeTextEditorSelectionEmitter.dispose();
       this.state = createExtensionHostState(approved);
     }
     if (deactivationFailed) throw firstError;
@@ -1062,9 +1143,8 @@ export class ExtensionHost {
    * disposable is tracked for cleanup on deactivation.
    *
    * F-6 (task-3.md): extended to cover all 21 VS Code languages API provider
-   * kinds. When Monaco lacks the optional registration method for a kind,
-   * the host returns a no-op disposable (still tracked for cleanup) so the
-   * extension can call dispose() without error.
+   * kinds. A missing Monaco registration method fails closed with the
+   * versioned unsupported-API error; extensions never receive a no-op success.
    */
   private bridgeLanguageProviderImpl(
     extensionId: string,
@@ -1073,16 +1153,41 @@ export class ExtensionHost {
     provider: unknown,
     extra?: unknown,
   ): Disposable {
-    const monaco = this.options.monaco;
-    const language = selector.language;
-    if (!monaco) {
-      // No Monaco available (e.g. test without monaco option). Return a
-      // no-op disposable so the extension can still call dispose().
-      const noop: Disposable = { dispose: () => undefined };
-      this.trackDisposable(extensionId, noop);
-      return noop;
+    if (Array.isArray(selector)) {
+      const registrations: Disposable[] = [];
+      try {
+        for (const filter of selector) {
+          registrations.push(
+            this.bridgeLanguageProviderImpl(extensionId, kind, filter, provider, extra),
+          );
+        }
+      } catch (error) {
+        for (const registration of registrations.reverse()) registration.dispose();
+        throw error;
+      }
+      let disposed = false;
+      return {
+        dispose(): void {
+          if (disposed) return;
+          disposed = true;
+          for (const registration of registrations) registration.dispose();
+        },
+      };
     }
-    const noop: Disposable = { dispose: () => undefined };
+    const monaco = this.options.monaco;
+    const language = (selector as Exclude<DocumentSelector, readonly unknown[]>).language;
+    const unsupported = (): never => {
+      throw new ExtensionApiUnsupportedError(
+        "languages.registerProvider",
+        "Monaco does not support the " + kind + " provider",
+      );
+    };
+    if (!monaco) {
+      throw new ExtensionApiUnsupportedError(
+        "languages.registerProvider",
+        "Monaco bridge is not wired",
+      );
+    }
     let monacoDisposable: Disposable;
     switch (kind) {
       case "completion":
@@ -1100,33 +1205,33 @@ export class ExtensionHost {
       case "definition":
         monacoDisposable = monaco.languages.registerDefinitionProvider
           ? monaco.languages.registerDefinitionProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "codeAction":
         monacoDisposable = monaco.languages.registerCodeActionProvider
           ? monaco.languages.registerCodeActionProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       // F-6: 17 additional kinds — each is optional on MonacoBridge.
       case "reference":
         monacoDisposable = monaco.languages.registerReferenceProvider
           ? monaco.languages.registerReferenceProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "codeLens":
         monacoDisposable = monaco.languages.registerCodeLensProvider
           ? monaco.languages.registerCodeLensProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "documentFormatting":
         monacoDisposable = monaco.languages.registerDocumentFormattingEditProvider
           ? monaco.languages.registerDocumentFormattingEditProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "documentRangeFormatting":
         monacoDisposable = monaco.languages.registerDocumentRangeFormattingEditProvider
           ? monaco.languages.registerDocumentRangeFormattingEditProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "onTypeFormatting": {
         const e = (extra ?? {}) as {
@@ -1140,73 +1245,80 @@ export class ExtensionHost {
               e.firstTriggerCharacter ?? "",
               e.moreTriggerCharacter,
             )
-          : noop;
+          : unsupported();
         break;
       }
       case "signatureHelp":
         monacoDisposable = monaco.languages.registerSignatureHelpProvider
           ? monaco.languages.registerSignatureHelpProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "workspaceSymbol":
         monacoDisposable = monaco.languages.registerWorkspaceSymbolProvider
           ? monaco.languages.registerWorkspaceSymbolProvider(provider)
-          : noop;
+          : unsupported();
         break;
       case "documentLink":
-        monacoDisposable = monaco.languages.registerDocumentLinkProvider
-          ? monaco.languages.registerDocumentLinkProvider(language, provider)
-          : noop;
+        monacoDisposable = monaco.languages.registerLinkProvider
+          ? monaco.languages.registerLinkProvider(language, provider)
+          : monaco.languages.registerDocumentLinkProvider
+            ? monaco.languages.registerDocumentLinkProvider(language, provider)
+            : unsupported();
         break;
       case "color":
         monacoDisposable = monaco.languages.registerColorProvider
           ? monaco.languages.registerColorProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "foldingRange":
         monacoDisposable = monaco.languages.registerFoldingRangeProvider
           ? monaco.languages.registerFoldingRangeProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "declaration":
         monacoDisposable = monaco.languages.registerDeclarationProvider
           ? monaco.languages.registerDeclarationProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "implementation":
         monacoDisposable = monaco.languages.registerImplementationProvider
           ? monaco.languages.registerImplementationProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "typeDefinition":
         monacoDisposable = monaco.languages.registerTypeDefinitionProvider
           ? monaco.languages.registerTypeDefinitionProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "rename":
         monacoDisposable = monaco.languages.registerRenameProvider
           ? monaco.languages.registerRenameProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "documentSymbol":
         monacoDisposable = monaco.languages.registerDocumentSymbolProvider
           ? monaco.languages.registerDocumentSymbolProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "documentSemanticTokens":
         monacoDisposable = monaco.languages.registerDocumentSemanticTokensProvider
           ? monaco.languages.registerDocumentSemanticTokensProvider(language, provider)
-          : noop;
+          : unsupported();
+        break;
+      case "documentRangeSemanticTokens":
+        monacoDisposable = monaco.languages.registerDocumentRangeSemanticTokensProvider
+          ? monaco.languages.registerDocumentRangeSemanticTokensProvider(language, provider)
+          : unsupported();
         break;
       case "documentHighlight":
         monacoDisposable = monaco.languages.registerDocumentHighlightProvider
           ? monaco.languages.registerDocumentHighlightProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       case "inlayHints":
         monacoDisposable = monaco.languages.registerInlayHintsProvider
           ? monaco.languages.registerInlayHintsProvider(language, provider)
-          : noop;
+          : unsupported();
         break;
       default: {
         // Exhaustiveness guard — if a new kind is added to
@@ -1214,7 +1326,7 @@ export class ExtensionHost {
         // complain that `kind` is not assignable to `never`.
         const _exhaustive: never = kind;
         void _exhaustive;
-        monacoDisposable = noop;
+        monacoDisposable = unsupported();
       }
     }
     this.trackDisposable(extensionId, monacoDisposable);
@@ -2072,9 +2184,18 @@ export class ExtensionHost {
     // Infer languageId from extension (best-effort).
     const ext = uri.fsPath.split(".").pop()?.toLowerCase() ?? "";
     const languageId = EXTENSION_TO_LANGUAGE[ext] ?? "plaintext";
+    const lines = text.split(/\r\n|\r|\n/);
     const doc: TextDocument = {
       uri,
+      fileName: uri.fsPath,
       languageId,
+      lineCount: lines.length,
+      lineAt: (line: number) => {
+        if (!Number.isInteger(line) || line < 0 || line >= lines.length) {
+          throw new Error("TextDocument.lineAt line is out of range");
+        }
+        return { text: lines[line] };
+      },
       getText: () => text,
     };
     // Fire onDidOpenTextDocument for any registered listeners.
@@ -2262,12 +2383,10 @@ export class ExtensionHost {
   // -------------------------------------------------------------------------
   // F-6 (task-3.md): window API 补齐 bridging
   //
-  // - showInputBox/showQuickPick: best-effort v1 — return undefined (no
-  //   host UI wired yet). A future iteration connects these to the host's
-  //   QuickPick/InputBox Vue components.
-  // - createOutputChannel: returns an in-memory OutputChannel backed by an
-  //   array buffer. The host logs append/appendLine to the console; a
-  //   future iteration wires it to the Output panel.
+  // - showInputBox/showQuickPick: bridged to the host's real dialog surfaces;
+  //   cancellation is preserved as undefined.
+  // - createOutputChannel: routes to the visible Output panel and is tracked
+  //   for clear/show/hide/dispose lifecycle.
   // - createTerminal: permission-gated by `shell.execute`. Creates a
   //   Terminal backed by the backend TerminalService (startSession +
   //   writeSession). Tracked for disposal (killSession on dispose).
@@ -2279,69 +2398,229 @@ export class ExtensionHost {
   //   sidebar view becomes visible.
   // -------------------------------------------------------------------------
 
-  /** Show an input box. G13: fail-closed until a real dialog is wired. */
+  /** Show an input box through the host's real dialog surface. */
   private async bridgeShowInputBoxImpl(
     _extensionId: string,
-    _options?: InputBoxOptions,
+    options?: InputBoxOptions,
   ): Promise<string | undefined> {
-    throw new ExtensionApiUnsupportedError(
-      "window.showInputBox",
-      "no host input dialog is wired; returning a default value would be fake success",
-    );
+    if (!this.options.onShowInputBox) {
+      throw new ExtensionApiUnsupportedError(
+        "window.showInputBox",
+        "no host input dialog is wired; returning a default value would be fake success",
+      );
+    }
+    return this.options.onShowInputBox(options);
   }
 
-  /** Show a quick pick. G13: fail-closed until a real picker is wired. */
+  /** Show a quick pick through the host's real picker surface. */
   private async bridgeShowQuickPickImpl(
     _extensionId: string,
-    _items: string[] | QuickPickItem[],
-    _options?: QuickPickOptions,
-  ): Promise<string | QuickPickItem | undefined> {
-    throw new ExtensionApiUnsupportedError(
-      "window.showQuickPick",
-      "no host quick-pick dialog is wired; returning the first item would be fake success",
-    );
+    items: string[] | QuickPickItem[],
+    options?: QuickPickOptions,
+  ): Promise<string | QuickPickItem | (string | QuickPickItem)[] | undefined> {
+    if (!this.options.onShowQuickPick) {
+      throw new ExtensionApiUnsupportedError(
+        "window.showQuickPick",
+        "no host quick-pick dialog is wired; returning the first item would be fake success",
+      );
+    }
+    return this.options.onShowQuickPick(items, options);
   }
 
-  /** Create an output channel backed by an in-memory buffer. */
+  /** Create a real Monaco-backed text editor decoration type. */
+  private bridgeCreateTextEditorDecorationTypeImpl(
+    extensionId: string,
+    options: DecorationRenderOptions,
+  ): TextEditorDecorationType {
+    const create = this.options.onCreateTextEditorDecorationType;
+    if (!create) {
+      throw new ExtensionApiUnsupportedError(
+        "window.createTextEditorDecorationType",
+        "no Monaco decoration surface is wired; refusing fake success",
+      );
+    }
+    const type = create(extensionId, options);
+    if (!type || typeof type.key !== "string" || typeof type.dispose !== "function") {
+      throw new Error("Decoration host returned an invalid decoration type");
+    }
+    this.trackDisposable(extensionId, type);
+    return type;
+  }
+
+  /** Set a visible status-bar message and return its disposable. */
+  private bridgeSetStatusBarMessageImpl(
+    _extensionId: string,
+    text: string,
+    hideAfter?: number,
+  ): Disposable {
+    if (!this.options.onSetStatusBarMessage) {
+      throw new ExtensionApiUnsupportedError("window.setStatusBarMessage", "no host status bar is wired");
+    }
+    return this.options.onSetStatusBarMessage(text, hideAfter);
+  }
+
+  /** Create a visible extension-owned status-bar item. */
+  private bridgeCreateStatusBarItemImpl(_extensionId: string): StatusBarItem {
+    if (!this.options.onCreateStatusBarItem) {
+      throw new ExtensionApiUnsupportedError("window.createStatusBarItem", "no host status bar is wired");
+    }
+    const item = this.options.onCreateStatusBarItem();
+    this.trackDisposable(_extensionId, item);
+    return item;
+  }
+
+  /** Run an async task while forwarding progress to the host UI. */
+  private bridgeWithProgressImpl<R>(
+    _extensionId: string,
+    options: ProgressOptions,
+    task: (progress: Progress<{ message?: string; increment?: number }>) => Thenable<R>,
+  ): Thenable<R> {
+    if (!this.options.onWithProgress) {
+      throw new ExtensionApiUnsupportedError("window.withProgress", "no host progress surface is wired");
+    }
+    return this.options.onWithProgress(options, task);
+  }
+
+  /**
+   * Create a workspace-bound watcher. The renderer FileService exposes a
+   * bounded polling primitive rather than OS watcher handles, so this watcher
+   * snapshots the current workspace and invalidates itself when the workspace
+   * generation changes. Paths are always relative to the active workspace.
+   */
+  private bridgeCreateFileSystemWatcherImpl(
+    extensionId: string,
+    globPattern: GlobPattern,
+  ): FileSystemWatcher {
+    if (!hasPermission(extensionId, "fs.read")) {
+      throw new Error(
+        `Extension "${extensionId}" cannot watch files: requires permission "fs.read" not declared`,
+      );
+    }
+    const include = globToRegExp(typeof globPattern === "string" ? globPattern : globPattern.pattern);
+    const created = new SimpleEmitter<Uri>();
+    const changed = new SimpleEmitter<Uri>();
+    const deleted = new SimpleEmitter<Uri>();
+    let disposed = false;
+    let boundGeneration: number | undefined;
+    let previous = new Map<string, string>();
+    let hasSnapshot = false;
+    let polling = false;
+    const timer = setInterval(() => void poll(), 500);
+    const normalize = (value: string): string => value.replace(/\\/g, "/").replace(/\/+$/, "");
+    const relativePath = (root: string, candidate: string): string | undefined => {
+      const normalizedRoot = normalize(root);
+      const normalizedCandidate = normalize(candidate);
+      const rootKey = normalizedRoot.toLowerCase();
+      const candidateKey = normalizedCandidate.toLowerCase();
+      if (candidateKey === rootKey) return "";
+      if (!candidateKey.startsWith(rootKey + "/")) return undefined;
+      return normalizedCandidate.slice(normalizedRoot.length + 1);
+    };
+    const absolutePath = (root: string, relative: string): string =>
+      normalize(root) + "/" + relative.replace(/^\/+/, "");
+    const emitUri = (root: string, relative: string): Uri => ({
+      fsPath: absolutePath(root, relative),
+      scheme: "file",
+    });
+    const dispose = (): void => {
+      if (disposed) return;
+      disposed = true;
+      if (timer) clearInterval(timer);
+      created.dispose();
+      changed.dispose();
+      deleted.dispose();
+    };
+    const poll = async (): Promise<void> => {
+      if (disposed || polling) return;
+      polling = true;
+      try {
+      const { fileService } = await import("@/api/services");
+      const { appState } = await import("@/stores/app");
+      const root = appState.currentProject ?? "";
+      if (!root) return;
+      const currentGeneration = appState.workspaceGeneration;
+      if (boundGeneration === undefined) boundGeneration = currentGeneration;
+      if (boundGeneration !== currentGeneration) {
+        dispose();
+        return;
+      }
+      const current = new Map<string, string>();
+      const visit = async (directory: string): Promise<void> => {
+        const entries = await fileService.listDirectory(directory) as unknown as Array<Record<string, unknown>>;
+        for (const entry of entries) {
+          const path = typeof entry.path === "string" ? entry.path : "";
+          if (!path) continue;
+          const entryRelative = relativePath(root, path);
+          if (entryRelative === undefined) continue;
+          if (entry.isDir === true) {
+            await visit(path);
+            continue;
+          }
+          const relative = entryRelative;
+          if (!relative || !include.test(relative)) continue;
+          current.set(relative, String(entry.size ?? "") + ":" + String(entry.modified ?? ""));
+        }
+      };
+      try {
+        await visit(root);
+      } catch {
+        return;
+      }
+      if (disposed || currentGeneration !== appState.workspaceGeneration) return;
+      if (hasSnapshot) {
+        for (const [file, signature] of current) {
+          const oldSignature = previous.get(file);
+          if (oldSignature === undefined) created.emit(emitUri(root, file));
+          else if (oldSignature !== signature) changed.emit(emitUri(root, file));
+        }
+        for (const file of previous.keys()) {
+          if (!current.has(file)) deleted.emit(emitUri(root, file));
+        }
+      }
+      previous = current;
+      hasSnapshot = true;
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const watcher: FileSystemWatcher = {
+      onDidCreate: created.event,
+      onDidChange: changed.event,
+      onDidDelete: deleted.event,
+      dispose,
+    };
+    this.trackDisposable(extensionId, watcher);
+    return watcher;
+  }
+
+  /** Create an output channel backed by the visible Output panel. */
   private bridgeCreateOutputChannelImpl(
     extensionId: string,
     name: string,
   ): OutputChannel {
-    const lines: string[] = [];
-    let visible = false;
+    if (!this.options.onOutput) {
+      throw new ExtensionApiUnsupportedError("window.createOutputChannel", "no host Output panel is wired");
+    }
+    const emit = (action: "append" | "appendLine" | "clear" | "show" | "hide" | "dispose", value?: string) =>
+      this.options.onOutput?.(name, action, value);
+    let disposed = false;
     const channel: OutputChannel = {
       name,
-      append(value: string) {
-        lines.push(value);
-      },
-      appendLine(value: string) {
-        lines.push(value);
-      },
-      clear() {
-        lines.length = 0;
-      },
-      show(_preserveFocus?: boolean) {
-        visible = true;
-      },
-      hide() {
-        visible = false;
-      },
-      dispose() {
-        lines.length = 0;
-        visible = false;
+      append: (value) => { if (!disposed) emit("append", value); },
+      appendLine: (value) => { if (!disposed) emit("appendLine", value); },
+      clear: () => { if (!disposed) emit("clear"); },
+      show: () => { if (!disposed) emit("show"); },
+      hide: () => { if (!disposed) emit("hide"); },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        emit("dispose");
       },
     };
-    // Log to the console so output is visible even without a panel.
-    const origAppendLine = channel.appendLine.bind(channel);
-    channel.appendLine = (value: string) => {
-      console.log(`[output:${name}] ${value}`);
-      origAppendLine(value);
-    };
-    void visible; // suppress unused warning; tracked for future UI wiring.
-    this.trackDisposable(extensionId, { dispose: () => channel.dispose() });
+    this.trackDisposable(extensionId, channel);
     return channel;
   }
-
   /**
    * Create a terminal. Requires `shell.execute` permission. Backed by
    * the backend TerminalService (startSession + writeSession). The
@@ -2386,8 +2665,7 @@ export class ExtensionHost {
     void confirmation
       .then(async () => {
         if (disposed) return;
-        const { terminalService } = await loadTerminalServices();
-        const { appState } = await import("@/stores/app");
+        const { terminalService, appState } = await loadTerminalRuntime();
         if (disposed) return;
         const cwd = options?.cwd ?? appState.currentProject ?? "";
         const shell = options?.shellPath ?? "";
@@ -2426,7 +2704,7 @@ export class ExtensionHost {
           void confirmation
             .then(async () => {
               if (disposed || sessionFailed || !sessionReady) return;
-              const { terminalService } = await loadTerminalServices();
+              const { terminalService } = await loadTerminalRuntime();
               if (disposed || sessionFailed || !sessionReady) return;
               await terminalService.writeSession(sessionId, payload);
             })
@@ -2448,7 +2726,7 @@ export class ExtensionHost {
         disposed = true;
         pendingWritesDisposable.dispose();
         if (!sessionStarted) return;
-        void loadTerminalServices()
+        void loadTerminalRuntime()
           .then(({ terminalService }) => terminalService.killSession(sessionId))
           .catch(() => {
             // ignore
@@ -2548,14 +2826,8 @@ export class ExtensionHost {
       // BUG-FIX-2d: 桥接活跃编辑器状态，解决 vscodeApi.ts 中
       // activeTextEditor 始终为 undefined 的问题。
       bridgeGetActiveTextEditor: () =>
-        this.options.onGetActiveTextEditor?.() as
-          | {
-              document: TextDocument;
-              selection?: unknown;
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              [key: string]: any;
-            }
-          | undefined,
+        this.options.onGetActiveTextEditor?.(),
+      bridgeGetWorkspaceFolders: () => this.options.onGetWorkspaceFolders?.(),
       // BUG-FIX-2d: 桥接扩展配置，解决 getConfiguration 始终返回空快照的问题。
       bridgeGetConfiguration: (section?: string) =>
         this.options.onGetConfiguration?.(section) ?? {},
@@ -2624,6 +2896,28 @@ export class ExtensionHost {
           extensionId,
           this.onDidOpenTextDocumentEmitter.event(listener),
         ),
+      bridgeOnDidCloseTextDocument: (listener: (e: TextDocument) => void) =>
+        this.trackDisposable(
+          extensionId,
+          this.onDidCloseTextDocumentEmitter.event(listener),
+        ),
+      bridgeOnDidChangeActiveTextEditor: (listener: (e: TextEditor | undefined) => void) =>
+        this.trackDisposable(
+          extensionId,
+          this.onDidChangeActiveTextEditorEmitter.event(listener),
+        ),
+      bridgeOnDidChangeTextEditorSelection: (listener: (e: TextEditorSelectionChangeEvent) => void) =>
+        this.trackDisposable(
+          extensionId,
+          this.onDidChangeTextEditorSelectionEmitter.event(listener),
+        ),
+      bridgeOnDidChangeConfiguration: (listener: (e: ConfigurationChangeEvent) => void) =>
+        this.trackDisposable(
+          extensionId,
+          this.onDidChangeConfigurationEmitter.event(listener),
+        ),
+      bridgeCreateFileSystemWatcher: (globPattern: GlobPattern) =>
+        this.bridgeCreateFileSystemWatcherImpl(extensionId, globPattern),
       createWebviewPanel: (
         viewType: string,
         title: string,
@@ -2667,6 +2961,16 @@ export class ExtensionHost {
         items: string[] | QuickPickItem[],
         options?: QuickPickOptions,
       ) => this.bridgeShowQuickPickImpl(extensionId, items, options),
+      bridgeSetStatusBarMessage: (text: string, hideAfter?: number) =>
+        this.bridgeSetStatusBarMessageImpl(extensionId, text, hideAfter),
+      bridgeCreateTextEditorDecorationType: (options: DecorationRenderOptions) =>
+        this.bridgeCreateTextEditorDecorationTypeImpl(extensionId, options),
+      bridgeCreateStatusBarItem: () =>
+        this.bridgeCreateStatusBarItemImpl(extensionId),
+      bridgeWithProgress: <R>(
+        options: ProgressOptions,
+        task: (progress: Progress<{ message?: string; increment?: number }>) => Thenable<R>,
+      ) => this.bridgeWithProgressImpl(extensionId, options, task),
       bridgeCreateOutputChannel: (name: string) =>
         this.bridgeCreateOutputChannelImpl(extensionId, name),
       bridgeCreateTerminal: (options?: TerminalOptions) =>

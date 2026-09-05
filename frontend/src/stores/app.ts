@@ -6,8 +6,8 @@
 // 旧代码 `import { xxx } from "@/stores/app"` 继续可用。
 // Koyori IDE 模块 · App。
 // 喵，这是 Koyori IDE 的 App 模块（前端实现）~
-import { reactive, computed, watch, type WatchStopHandle } from "vue";
-import type { ShortcutKeys, ToolApprovalConfig, CustomAccentTheme, AIProviderConfig, PersonalizationConfig, AIWindowTheme } from "@/types";
+import { computed, reactive, watch, type WatchStopHandle } from "vue";
+import type { ShortcutKeys, AgentPermissionMode, CustomAccentTheme, AIProviderConfig, PersonalizationConfig, AIWindowTheme, ReasoningEffort } from "@/types";
 import type { AccentTheme } from "@/lib/monaco-themes";
 import { accentThemes } from "@/lib/monaco-themes";
 import {
@@ -114,16 +114,17 @@ export interface AppState {
   aiBaseUrl: string;
   aiModel: string;
   aiSystemPrompt: string;
+  aiProvider: string;
   aiAgentSystemPrompt: string;
   aiConversationTitlePrompt: string;
   aiInlineCompletionPrompt: string;
-  aiProvider: string;
   temperature: number;
+  reasoningEffort: ReasoningEffort;
   maxTokens: number;
   aiChatPosition: "left" | "right";
   aiProviderConfigs: AIProviderConfig[];
   activeAIConfigId: string;
-  toolApprovalConfig: ToolApprovalConfig;
+  agentPermissionMode: AgentPermissionMode;
   inlineCompletionEnabled: boolean;
   aiWindowTheme: AIWindowTheme;
   aiSidebarWidth: number;
@@ -208,14 +209,14 @@ export const aiConfigStore = reactive({
   aiSystemPrompt: "",
   aiAgentSystemPrompt: "",
   aiConversationTitlePrompt: "",
-  aiInlineCompletionPrompt: "",
   aiProvider: "",
   temperature: 0.7,
+  reasoningEffort: "" as ReasoningEffort,
   maxTokens: 4096,
   aiChatPosition: "right" as "left" | "right",
   aiProviderConfigs: [] as AIProviderConfig[],
   activeAIConfigId: "",
-  toolApprovalConfig: {} as ToolApprovalConfig,
+  agentPermissionMode: "always-ask" as AgentPermissionMode,
   inlineCompletionEnabled: true,
   aiWindowTheme: "apple-dark" as AIWindowTheme,
   aiSidebarWidth: 288,
@@ -269,7 +270,7 @@ export const windowStore = reactive({
 const _storeFields = {
   theme: ["theme", "accentTheme", "customAccent", "designLanguage", "fontSizeScaling", "uiDensity"],
   settings: ["fontSize", "fontFamily", "tabSize", "wordWrap", "minimap", "stickyScrollEnabled", "inlayHintsEnabled", "organizeImportsOnSave", "lineNumbers", "cursorBlinking", "cursorStyle", "bracketColorization", "autoSave", "autoSaveDelay", "formatOnSave", "trimTrailingWhitespace", "insertSpaces", "insertFinalNewline", "gitBlameEnabled", "emmetEnabled", "emmetIncludeLanguages", "language", "autoUpdate", "dataFolderPath", "enablePluginSandbox", "customShortcuts", "defaultShell", "terminalFontSize", "terminalCursorStyle", "scrollback", "settingsVersion"],
-  aiConfig: ["aiApiKey", "aiApiKeyConfigured", "aiApiKeyStorageMethod", "aiBaseUrl", "aiModel", "aiSystemPrompt", "aiAgentSystemPrompt", "aiConversationTitlePrompt", "aiInlineCompletionPrompt", "aiProvider", "temperature", "maxTokens", "aiChatPosition", "aiProviderConfigs", "activeAIConfigId", "toolApprovalConfig", "inlineCompletionEnabled", "aiWindowTheme", "aiSidebarWidth", "aiTerminalWidth", "openAIWindowOnStartup"],
+  aiConfig: ["aiApiKey", "aiApiKeyConfigured", "aiApiKeyStorageMethod", "aiBaseUrl", "aiModel", "aiSystemPrompt", "aiAgentSystemPrompt", "aiConversationTitlePrompt", "aiInlineCompletionPrompt", "aiProvider", "temperature", "reasoningEffort", "maxTokens", "aiChatPosition", "aiProviderConfigs", "activeAIConfigId", "agentPermissionMode", "inlineCompletionEnabled", "aiWindowTheme", "aiSidebarWidth", "aiTerminalWidth", "openAIWindowOnStartup"],
   project: ["currentProject", "projectName", "workspaceRoot", "currentFilePath", "workspaceFolders", "workspaceGeneration", "branchName", "errors", "warnings", "cursorLine", "cursorColumn", "editorJumpSeq", "editorJumpTargetPath", "editorJumpTargetGroupId", "editorJumpTargetSeq", "encoding", "languageMode", "bottomPanelView", "toolPaths", "personalization", "editorGroupFilePaths", "editorGroupActiveFiles"],
   window: ["sidebarCollapsed", "sidebarWidth", "activityBarWidth", "panelTab", "extensionsSubview", "activeExtensionView", "terminalVisible", "terminalHeight", "aiChatVisible", "aiChatWidth", "statusBarVisible", "breadcrumbVisible", "activityBarVisible", "isWindowMaximised"],
 } as const;

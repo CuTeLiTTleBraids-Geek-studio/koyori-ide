@@ -141,8 +141,8 @@ watch(
             {{ t("extPerm.reviewedNotice") }}
           </p>
 
-          <p v-if="!info.verified" class="epd__unverified" role="alert">
-            {{ t("extPerm.unverified") }}
+          <p v-if="!info.integrityChecked" class="epd__integrity-unchecked" role="alert">
+            {{ t("extPerm.integrityUnchecked") }}
           </p>
 
           <h3 class="epd__subtitle">{{ t("extPerm.requestedPermissions") }}</h3>
@@ -166,7 +166,7 @@ watch(
             <input
               v-model="restrictedConfirmed"
               type="checkbox"
-              :disabled="!info.verified"
+              :disabled="!info.integrityChecked"
             />
             <span>
               {{ t("extPerm.confirmLabel") }}
@@ -182,7 +182,7 @@ watch(
             type="button"
             class="epd__btn epd__btn--primary"
             :class="{ 'epd__btn--danger': isRestricted }"
-            :disabled="!canEnable || !info.verified"
+            :disabled="!canEnable || !info.integrityChecked"
             @click="handleEnable"
           >
             {{ isRestricted ? t("extPerm.enableRestricted") : t("extPerm.enable") }}
@@ -228,7 +228,7 @@ watch(
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  background-color: var(--color-bg-surface, #1e1e1e);
+  background-color: var(--color-bg-surface, #fafafc);
   border: 1px solid var(--color-border-default, #333);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -306,7 +306,7 @@ watch(
   color: var(--color-text-secondary, #aaa);
 }
 
-.epd__unverified {
+.epd__integrity-unchecked {
   padding: 10px 12px;
   background: rgba(244, 67, 54, 0.1);
   border-radius: 6px;
@@ -339,7 +339,7 @@ watch(
   gap: 10px;
   padding: 8px 10px;
   border-radius: 6px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -413,7 +413,7 @@ watch(
 }
 
 .epd__btn:hover:not(:disabled) {
-  background: var(--color-bg-elevated, #2a2a2a);
+  background: var(--color-bg-elevated, #f5f5f7);
 }
 
 .epd__btn:disabled {
