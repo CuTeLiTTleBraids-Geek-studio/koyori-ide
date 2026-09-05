@@ -284,7 +284,7 @@ async function buildPackagedFrontend() {
   }
 }
 
-const SOURCE_FINGERPRINT_SCOPE = "build-inputs-v2";
+const SOURCE_FINGERPRINT_SCOPE = "build-inputs-v3";
 const SOURCE_FINGERPRINT_DIRECTORIES = Object.freeze([
   "services",
   "internal",
@@ -311,6 +311,18 @@ const SOURCE_FINGERPRINT_EXCLUDED_PATHS = Object.freeze([
   /^build\/android\/.*\/build(?:\/|$)/,
   /^build\/g03-manual-marker$/,
   /^build\/.*\.test(?:\.exe)?$/i,
+  // P20 P0-04: the wails3 build task pipeline regenerates these tracked
+  // derived artifacts from tracked canonical sources on every build
+  // (`linux:common:generate:icons` rewrites darwin/icons.icns and
+  // windows/icon.ico from appicon.icon/appicon.png;
+  // `linux:generate:dotdesktop` rewrites linux/koyori-ide.desktop from the
+  // CLI's bundled template). Their byte churn during the build does not bind
+  // build identity — the canonical inputs stay fingerprinted — so they are
+  // exempted instead of failing every Linux qualification run with
+  // "source fingerprint changed during build".
+  /^build\/darwin\/icons\.icns$/,
+  /^build\/windows\/icon\.ico$/,
+  /^build\/linux\/koyori-ide\.desktop$/,
 ]);
 const SOURCE_FINGERPRINT_ROOT_FILE =
   /(?:\.(?:go|mod|sum|json|ya?ml|toml|mjs|cjs|ts|html)|^VERSION$)/i;

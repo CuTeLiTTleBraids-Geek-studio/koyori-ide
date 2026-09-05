@@ -51,6 +51,9 @@ test("source fingerprint recursively covers untracked build inputs", async (t) =
     "frontend/dist/assets",
     "scripts",
     "build/e2e-evidence/packaged-e2e",
+    "build/darwin",
+    "build/windows",
+    "build/linux",
   ]) {
     await mkdir(path.join(fixtureRoot, directory), { recursive: true });
   }
@@ -82,6 +85,12 @@ test("source fingerprint recursively covers untracked build inputs", async (t) =
     ["build/g03-helper.test.exe", "ignored test binary\n"],
     ["build/g03-manual-marker", "ignored test marker\n"],
     ["build/overlay_windows.json", "ignored generated overlay\n"],
+    // P20 P0-04: wails3 build regenerates these derived artifacts on every
+    // run (icons from appicon sources, .desktop from the CLI template), so
+    // they must stay outside the fingerprint input set.
+    ["build/darwin/icons.icns", "regenerated icon container\n"],
+    ["build/windows/icon.ico", "regenerated icon container\n"],
+    ["build/linux/koyori-ide.desktop", "regenerated desktop entry\n"],
     ["build/e2e-evidence/packaged-e2e/manifest.json", "{}\n"],
   ]);
   for (const [relative, content] of files) {
@@ -101,6 +110,9 @@ test("source fingerprint recursively covers untracked build inputs", async (t) =
   assert(!discovered.some((relative) => relative.endsWith(".test.exe")));
   assert(!discovered.includes("build/g03-manual-marker"));
   assert(!discovered.includes("build/overlay_windows.json"));
+  assert(!discovered.includes("build/darwin/icons.icns"));
+  assert(!discovered.includes("build/windows/icon.ico"));
+  assert(!discovered.includes("build/linux/koyori-ide.desktop"));
 
   const before = await sourceFingerprint(fixtureRoot);
   await writeFile(
@@ -236,7 +248,7 @@ test("source fingerprint must remain stable through artifact construction", () =
 
 test("skip-build requires a manifest-bound matching source and artifact", () => {
   const current = {
-    sourceFingerprintScope: "build-inputs-v2",
+    sourceFingerprintScope: "build-inputs-v3",
     sourceFingerprintSha256: "source-a",
     sourceFingerprintFileCount: 3,
     artifact: "bin/koyori-ide.exe",
@@ -335,7 +347,7 @@ async function createWindowsPackagedEvidenceFixture(t) {
     artifact: "bin\\koyori-ide.exe",
     sha256: createHash("sha256").update(artifact).digest("hex"),
     sourceFingerprintSha256: await sourceFingerprint(baseRoot, sourceFiles),
-    sourceFingerprintScope: "build-inputs-v2",
+    sourceFingerprintScope: "build-inputs-v3",
     sourceFingerprintFileCount: sourceFiles.length,
     sourceFingerprintStableAfterBuild: true,
     sourceFingerprintVerifiedAt: "2026-08-25T01:02:00.000Z",
