@@ -264,11 +264,6 @@ func (s *IMService) saveConfigLocked() error {
 	}, 0600)
 }
 
-// UpdateConfig 更新配置并持久化（Step 1 / G-SEC-07 / G-SEC-09）。
-// 首次启用（Approved=false → true）需用户显式确认（G-SEC-12）。
-// Webhook URL 在保存阶段强校验（拒绝私网/环回/元数据目标）；任何 provider
-// 的 Webhook URL 发生变更即更换了出站目的地，撤销已批准状态并要求重新走
-// 原生同意边界（P19 P0-02）。
 // imProviderTypes is the fail-closed whitelist of supported provider types
 // (P20 P1-03). Anything outside it must be rejected at config save and at
 // send time: an unknown Type used to have its BotToken encrypted and stored
@@ -281,6 +276,11 @@ var imProviderTypes = map[string]bool{
 	"wechat_work": true,
 }
 
+// UpdateConfig 更新配置并持久化（Step 1 / G-SEC-07 / G-SEC-09）。
+// 首次启用（Approved=false → true）需用户显式确认（G-SEC-12）。
+// Webhook URL 在保存阶段强校验（拒绝私网/环回/元数据目标）；任何 provider
+// 的 Webhook URL 发生变更即更换了出站目的地，撤销已批准状态并要求重新走
+// 原生同意边界（P19 P0-02）。
 func (s *IMService) UpdateConfig(cfg IMConfig) error {
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
