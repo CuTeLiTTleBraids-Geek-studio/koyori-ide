@@ -351,6 +351,7 @@ func (c *MCPClient) enqueueHandler(what, method string, handler func()) bool {
 		return false
 	}
 	go func() {
+		defer RecoverGoroutinePanic("mcp:notification-dispatch")
 		defer run.calls.Done()
 		defer func() { <-slots }()
 		handler()

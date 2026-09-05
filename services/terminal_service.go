@@ -280,6 +280,7 @@ func (t *TerminalService) StartSession(id string, workingDir string, shell strin
 	}
 
 	go func() {
+		defer RecoverGoroutinePanic("terminal:read-pump")
 		defer t.wg.Done()
 		t.readLoop(session, app)
 	}()

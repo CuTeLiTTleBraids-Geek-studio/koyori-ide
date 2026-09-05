@@ -2538,6 +2538,7 @@ func newAIStreamDeadlineContext(wallTimeout, idleTimeout time.Duration) (context
 	}
 	activity := make(chan struct{}, 1)
 	go func() {
+		defer RecoverGoroutinePanic("ai:stream-idle-pump")
 		timer := time.NewTimer(idleTimeout)
 		defer timer.Stop()
 		for {
@@ -2842,6 +2843,7 @@ func (a *AIService) startStreamWithSnapshot(
 	slog.Info("ai startstream: starting", "model", snap.config.Model, "messages", len(messages), "streamId", streamID)
 
 	go func() {
+		defer RecoverGoroutinePanic("ai:stream-worker")
 		defer func() {
 			cancel()
 			workspaceLease.release()

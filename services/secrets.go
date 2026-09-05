@@ -48,6 +48,7 @@ func newSerializedSecretAuditWriter(writer io.Writer) *serializedSecretAuditWrit
 		done:     make(chan struct{}),
 	}
 	go func() {
+		defer RecoverGoroutinePanic("secrets:audit-writer")
 		defer close(serialized.done)
 		for request := range serialized.requests {
 			n, err := writer.Write(request.data)

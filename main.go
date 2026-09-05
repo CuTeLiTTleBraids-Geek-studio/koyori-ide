@@ -470,6 +470,17 @@ func buildAnalysisServices(cfg bootstrapConfig, serviceSet *bootstrapServices) {
 	serviceSet.PProf = services.NewPProfService()
 	serviceSet.Update = services.NewUpdateService()
 	serviceSet.Crash = services.NewCrashService(serviceSet.Update)
+	// P20 P1-05: recovered goroutine panics are persisted as crash reports
+	// (fail-closed visibility) in addition to the guard's structured slog.
+	services.SetGoroutinePanicSink(func(scope string, panicValue any, stack []byte) {
+		if err := serviceSet.Crash.ReportCrash(services.CrashReport{
+			Message:   fmt.Sprintf("goroutine panic in %s: %v", scope, panicValue),
+			ErrorType: "goroutine-panic",
+			Stack:     string(stack),
+		}); err != nil {
+			slog.Error("persist goroutine panic report failed", "scope", scope, "err", err)
+		}
+	})
 	serviceSet.Remote = services.NewRemoteService()
 	// GOAL-P0-03: editor dirty-buffer recovery. Kept separate from CrashService,
 	// which only persists panic reports and is not a content backup.
@@ -710,6 +721,7 @@ func startBackgroundJobs(ctx context.Context, serviceSet *bootstrapServices) *ba
 	timeDone := make(chan struct{})
 	jobs.timeDone = timeDone
 	go func() {
+		defer services.RecoverGoroutinePanic("main:time-pump")
 		defer close(timeDone)
 		emitTimeEvents(timeContext, jobs.timeTicker.C, func(value string) {
 			serviceSet.app.Event.Emit("time", value)

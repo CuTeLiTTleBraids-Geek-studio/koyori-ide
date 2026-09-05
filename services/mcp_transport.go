@@ -818,6 +818,7 @@ func (t *sseTransport) connect(ctx context.Context) error {
 	t.wg.Add(1)
 	t.mu.Unlock()
 	go func() {
+		defer RecoverGoroutinePanic("mcp:sse-readloop")
 		defer t.wg.Done()
 		t.readLoop(resp.Body)
 	}()
