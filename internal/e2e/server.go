@@ -2919,10 +2919,19 @@ func (s *server) runTerminalExitProbe(cmd command) (interface{}, error) {
 	})
 	defer remove()
 
-	// Use cmd.exe (whitelisted): its interactive shell exits deterministically
-	// with the requested code, unlike PowerShell which swallows early `exit`.
-	if err := s.services.Terminal.StartSession("g16-exit", cmd.Workspace, "cmd"); err != nil {
-		return nil, fmt.Errorf("start cmd shell: %w", err)
+	// Windows: cmd.exe (whitelisted) exits deterministically with the
+	// requested code, unlike PowerShell which swallows early `exit`.
+	// Linux/other: sh is whitelisted and `exit 7` (LF) terminates it
+	// deterministically as well. P20 P0-04: the probe previously hardcoded
+	// cmd.exe and could not start on the Linux qualification runner.
+	shell := "sh"
+	exitInput := "exit 7\n"
+	if runtime.GOOS == "windows" {
+		shell = "cmd"
+		exitInput = "exit 7\r\n"
+	}
+	if err := s.services.Terminal.StartSession("g16-exit", cmd.Workspace, shell); err != nil {
+		return nil, fmt.Errorf("start %s shell: %w", shell, err)
 	}
 	defer s.services.Terminal.KillSession("g16-exit")
 	if err := s.services.Terminal.ResizeSession("g16-exit", 100, 30); err != nil {
@@ -2931,8 +2940,8 @@ func (s *server) runTerminalExitProbe(cmd command) (interface{}, error) {
 	// Let the shell banner finish before sending input; a command written
 	// during startup can be swallowed by the banner.
 	time.Sleep(1200 * time.Millisecond)
-	// cmd exits with the given code via `exit 7` (CRLF line ending).
-	if err := s.services.Terminal.WriteSession("g16-exit", "exit 7\r\n"); err != nil {
+	// The shell exits with the given code (`exit 7`; CRLF on Windows).
+	if err := s.services.Terminal.WriteSession("g16-exit", exitInput); err != nil {
 		return nil, fmt.Errorf("write exit command: %w", err)
 	}
 	select {
