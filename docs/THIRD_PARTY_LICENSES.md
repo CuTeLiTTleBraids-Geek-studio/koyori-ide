@@ -8,7 +8,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 - `go.mod`: `ebcf55c7046776e9e2022ef295c4f9cc65afee6833ab91c03fad6e0f7addfb35`
 - `go.sum`: `06d461c712fd503b6474539a22d9d8c39d68838b97e6a4c25454799983d9aeb8`
-- `frontend/package-lock.json`: `309e1315dcaed73949aa129c6993b4debe5d38609373010767b82e9b9fe4a963`
+- `frontend/package-lock.json`: `2aba424bba10f78edb01b4a0592c838ede067a26f95f2b0c8cd719d66fadb0c9`
 
 ## Review Summary
 
@@ -46,7 +46,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @vue/runtime-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/server-renderer@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/shared@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
-| @wailsio/runtime@3.0.0-beta.5 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @wailsio/runtime@3.0.0-beta.8 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | assertion-error@2.0.1 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@1.1.18 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@2.1.4 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -56,7 +56,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | csstype@3.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | dompurify@3.4.12 | (MPL-2.0 OR Apache-2.0) | package-lock v3 entry omitted license; checked installed package.json |
 | glob@10.5.0 | ISC | package-lock v3 entry omitted license; checked installed package.json |
-| nanoid@3.3.17 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | postcss@8.5.25 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vitest@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vue-demi@0.14.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -366,7 +365,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | glob-parent | 6.0.2 | ISC | package-lock.json |
 | globals | 13.24.0 | MIT | package-lock.json |
 | globals | 14.0.0 | MIT | package-lock.json |
-| globals | 15.15.0 | MIT | package-lock.json |
+| globals | 17.11.0 | MIT | package-lock.json |
 | graceful-fs | 4.2.11 | ISC | package-lock.json |
 | has-flag | 4.0.0 | MIT | package-lock.json |
 | he | 1.2.0 | MIT | package-lock.json |
