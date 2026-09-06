@@ -6,8 +6,8 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 ## Source Digests
 
-- `go.mod`: `3caabc6ff36a97f9b10e26fe3afb14ea3c256ef81b7dd9987b9aa3167c9119f2`
-- `go.sum`: `b2095b1afcfcc1a48f1255a106fb25ea145bcadb0088314104971b818cc1322d`
+- `go.mod`: `ebcf55c7046776e9e2022ef295c4f9cc65afee6833ab91c03fad6e0f7addfb35`
+- `go.sum`: `339811ad4025113d3c0e82f4240b6d7191b120fd2dd6f7843bd384557c87a568`
 - `frontend/package-lock.json`: `309e1315dcaed73949aa129c6993b4debe5d38609373010767b82e9b9fe4a963`
 
 ## Review Summary
@@ -84,12 +84,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/wailsapp/wails/v3 | v3.0.0-alpha2.111 | MIT | LICENSE |
 | github.com/wailsapp/wails/webview2 | v1.0.27 | MIT | LICENSE |
 | github.com/xanzy/ssh-agent | v0.3.3 | Apache-2.0 | LICENSE |
-| golang.org/x/crypto | v0.54.0 | BSD-3-Clause | LICENSE |
+| golang.org/x/crypto | v0.56.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/exp | v0.0.0-20260410095643-746e56fc9e2f | BSD-3-Clause | LICENSE |
-| golang.org/x/net | v0.56.0 | BSD-3-Clause | LICENSE |
+| golang.org/x/net | v0.57.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sync | v0.22.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sys | v0.47.0 | BSD-3-Clause | LICENSE |
-| golang.org/x/text | v0.40.0 | BSD-3-Clause | LICENSE |
+| golang.org/x/text | v0.41.0 | BSD-3-Clause | LICENSE |
 | gopkg.in/warnings.v0 | v0.1.2 | BSD-2-Clause | LICENSE |
 | gopkg.in/yaml.v3 | v3.0.1 | Apache-2.0 | LICENSE |
 | modernc.org/libc | v1.67.6 | BSD-2-Clause | LICENSE |
