@@ -52,7 +52,7 @@ test-tagged and must not be described as a formal release.
 Packaged E2E requires the same Wails CLI version as the library in `go.mod`:
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.5
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 ```
 
 ## Running the contract smoke
