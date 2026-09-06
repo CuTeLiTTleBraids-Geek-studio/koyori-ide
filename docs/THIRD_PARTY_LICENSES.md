@@ -6,13 +6,13 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 ## Source Digests
 
-- `go.mod`: `ebcf55c7046776e9e2022ef295c4f9cc65afee6833ab91c03fad6e0f7addfb35`
-- `go.sum`: `06d461c712fd503b6474539a22d9d8c39d68838b97e6a4c25454799983d9aeb8`
+- `go.mod`: `bda63f881c46bb446ba3d56784c90f42bf76e89166656e7b8b44c1a4c6e4e778`
+- `go.sum`: `eac57dcacc359e55e8e737f52a43ada2faf171f33cc4db626268f839317dfc2d`
 - `frontend/package-lock.json`: `309e1315dcaed73949aa129c6993b4debe5d38609373010767b82e9b9fe4a963`
 
 ## Review Summary
 
-- Go modules: 53
+- Go modules: 52
 - Distinct npm package/version pairs: 407
 - Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
@@ -46,7 +46,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @vue/runtime-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/server-renderer@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/shared@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
-| @wailsio/runtime@3.0.0-beta.5 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @wailsio/runtime@3.0.0-beta.8 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | assertion-error@2.0.1 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@1.1.18 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@2.1.4 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -56,7 +56,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | csstype@3.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | dompurify@3.4.12 | (MPL-2.0 OR Apache-2.0) | package-lock v3 entry omitted license; checked installed package.json |
 | glob@10.5.0 | ISC | package-lock v3 entry omitted license; checked installed package.json |
-| nanoid@3.3.17 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | postcss@8.5.25 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vitest@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vue-demi@0.14.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -78,12 +77,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/UserExistsError/conpty | v0.1.4 | MIT | LICENSE |
 | github.com/adrg/xdg | v0.5.3 | MIT | LICENSE |
 | github.com/cloudflare/circl | v1.6.3 | BSD-3-Clause | LICENSE |
-| github.com/coder/websocket | v1.8.14 | ISC | LICENSE.txt |
+| github.com/coder/websocket | v1.8.15 | ISC | LICENSE.txt |
 | github.com/creack/pty | v1.1.24 | MIT | LICENSE |
 | github.com/cyphar/filepath-securejoin | v0.6.1 | BSD-3-Clause; BSD-3-Clause AND MPL-2.0; MPL-2.0 | COPYING.md, LICENSE.BSD, LICENSE.MPL-2.0 |
 | github.com/dustin/go-humanize | v1.0.1 | MIT | LICENSE |
 | github.com/emirpasic/gods | v1.18.1 | ISC | LICENSE |
-| github.com/fsnotify/fsnotify | v1.9.0 | BSD-3-Clause | LICENSE |
+| github.com/fsnotify/fsnotify | v1.10.1 | BSD-3-Clause | LICENSE |
 | github.com/go-git/gcfg | v1.5.1-0.20230307220236-3a3c6141e376 | BSD-3-Clause | LICENSE |
 | github.com/go-git/go-billy/v5 | v5.9.0 | Apache-2.0 | LICENSE |
 | github.com/go-git/go-git/v5 | v5.19.2 | Apache-2.0 | LICENSE |
@@ -102,7 +101,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/kevinburke/ssh_config | v1.4.0 | MIT | LICENSE |
 | github.com/klauspost/cpuid/v2 | v2.3.0 | MIT | LICENSE |
 | github.com/kr/fs | v0.1.0 | BSD-3-Clause | LICENSE |
-| github.com/mattn/go-isatty | v0.0.20 | MIT | LICENSE |
+| github.com/mattn/go-isatty | v0.0.24 | MIT | LICENSE |
 | github.com/ncruces/go-strftime | v1.0.0 | MIT | LICENSE |
 | github.com/pjbgf/sha1cd | v0.6.0 | Apache-2.0 | LICENSE |
 | github.com/pkg/sftp | v1.13.11 | BSD-2-Clause | LICENSE |
@@ -113,17 +112,16 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/wailsapp/wails/webview2 | v1.0.27 | MIT | LICENSE |
 | github.com/xanzy/ssh-agent | v0.3.3 | Apache-2.0 | LICENSE |
 | golang.org/x/crypto | v0.56.0 | BSD-3-Clause | LICENSE |
-| golang.org/x/exp | v0.0.0-20260410095643-746e56fc9e2f | BSD-3-Clause | LICENSE |
 | golang.org/x/net | v0.57.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sync | v0.22.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sys | v0.47.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/text | v0.41.0 | BSD-3-Clause | LICENSE |
 | gopkg.in/warnings.v0 | v0.1.2 | BSD-2-Clause | LICENSE |
 | gopkg.in/yaml.v3 | v3.0.1 | Apache-2.0 | LICENSE |
-| modernc.org/libc | v1.67.6 | BSD-2-Clause | LICENSE |
+| modernc.org/libc | v1.74.4 | BSD-2-Clause | LICENSE |
 | modernc.org/mathutil | v1.7.1 | BSD-2-Clause | LICENSE |
 | modernc.org/memory | v1.11.0 | BSD-2-Clause | LICENSE |
-| modernc.org/sqlite | v1.44.3 | BSD-3-Clause | LICENSE |
+| modernc.org/sqlite | v1.57.0 | BSD-3-Clause | LICENSE |
 
 ## npm Packages
 
