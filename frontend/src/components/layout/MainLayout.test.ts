@@ -9,6 +9,10 @@ const {
   debugTestAtCursorMock,
   runTestAtCursorMock,
   runToolchainCommandMock,
+  openAIDesktopWindowMock,
+  toggleAIDesktopWindowMock,
+  notifyErrorMock,
+  routerPushMock,
 } = vi.hoisted(() => ({
   appStateHolder: { state: null as any },
   editorStateHolder: { state: null as any },
@@ -17,11 +21,15 @@ const {
   debugTestAtCursorMock: vi.fn(),
   runTestAtCursorMock: vi.fn(),
   runToolchainCommandMock: vi.fn(),
+  openAIDesktopWindowMock: vi.fn().mockResolvedValue(undefined),
+  toggleAIDesktopWindowMock: vi.fn().mockResolvedValue(undefined),
+  notifyErrorMock: vi.fn(),
+  routerPushMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
   useRoute: () => ({ path: "/settings" }),
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: routerPushMock }),
 }));
 
 vi.mock("@/stores/app", async () => {
@@ -106,6 +114,13 @@ vi.mock("@/stores/toolchain", async () => {
 });
 
 vi.mock("@/stores/ai", () => ({ clearMessages: vi.fn() }));
+vi.mock("@/stores/aiAssistant", () => ({
+  openAIDesktopWindow: openAIDesktopWindowMock,
+  toggleAIDesktopWindow: toggleAIDesktopWindowMock,
+}));
+vi.mock("@/lib/notifications", () => ({
+  notifyError: notifyErrorMock,
+}));
 vi.mock("@/stores/inlineCompletion", () => ({
   toggleInlineCompletion: vi.fn(),
 }));
@@ -163,7 +178,13 @@ vi.mock("./TitleBar.vue", () => ({ default: { template: "<div />" } }));
 vi.mock("./SidePanel.vue", () => ({ default: { template: "<div />" } }));
 vi.mock("./TerminalPanel.vue", () => ({ default: { template: "<div />" } }));
 vi.mock("./StatusBar.vue", () => ({ default: { template: "<div />" } }));
-vi.mock("./CommandPalette.vue", () => ({ default: { template: "<div />" } }));
+vi.mock("./CommandPalette.vue", () => ({
+  default: {
+    name: "CommandPalette",
+    props: ["commands", "visible"],
+    template: "<div class='command-palette-stub' />",
+  },
+}));
 vi.mock("./QuickOpen.vue", () => ({ default: { template: "<div />" } }));
 vi.mock("./WorkspaceSymbolPicker.vue", () => ({
   default: { template: "<div />" },
@@ -193,6 +214,10 @@ describe("MainLayout active-file commands", () => {
     debugTestAtCursorMock.mockClear();
     runTestAtCursorMock.mockClear();
     runToolchainCommandMock.mockClear();
+    openAIDesktopWindowMock.mockReset().mockResolvedValue(undefined);
+    toggleAIDesktopWindowMock.mockReset().mockResolvedValue(undefined);
+    notifyErrorMock.mockClear();
+    routerPushMock.mockClear();
 
     editorStateHolder.state.openFiles = [
       {
@@ -256,5 +281,58 @@ describe("MainLayout active-file commands", () => {
       "lint-active",
       "/workspace/active_test.go",
     );
+  });
+
+  it("opens or focuses AI through the conversation handoff without toggling it hidden", async () => {
+    expect(await commandRegistry.execute("toggle-ai")).toBe(true);
+    await flushPromises();
+
+    expect(openAIDesktopWindowMock).toHaveBeenCalledOnce();
+    expect(toggleAIDesktopWindowMock).not.toHaveBeenCalled();
+  });
+
+  it("reports AI handoff failures instead of dropping the rejected promise", async () => {
+    openAIDesktopWindowMock.mockRejectedValueOnce(new Error("AI window unavailable"));
+
+    expect(await commandRegistry.execute("toggle-ai")).toBe(true);
+    await flushPromises();
+
+    expect(notifyErrorMock).toHaveBeenCalledWith("AI window unavailable");
+  });
+
+  it("opens Debug and Test Explorer views from palette command ids", async () => {
+    const palette = wrapper!.findComponent({ name: "CommandPalette" });
+    const commands = palette.props("commands") as Array<{ id: string; action: () => void }>;
+    const debug = commands.find((command) => command.id === "koyoriIde.view.debug");
+    const tests = commands.find((command) => command.id === "koyoriIde.view.testExplorer");
+    expect(debug).toBeTruthy();
+    expect(tests).toBeTruthy();
+    debug!.action();
+    tests!.action();
+    expect(routerPushMock).toHaveBeenCalledWith("/debug");
+    expect(routerPushMock).toHaveBeenCalledWith("/test");
+  });
+
+  it("opens advanced side panels from palette command ids", async () => {
+    const { setPanelTab } = await import("@/stores/app");
+    const palette = wrapper!.findComponent({ name: "CommandPalette" });
+    const commands = palette.props("commands") as Array<{ id: string; action: () => void }>;
+    for (const id of [
+      "koyoriIde.view.build",
+      "koyoriIde.view.database",
+      "koyoriIde.view.httpClient",
+      "koyoriIde.view.inspections",
+      "koyoriIde.view.callHierarchy",
+    ]) {
+      const command = commands.find((entry) => entry.id === id);
+      expect(command, id).toBeTruthy();
+      command!.action();
+    }
+    expect(setPanelTab).toHaveBeenCalledWith("build");
+    expect(setPanelTab).toHaveBeenCalledWith("database");
+    expect(setPanelTab).toHaveBeenCalledWith("httpClient");
+    expect(setPanelTab).toHaveBeenCalledWith("inspections");
+    expect(setPanelTab).toHaveBeenCalledWith("callHierarchy");
+    expect(routerPushMock).toHaveBeenCalledWith("/editor");
   });
 });

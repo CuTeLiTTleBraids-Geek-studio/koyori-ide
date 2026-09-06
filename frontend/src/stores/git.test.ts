@@ -33,6 +33,7 @@ vi.mock("@/api/services", () => ({
     deleteTag: vi.fn().mockResolvedValue(undefined),
     pushTags: vi.fn().mockResolvedValue(undefined),
     amendCommit: vi.fn().mockResolvedValue(undefined),
+    submoduleList: vi.fn().mockResolvedValue([]),
   },
   fileService: {
     writeFile: vi.fn().mockResolvedValue(undefined),
@@ -49,6 +50,7 @@ import {
   pullChanges,
   resolveConflictAsOurs,
   resolveConflictAsTheirs,
+  loadMoreGitChanges,
   stashState,
   tagState,
   loadStashes,
@@ -62,6 +64,10 @@ import {
   pushTags,
   amendCommit,
   clearStashAndTagState,
+  conflictState,
+  loadConflicts,
+  submoduleState,
+  loadSubmodules,
 } from "./git";
 import type { MergeConflict } from "@/types";
 
@@ -139,6 +145,53 @@ describe("git store", () => {
     const { gitService } = await import("@/api/services");
     await pullChanges("/repo", "upstream");
     expect(gitService.pull).toHaveBeenCalledWith("/repo", "upstream");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1-04: 截断续读 — 完整状态保留，可见窗口可分页扩大
+// ---------------------------------------------------------------------------
+
+describe("P1-04: 截断续读", () => {
+  it("refreshGit 保留全量并投影 1000 条可见窗口", async () => {
+    const { gitService } = await import("@/api/services");
+    const big = Array.from({ length: 2500 }, (_, i) => ({
+      path: `f${i}.txt`,
+      status: "Modified",
+      staged: false,
+    }));
+    (gitService.getStatus as any).mockResolvedValueOnce(big);
+    await refreshGit("/repo");
+    expect(gitState.changes).toHaveLength(1000);
+    expect(gitState.truncated).toBe(true);
+    expect(gitState.totalChanges).toBe(2500);
+    expect(gitState.changes[999].path).toBe("f999.txt");
+  });
+
+  it("loadMoreGitChanges 扩大一页窗口并返回剩余隐藏行数", async () => {
+    const { gitService } = await import("@/api/services");
+    const big = Array.from({ length: 2500 }, (_, i) => ({
+      path: `f${i}.txt`,
+      status: "Modified",
+      staged: false,
+    }));
+    (gitService.getStatus as any).mockResolvedValueOnce(big);
+    await refreshGit("/repo");
+    const hidden = loadMoreGitChanges();
+    expect(gitState.changes).toHaveLength(2000);
+    expect(gitState.truncated).toBe(true);
+    expect(hidden).toBe(500);
+    expect(loadMoreGitChanges()).toBe(0);
+    expect(gitState.changes).toHaveLength(2500);
+    expect(gitState.truncated).toBe(false);
+  });
+
+  it("非截断列表续读为 no-op 且 truncated 复位", async () => {
+    await refreshGit("/some/repo");
+    expect(gitState.truncated).toBe(false);
+    expect(gitState.totalChanges).toBe(2);
+    expect(loadMoreGitChanges()).toBe(0);
+    expect(gitState.changes).toHaveLength(2);
   });
 });
 
@@ -356,5 +409,129 @@ describe("优先级 3: Stash / Tag / Amend store", () => {
     expect(tagState.tags).toHaveLength(0);
     expect(tagState.loading).toBe(false);
     expect(tagState.error).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1-01: stale 竞态守卫 — 快速切换/重复触发时迟到的旧响应不回写状态
+// ---------------------------------------------------------------------------
+
+describe("P1-01: stale 竞态守卫", () => {
+  it("refreshGit 快速切换仓库时，迟到的旧仓库响应不回写状态", async () => {
+    const { gitService } = await import("@/api/services");
+    let resolveOldStatus!: (v: unknown) => void;
+    let resolveOldInfo!: (v: unknown) => void;
+    (gitService.getStatus as any)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOldStatus = resolve; }),
+      )
+      .mockResolvedValueOnce([{ path: "new.txt", status: "Modified" }]);
+    (gitService.getBranchInfo as any)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOldInfo = resolve; }),
+      )
+      .mockResolvedValueOnce({ name: "feature", ahead: 0, behind: 0 });
+
+    const stale = refreshGit("/old/repo");
+    await refreshGit("/new/repo");
+    expect(gitState.branchName).toBe("feature");
+    expect(gitState.ahead).toBe(0);
+
+    // 旧仓库的响应此刻才迟到完成：不允许覆盖新仓库状态
+    resolveOldStatus([{ path: "old.txt", status: "Modified" }]);
+    resolveOldInfo({ name: "main", ahead: 5, behind: 3 });
+    await stale;
+
+    expect(gitState.changes).toHaveLength(1);
+    expect(gitState.changes[0].path).toBe("new.txt");
+    expect(gitState.branchName).toBe("feature");
+    expect(gitState.ahead).toBe(0);
+    expect(gitState.behind).toBe(0);
+    expect(gitState.loading).toBe(false);
+    expect(gitState.error).toBeNull();
+  });
+
+  it("refreshGit 迟到的旧响应失败也不回写 error", async () => {
+    const { gitService } = await import("@/api/services");
+    let rejectOld!: (e: Error) => void;
+    (gitService.getStatus as any)
+      .mockImplementationOnce(
+        () => new Promise((_, reject) => { rejectOld = reject; }),
+      )
+      .mockResolvedValueOnce([{ path: "new.txt", status: "Modified" }]);
+    (gitService.getBranchInfo as any).mockResolvedValue({ name: "feature", ahead: 0, behind: 0 });
+
+    const stale = refreshGit("/old/repo");
+    await refreshGit("/new/repo");
+
+    rejectOld(new Error("old repo exploded"));
+    await stale;
+
+    expect(gitState.error).toBeNull();
+    expect(gitState.branchName).toBe("feature");
+    expect(gitState.loading).toBe(false);
+  });
+
+  it("loadConflicts 迟到的旧响应不回写冲突列表", async () => {
+    const { gitService } = await import("@/api/services");
+    let resolveOld!: (v: unknown) => void;
+    (gitService.listMergeConflicts as any)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce([{ file: "new-conflict.txt" }]);
+
+    const stale = loadConflicts();
+    await loadConflicts();
+    expect(conflictState.conflicts).toHaveLength(1);
+
+    resolveOld([{ file: "old-conflict.txt" }]);
+    await stale;
+
+    expect(conflictState.conflicts[0].file).toBe("new-conflict.txt");
+    expect(conflictState.loading).toBe(false);
+    conflictState.conflicts = [];
+  });
+
+  it("loadStashes 迟到的旧响应不回写 stash 列表", async () => {
+    const { gitService } = await import("@/api/services");
+    let resolveOld!: (v: unknown) => void;
+    (gitService.stashList as any)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce([{ ref: "stash@{0}", commitHash: "new", message: "new" }]);
+
+    const stale = loadStashes();
+    await loadStashes();
+    expect(stashState.stashes).toHaveLength(1);
+
+    resolveOld([{ ref: "stash@{0}", commitHash: "old", message: "old" }]);
+    await stale;
+
+    expect(stashState.stashes[0].commitHash).toBe("new");
+    expect(stashState.loading).toBe(false);
+    stashState.stashes = [];
+  });
+
+  it("loadSubmodules 迟到的旧响应不回写子模块列表", async () => {
+    const { gitService } = await import("@/api/services");
+    let resolveOld!: (v: unknown) => void;
+    (gitService.submoduleList as any)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce([{ path: "libs/new", url: "https://example.com/new.git" }]);
+
+    const stale = loadSubmodules();
+    await loadSubmodules();
+    expect(submoduleState.submodules).toHaveLength(1);
+
+    resolveOld([{ path: "libs/old", url: "https://example.com/old.git" }]);
+    await stale;
+
+    expect(submoduleState.submodules[0].path).toBe("libs/new");
+    expect(submoduleState.loading).toBe(false);
+    submoduleState.submodules = [];
   });
 });

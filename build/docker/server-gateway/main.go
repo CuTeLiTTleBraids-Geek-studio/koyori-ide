@@ -34,6 +34,7 @@ const (
 	sessionCookieName  = "koyori_server_session"
 	loginPath          = "/__koyori/auth"
 	logoutPath         = "/__koyori/logout"
+	gatewayNonceHeader = "X-Koyori-Gateway-Nonce"
 )
 
 type gatewayConfig struct {
@@ -47,6 +48,7 @@ type gatewayConfig struct {
 	externalOrigin  *origin
 	secureCookie    bool
 	shutdownTimeout time.Duration
+	backendNonce    string
 }
 
 type gateway struct {
@@ -56,6 +58,7 @@ type gateway struct {
 	externalOrigin *origin
 	maxBodyBytes   int64
 	proxy          http.Handler
+	backendNonce   string
 }
 
 type authenticationMethod uint8
@@ -94,7 +97,12 @@ func run() error {
 
 	backend := exec.Command(cfg.backendBinary)
 	configureBackendProcess(backend)
-	backend.Env = backendEnvironment(os.Environ(), cfg.backendURL.Port())
+	backendNonce, err := generateBackendNonce()
+	if err != nil {
+		return err
+	}
+	cfg.backendNonce = backendNonce
+	backend.Env = backendEnvironmentWithNonce(os.Environ(), cfg.backendURL.Port(), backendNonce)
 	backend.Stdout = os.Stdout
 	backend.Stderr = os.Stderr
 	if err := backend.Start(); err != nil {
@@ -272,6 +280,14 @@ func envPositiveInt64(name string, fallback int64) (int64, error) {
 	return parsed, nil
 }
 
+func generateBackendNonce() (string, error) {
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("generate backend nonce: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(nonce), nil
+}
+
 func parseOptionalExternalOrigin(value string) (*origin, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -364,21 +380,26 @@ func envDefault(name, fallback string) string {
 }
 
 func backendEnvironment(environ []string, port string) []string {
-	filtered := make([]string, 0, len(environ)+2)
+	return backendEnvironmentWithNonce(environ, port, "")
+}
+
+func backendEnvironmentWithNonce(environ []string, port, nonce string) []string {
+	filtered := make([]string, 0, len(environ)+3)
 	blocked := map[string]struct{}{
-		"KOYORI_SERVER_TOKEN":        {},
-		"KOYORI_SERVER_TOKEN_FILE":   {},
-		"KOYORI_GATEWAY_HOST":        {},
-		"KOYORI_GATEWAY_PORT":        {},
-		"KOYORI_INTERNAL_PORT":       {},
-		"KOYORI_MAX_REQUEST_BYTES":   {},
-		"KOYORI_TLS_CERT_FILE":       {},
-		"KOYORI_TLS_KEY_FILE":        {},
-		"KOYORI_EXTERNAL_ORIGIN":     {},
-		"KOYORI_SERVER_GATEWAY_MODE": {},
-		"KOYORI_SERVER_BINARY":       {},
-		"WAILS_SERVER_HOST":          {},
-		"WAILS_SERVER_PORT":          {},
+		"KOYORI_SERVER_TOKEN":         {},
+		"KOYORI_SERVER_TOKEN_FILE":    {},
+		"KOYORI_GATEWAY_HOST":         {},
+		"KOYORI_GATEWAY_PORT":         {},
+		"KOYORI_INTERNAL_PORT":        {},
+		"KOYORI_MAX_REQUEST_BYTES":    {},
+		"KOYORI_TLS_CERT_FILE":        {},
+		"KOYORI_TLS_KEY_FILE":         {},
+		"KOYORI_EXTERNAL_ORIGIN":      {},
+		"KOYORI_SERVER_GATEWAY_MODE":  {},
+		"KOYORI_SERVER_GATEWAY_NONCE": {},
+		"KOYORI_SERVER_BINARY":        {},
+		"WAILS_SERVER_HOST":           {},
+		"WAILS_SERVER_PORT":           {},
 	}
 	for _, item := range environ {
 		name, _, _ := strings.Cut(item, "=")
@@ -386,11 +407,14 @@ func backendEnvironment(environ []string, port string) []string {
 			filtered = append(filtered, item)
 		}
 	}
-	return append(filtered,
+	result := append(filtered,
 		"WAILS_SERVER_HOST=127.0.0.1",
 		"WAILS_SERVER_PORT="+port,
-		"KOYORI_SERVER_GATEWAY_MODE=1",
 	)
+	if nonce != "" {
+		result = append(result, "KOYORI_SERVER_GATEWAY_NONCE="+nonce)
+	}
+	return result
 }
 
 func newGateway(cfg gatewayConfig) (http.Handler, error) {
@@ -411,6 +435,7 @@ func newGateway(cfg gatewayConfig) (http.Handler, error) {
 		externalOrigin: cfg.externalOrigin,
 		maxBodyBytes:   cfg.maxBodyBytes,
 		proxy:          proxy,
+		backendNonce:   cfg.backendNonce,
 	}
 	return g, nil
 }
@@ -427,8 +452,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r.Body = http.NoBody
 			r.ContentLength = 0
 		}
-		stripCredentials(r)
-		g.proxy.ServeHTTP(w, r)
+		g.proxyRequest(w, r)
 		return
 	}
 	if r.URL.Path == loginPath {
@@ -470,7 +494,14 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, g.maxBodyBytes)
 	}
+	g.proxyRequest(w, r)
+}
+
+func (g *gateway) proxyRequest(w http.ResponseWriter, r *http.Request) {
 	stripCredentials(r)
+	if g.backendNonce != "" {
+		r.Header.Set(gatewayNonceHeader, g.backendNonce)
+	}
 	g.proxy.ServeHTTP(w, r)
 }
 
@@ -595,6 +626,7 @@ func (g *gateway) unauthorized(w http.ResponseWriter, r *http.Request) {
 
 func stripCredentials(r *http.Request) {
 	r.Header.Del("Authorization")
+	r.Header.Del(gatewayNonceHeader)
 	// The gateway has already authenticated and origin-checked the request.
 	// Do not forward the public Origin to the loopback Wails listener: its
 	// same-origin check must not compare the external host with 127.0.0.1.
@@ -614,6 +646,11 @@ func setNoSniffHeaders(w http.ResponseWriter) {
 }
 
 func stopBackendWithTimeout(cmd *exec.Cmd, done <-chan error, timeout time.Duration) {
+	if done == nil && cmd != nil && cmd.Process != nil {
+		ownedDone := make(chan error, 1)
+		go func() { ownedDone <- cmd.Wait() }()
+		done = ownedDone
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := signalBackend(cmd); err != nil {

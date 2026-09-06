@@ -3,11 +3,12 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -53,9 +54,12 @@ func TestAnthropicProtocol_Send(t *testing.T) {
 				t.Errorf("anthropic: 'system' role must not appear inside messages; got %v", msg)
 			}
 		}
-		// temperature must be present
-		if _, ok := body["temperature"]; !ok {
-			t.Error("anthropic: expected 'temperature' field in request body")
+		thinking, ok := body["thinking"].(map[string]interface{})
+		if !ok || thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(4096) {
+			t.Errorf("anthropic thinking = %v, want enabled/4096", body["thinking"])
+		}
+		if _, ok := body["temperature"]; ok {
+			t.Error("anthropic reasoning request must omit temperature")
 		}
 		// max_tokens must be present (Anthropic requires it)
 		if _, ok := body["max_tokens"]; !ok {
@@ -74,13 +78,15 @@ func TestAnthropicProtocol_Send(t *testing.T) {
 
 	ai := NewAIService()
 	if err := ai.SetConfig(AIConfig{
-		APIKey:       "anthropic-key",
-		BaseURL:      server.URL,
-		Model:        "claude-3-5-sonnet-20241022",
-		SystemPrompt: "You are a helpful assistant.",
-		Protocol:     "anthropic",
-		Temperature:  0.5,
-		MaxTokens:    1024,
+		APIKey:          "anthropic-key",
+		BaseURL:         server.URL,
+		Provider:        "anthropic",
+		Model:           "claude-3-7-sonnet-latest",
+		SystemPrompt:    "You are a helpful assistant.",
+		Protocol:        "anthropic",
+		Temperature:     0.5,
+		MaxTokens:       1024,
+		ReasoningEffort: "high",
 	}); err != nil {
 		t.Fatalf("SetConfig failed: %v", err)
 	}
@@ -176,39 +182,8 @@ func TestAnthropicProtocol_StartStream_EmitsEvents(t *testing.T) {
 		t.Fatalf("SetConfig failed: %v", err)
 	}
 
-	// Critical 自审修复：Wails EventProcessor 在独立 goroutine 中调用 listener
-	// （写入 chunks/streamIDs/doneEmitted），主测试 goroutine 读取这些变量。
-	// 没有 mutex 保护会导致 go test -race 在并行执行时报告 data race，
-	// 进而干扰 N93 等并发测试。这是测试代码自身的 BUG，非被测代码 BUG。
-	var mu sync.Mutex
-	var chunks []string
-	var streamIDs []string
-	var doneEmitted bool
-	app.Event.On("ai:chunk", func(e *application.CustomEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		// prompt-6 Task 2: payload is {streamId, data}
-		if m, ok := e.Data.(map[string]interface{}); ok {
-			if s, ok := m["data"].(string); ok {
-				chunks = append(chunks, s)
-			}
-			if id, ok := m["streamId"].(string); ok {
-				streamIDs = append(streamIDs, id)
-			}
-			return
-		}
-		// Legacy string payload (should not happen after Task 2).
-		if s, ok := e.Data.(string); ok {
-			chunks = append(chunks, s)
-		}
-	})
-	app.Event.On("ai:done", func(e *application.CustomEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		doneEmitted = true
-	})
-
-	sid, err := ai.StartStream([]ChatMessage{{Role: "user", Content: "hi"}})
+	callerCtx, callerWindow := newAIStreamTestCaller(31, "anthropic")
+	sid, err := ai.StartStream(callerCtx, []ChatMessage{{Role: "user", Content: "hi"}})
 	if err != nil {
 		t.Fatalf("StartStream failed: %v", err)
 	}
@@ -218,21 +193,41 @@ func TestAnthropicProtocol_StartStream_EmitsEvents(t *testing.T) {
 	// StartStream is async; poll for completion.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		done := doneEmitted
-		mu.Unlock()
+		events := callerWindow.eventsSnapshot()
+		done := false
+		for _, event := range events {
+			if event.Name == "ai:done" {
+				done = true
+				break
+			}
+		}
 		if done {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	mu.Lock()
-	done := doneEmitted
-	collectedChunks := append([]string(nil), chunks...)
-	collectedStreamIDs := append([]string(nil), streamIDs...)
-	mu.Unlock()
+	events := callerWindow.eventsSnapshot()
+	done := false
+	var collectedChunks []string
+	var collectedStreamIDs []string
+	for _, event := range events {
+		if event.Name == "ai:done" {
+			done = true
+		}
+		if event.Name != "ai:chunk" {
+			continue
+		}
+		if m, ok := event.Data.(map[string]interface{}); ok {
+			if s, ok := m["data"].(string); ok {
+				collectedChunks = append(collectedChunks, s)
+			}
+			if id, ok := m["streamId"].(string); ok {
+				collectedStreamIDs = append(collectedStreamIDs, id)
+			}
+		}
+	}
 	if !done {
-		t.Fatal("anthropic StartStream: ai:done event was not emitted")
+		t.Fatalf("anthropic StartStream: ai:done event was not emitted; events=%+v", events)
 	}
 	if len(collectedChunks) == 0 || collectedChunks[0] != "streamed-chunk" {
 		t.Errorf("anthropic StartStream: expected chunks ['streamed-chunk'], got %v", collectedChunks)
@@ -303,6 +298,52 @@ func TestParseAnthropicSSEStream_EmitsChunks(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicSSEStreamWithReasoning_OnlyExplicitSummary(t *testing.T) {
+	body := strings.NewReader(strings.Join([]string{
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"reasoning_summary","summary":"checking files"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"reasoning_summary_delta","summary":" and tests"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}`,
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n"))
+	var chunks, summaries []string
+	_, err := parseAnthropicSSEStreamWithToolsAndReasoning(body, func(value string) { chunks = append(chunks, value) }, func(value string) { summaries = append(summaries, value) })
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if strings.Join(chunks, "") != "answer" {
+		t.Fatalf("chunks = %v", chunks)
+	}
+	if strings.Join(summaries, "") != "checking files and tests" {
+		t.Fatalf("summaries = %v", summaries)
+	}
+}
+
+func TestParseAnthropicSSEStreamWithReasoning_AcceptsCompactThinkingEvents(t *testing.T) {
+	body := strings.Join([]string{
+		`data:{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"checking files"}}`,
+		`data:{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" and tests"}}`,
+		`data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}`,
+		`data:{"type":"message_stop"}`,
+		"",
+	}, "\n")
+	var chunks, summaries []string
+	_, err := parseAnthropicSSEStreamWithToolsAndReasoning(strings.NewReader(body), func(value string) {
+		chunks = append(chunks, value)
+	}, func(value string) {
+		summaries = append(summaries, value)
+	})
+	if err != nil {
+		t.Fatalf("parse compact Anthropic SSE: %v", err)
+	}
+	if strings.Join(chunks, "") != "answer" {
+		t.Fatalf("chunks = %v", chunks)
+	}
+	if strings.Join(summaries, "") != "checking files and tests" {
+		t.Fatalf("summaries = %v", summaries)
+	}
+}
+
 // TestParseAnthropicSSEStream_EmptyInput verifies the parser handles empty
 // input gracefully (returns nil, no chunks).
 func TestParseAnthropicSSEStream_EmptyInput(t *testing.T) {
@@ -365,6 +406,121 @@ func TestParseAnthropicSSEStreamWithTools_ToolUse(t *testing.T) {
 	}
 	if calls[0].Arguments != `{"path":"a.go"}` {
 		t.Fatalf("arguments = %q", calls[0].Arguments)
+	}
+}
+
+func TestParseAnthropicSSEStreamWithTools_RejectsProviderOutputBudgets(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr string
+		body    func() string
+	}{
+		{
+			name:    "negative tool index",
+			wantErr: "tool index",
+			body: func() string {
+				return "data: {\"type\":\"content_block_start\",\"index\":-1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"read\"}}\n"
+			},
+		},
+		{
+			name:    "sparse tool index",
+			wantErr: "tool index",
+			body: func() string {
+				return fmt.Sprintf("data: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"read\"}}\n", int(^uint(0)>>1))
+			},
+		},
+		{
+			name:    "tool call count",
+			wantErr: "tool call count",
+			body: func() string {
+				var body strings.Builder
+				for i := 0; i < 65; i++ {
+					fmt.Fprintf(&body, "data: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-%d\",\"name\":\"read\"}}\n", i, i)
+				}
+				return body.String()
+			},
+		},
+		{
+			name:    "single tool arguments",
+			wantErr: "tool arguments",
+			body: func() string {
+				return "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"read\"}}\n" +
+					fmt.Sprintf("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"%s\"}}\n", strings.Repeat("a", (256<<10)+1))
+			},
+		},
+		{
+			name:    "aggregate tool arguments",
+			wantErr: "total tool arguments",
+			body: func() string {
+				var body strings.Builder
+				fragment := strings.Repeat("a", 220<<10)
+				for i := 0; i < 5; i++ {
+					fmt.Fprintf(&body, "data: {\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-%d\",\"name\":\"read\"}}\n", i, i)
+					fmt.Fprintf(&body, "data: {\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"%s\"}}\n", i, fragment)
+				}
+				return body.String()
+			},
+		},
+		{
+			name:    "text bytes",
+			wantErr: "text output",
+			body: func() string {
+				var body strings.Builder
+				chunk := strings.Repeat("a", 700<<10)
+				for i := 0; i < 3; i++ {
+					fmt.Fprintf(&body, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"%s\"}}\n", chunk)
+				}
+				return body.String()
+			},
+		},
+		{
+			name:    "reasoning bytes",
+			wantErr: "reasoning summary",
+			body: func() string {
+				return fmt.Sprintf("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"reasoning_summary_delta\",\"summary\":\"%s\"}}\n", strings.Repeat("a", (512<<10)+1))
+			},
+		},
+		{
+			name:    "SSE event count",
+			wantErr: "SSE event count",
+			body: func() string {
+				return strings.Repeat(":\n", 32769)
+			},
+		},
+		{
+			name:    "total SSE bytes",
+			wantErr: "total SSE",
+			body: func() string {
+				line := ":" + strings.Repeat("a", 960<<10) + "\n"
+				return strings.Repeat(line, 9)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var emittedText, emittedReasoning int
+			calls, err := parseAnthropicSSEStreamWithToolsAndReasoning(strings.NewReader(tt.body()), func(value string) {
+				emittedText += len(value)
+			}, func(value string) {
+				emittedReasoning += len(value)
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want provider budget error containing %q", err, tt.wantErr)
+			}
+			if !errors.Is(err, ErrAIProviderOutputBudget) {
+				t.Fatalf("error = %v, want ErrAIProviderOutputBudget", err)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("budget rejection returned executable tool calls: %+v", calls)
+			}
+			if emittedText > maxAIStreamTextBytes {
+				t.Fatalf("emitted %d text bytes past %d-byte budget", emittedText, maxAIStreamTextBytes)
+			}
+			if emittedReasoning > maxAIStreamReasoningBytes {
+				t.Fatalf("emitted %d reasoning bytes past %d-byte budget", emittedReasoning, maxAIStreamReasoningBytes)
+			}
+		})
 	}
 }
 

@@ -125,7 +125,7 @@ export const prototypeAutoRunEnabled = computed(
  * explicit opt-in must not present a run affordance at all.
  */
 export const canRunGoal = computed(
-  () => !isExecutorPrototype.value || prototypeAutoRunEnabled.value,
+  () => prototypeAutoRunEnabled.value,
 );
 
 // ---------------------------------------------------------------------------

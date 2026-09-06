@@ -30,8 +30,13 @@ Level ordering is `trusted < reviewed < restricted`; a method requiring
 
 ## Permissions
 
-An extension must declare a permission in its manifest *and* satisfy the level
-requirement. Available permissions:
+Canonical packages are VS Code VSIX files. `koyoriIde.permissions` is **optional**.
+If it is absent, Koyori infers Trusted / Reviewed / Restricted from
+`activationEvents`, `contributes`, and a static scan of the entrypoint's
+`vscode.*` references. Inference failure (missing entrypoint source, shell, or
+network) is Restricted and stays disabled by default — it is not silently
+Trusted, and it is **not** an install hard-block. Declared permissions still
+must be known names. Available permissions:
 
 `clipboard`, `debug.execute`, `fs.read`, `fs.write`, `network`, `scm.read`,
 `scm.write`, `secrets.read`, `secrets.write`, `shell.execute`, `tasks.execute`,
@@ -47,9 +52,14 @@ requirement. Available permissions:
 
 ### `languages` — language feature providers
 
-All provider registrations are implemented:
+The host exposes the listed provider registrations through a Monaco bridge. A
+registration is real only when the corresponding Monaco method exists; missing
+methods fail closed with `KOYORI_IDE_EXT_API_UNSUPPORTED`. Monaco 0.52 uses
+`registerLinkProvider` for VS Code document-link registrations.
 
-`registerCodeActionsProvider`, `registerCodeLensProvider`,
+The supported registration surface includes:
+
+`registerCodeActionProvider`, `registerCodeLensProvider`,
 `registerColorProvider`, `registerCompletionItemProvider`,
 `registerDeclarationProvider`, `registerDefinitionProvider`,
 `registerDocumentFormattingEditProvider`, `registerDocumentHighlightProvider`,
@@ -58,8 +68,10 @@ All provider registrations are implemented:
 `registerFoldingRangeProvider`, `registerHoverProvider`,
 `registerImplementationProvider`, `registerInlayHintsProvider`,
 `registerOnTypeFormattingEditProvider`, `registerReferenceProvider`,
-`registerRenameProvider`, `registerSignatureHelpProvider`,
-`registerTypeDefinitionProvider`, `registerWorkspaceSymbolProvider`
+`registerRenameProvider`, `registerSignatureHelpProvider`, and
+`registerTypeDefinitionProvider`. Workspace-symbol registration remains
+subject to the runtime bridge and is unsupported when Monaco has no matching
+registration method; it never returns a no-op success.
 
 ### `workspace`
 
@@ -70,6 +82,8 @@ All provider registrations are implemented:
 | `workspace.findTextInFiles` | `fs.read` |
 | `workspace.openTextDocument` | `fs.read` |
 | `workspace.saveAll` | `fs.write` | G13: real save — flushes every dirty buffer through the editor bridge and throws with the failed paths when any file fails; fails closed (versioned unsupported error) when no bridge is wired |
+| `workspace.onDidChangeConfiguration` | — | Settings-store changes are forwarded and the listener is disposable |
+| `workspace.createFileSystemWatcher` | `fs.read` | Reports create/change/delete within the current workspace generation; root-external paths are ignored |
 | `workspace.onDidChangeTextDocument` | `fs.read` |
 | `workspace.onDidOpenTextDocument` | `fs.read` |
 | `workspace.onDidSaveTextDocument` | `fs.read` |
@@ -89,9 +103,11 @@ extension cannot escape the workspace even with `fs.write`.
 
 | Method | Permission | G13 status |
 |---|---|---|
-| `window.showInformationMessage`, `showWarningMessage`, `showErrorMessage` | `ui.notifications` | implemented (routes to host notifications when the notify bridge is wired; console-only otherwise — partial) |
-| `window.showInputBox`, `showQuickPick` | `ui.notifications` | **unsupported** — fail closed with `KOYORI_IDE_EXT_API_UNSUPPORTED`; returning a default/first value would be fake success |
-| `window.createOutputChannel` | — |
+| `window.showInformationMessage`, `showWarningMessage`, `showErrorMessage` | `ui.notifications` | partial (routes to host notifications when wired; console fallback without a UI bridge) |
+| `window.showInputBox`, `showQuickPick` | `ui.notifications` | Real host dialogs; explicit cancellation returns `undefined` |
+| `window.setStatusBarMessage`, `createStatusBarItem` | `ui.notifications` | Visible extension-owned text/items with dispose and timeout support |
+| `window.withProgress` | `ui.notifications` | Awaits the extension task and forwards progress reports to the status surface |
+| `window.createOutputChannel` | `ui.notifications` | Visible Output panel entries with append/clear/show/hide/dispose |
 | `window.createTerminal` | `shell.execute` |
 | `window.createWebviewPanel`, `registerWebviewViewProvider` | `ui.webview` |
 | `window.registerTreeDataProvider` | — |
@@ -149,8 +165,7 @@ The following widely-used VS Code API areas have **no implementation**. This
 list is not exhaustive; treat any namespace absent from `apiSurface.ts` as
 unavailable.
 
-- `vscode.window.createStatusBarItem`, `withProgress`, `createInputBox`
-- `vscode.workspace.createFileSystemWatcher`
+- `vscode.window.createInputBox`
 - `vscode.notebook.*` (notebook API)
 - `vscode.test.*` (testing API)
 - `vscode.authentication.*`
@@ -170,59 +185,95 @@ user-visible behavior). Statuses come from `apiCapability.ts`:
 |---|---|---|
 | `workspace.saveAll` | implemented | Real save through editor bridge; per-file failures propagate (throws with failed paths) |
 | `workspace.getConfiguration` | implemented | Bridged to settings store |
-| `workspace.onDidChangeConfiguration` | partial | Disposable returned; change events not forwarded yet |
-| `window.show*Message` | implemented | Host notifications when the notify bridge is wired; console-only otherwise (partial) |
-| `window.showInputBox` / `showQuickPick` | unsupported | Fail closed with `KOYORI_IDE_EXT_API_UNSUPPORTED` — no fake default/first-item result |
-| `window.createOutputChannel` | partial | In-memory buffer with console mirroring; no UI panel yet |
+| `workspace.onDidChangeConfiguration` | implemented | Settings-store changes are forwarded with `affectsConfiguration`; Worker snapshots refresh |
+| `workspace.createFileSystemWatcher` | implemented | Polls the active workspace and invalidates when workspace generation changes |
+| `window.show*Message` | partial | Host notifications when the notify bridge is wired; console fallback otherwise |
+| `window.showInputBox` / `showQuickPick` | implemented | Real host UI; explicit cancellation returns `undefined` |
+| `window.setStatusBarMessage` / `createStatusBarItem` | implemented | Visible extension-owned status items with disposal |
+| `window.withProgress` | implemented | Awaited task and visible status progress reports |
+| `window.createOutputChannel` | implemented | Visible Output panel entries with clear/show/hide/dispose |
 
 ## Verification status
 
-The permission gate and the API surface list are covered by unit tests
+The permission gate and API surface are covered by unit tests
 (`apiSurface.test.ts`, `vscodeApi.security.test.ts`, `extensionHost.test.ts`).
+The G39 host-surface tests cover successful and failure/cancellation paths for
+input and picker dialogs, status items, progress, Output, configuration
+changes, and workspace-generation watcher invalidation.
 
-**No successful real-extension compatibility suite has been run.** The "Not
-implemented" list above is derived from reading `apiSurface.ts`. A 10-package
-Open VSX corpus has been analyzed, but every package was blocked before
-activation as described below. Do not read this document as evidence that any
-specific extension works.
+The "Not implemented" list above is derived from reading `apiSurface.ts`; a
+static declaration is not activation evidence. P14-G38 removes the install
+hard-block on missing `koyoriIde.permissions`. Real VSIX packages can install
+with inferred permissions, while activation success remains a separate evidence
+claim and unknown vscode namespaces fail closed with
+`KOYORI_IDE_EXT_API_UNSUPPORTED`.
 
-## G24 corpus report (2026-08-10)
+### P14 fixed-SHA evidence
+
+The frontend real-Worker corpus tests
+(`frontend/src/lib/vscodeExtensionActivation.test.ts`) retain these third-party
+VSIX bundles by fixed SHA-256. The production-installer test uses the actual Go
+`internal/vsixinstall` helper and `MarketplaceService.InstallVSIXFile`, then
+loads package files from each resulting installation directory into real
+Workers:
+
+| Package | SHA-256 (prefix) | Observed evidence |
+|---|---|---|
+| Catppuccin.catppuccin-vsc 3.19.0 | `ebf347664837...` | production install, real Worker active, installed `./themes/mocha.json` converted/defined/selected in Monaco through the host theme picker; deactivation restores the built-in theme |
+| PKief.material-icon-theme 5.37.0 | `ade9adefe390...` | production install, real Worker active, visible command contribution |
+| mechatroner.rainbow-csv 3.24.1 | `0ecb7da3fb2...` | production install, real Worker active, installed Worker executes `rainbow-csv.GoToColumn`, opens the real Element Plus InputBox, then applies Monaco reveal/selection |
+| redhat.vscode-yaml 1.25.2026080708 | `23263c28e7b7...` | production install reaches unsupported `vscode.CompletionItem`; activation is rejected and never enters active |
+
+This is a single production-installer -> installed-files -> real-Worker -> host
+contribution chain for three packages, plus exact fail-closed evidence for YAML.
+It remains frontend `T/I`, not packaged Windows evidence. Theme loading supports
+direct JSONC workbench colors and token rules; unsupported `include` inheritance,
+unsafe paths, and an extension being removed while its theme is loading fail
+closed without changing the active theme. The backend installer corpus test
+additionally verifies fixed-SHA extraction, manifest contributions,
+disabled-by-default state, and installed entry reads for Catppuccin, Material
+Icon Theme, Rainbow CSV, and Djazair. Installation, activation, runtime UI, and
+packaged execution remain distinct evidence classes.
+
+## G24 / G38 corpus report
 
 `scripts/g24-corpus-report.mjs` analyzes the real Open VSX corpus retained by
 G20 (`build/e2e-evidence/p9-g20/corpus/`) and writes
 `build/e2e-evidence/p9-g24/corpus-report.json`. Each package records
 identity/version/SHA-256, entrypoint, activation events, contributes summary,
-detected `vscode.<ns>.<api>` references, and a disposition:
+detected `vscode.<ns>.<api>` references, declared or inferred permissions, and
+a disposition:
 
-- `supported` — compatible entrypoint, declared `koyoriIde.permissions`, and
-  only known vscode API namespaces (static analysis; activation success still
-  requires the packaged run);
+- `supported` — compatible entrypoint and only known vscode API namespaces
+  (static analysis). Permissions may be declared **or inferred**. Activation
+  success still requires a packaged/host run.
 - `unsupported` — missing/incompatible entrypoint or references to unknown
   vscode namespaces (e.g. `vscode.notebooks.*`), which would throw on
-  activation;
-- `blocked` — no `koyoriIde.permissions` declaration; the install is rejected
-  by the permission gate;
+  activation. Install may still succeed; activation must not fake-succeed.
+- `blocked` — reserved for policy denials other than missing
+  `koyoriIde.permissions` (for example blacklist). Missing permission
+  declarations are **not** blocked.
 - `corrupt` — unreadable archive or invalid/missing `package.json`.
 
 Installing a package is never reported as activation success. Corpus runs are
 covered by `scripts/g24-corpus-report.test.mjs` (success, corrupt, missing
-entrypoint, unknown API, missing permission, duplicate identity, empty corpus,
-and unsafe zip entry names).
+entrypoint, unknown API, inferred permissions, duplicate identity, empty
+corpus, and unsafe zip entry names).
 
-Current real-corpus result: **10/10 blocked** (all lack `koyoriIde.permissions`
-declarations), consistent with the G20 install matrix. No real package has
-been observed activating. **10/10 blocked is security-policy evidence, not
-compatibility success, a 100% compatibility rate, or proof that any corpus
-package can run.**
+Do **not** treat a historical 10/10 blocked report as the current product
+rule. That result was the old permission hard-block, not VSIX north-star
+compatibility.
 
-## G24 packaged qualification (2026-08-11)
+## Historical G24 packaged qualification (2026-08-11)
 
-The retained Windows x64 manifest
-`build/e2e-evidence/packaged-e2e/manifest.json` has `status=passed` with 24/24
-fixtures passed. It binds the run to test artifact SHA-256
-`7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181` and
+The 2026-08-11 historical Windows x64 manifest recorded `status=passed` with
+24/24 fixtures, test artifact SHA-256
+`7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181`, and
 source fingerprint
 `690aa31cad880bf803037ab734207a9e1f7281d9e05140f65daaef15bd7b6180`.
+The current authoritative `build/e2e-evidence/packaged-e2e/manifest.json`
+overwrote that record and is partial (11/24), so the historical result cannot
+satisfy G40-AC6 or current-code packaged qualification.
 
 The synthetic G24 lifecycle packages were retained as v1 SHA-256
 `f9bfd0c7220088eae58d4770a69e308df58f7def8b1e8aff266419c76d3f4a12` and

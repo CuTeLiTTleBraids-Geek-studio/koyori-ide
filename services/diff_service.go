@@ -306,10 +306,9 @@ func (s *DiffService) ComputeFileDiff(path, oldContent, newContent string) FileD
 	added, removed := 0, 0
 	for _, h := range hunks {
 		for _, l := range h.Lines {
-			switch l.Type {
-			case DiffLineAdded:
+			if l.Type == DiffLineAdded {
 				added++
-			case DiffLineRemoved:
+			} else if l.Type == DiffLineRemoved {
 				removed++
 			}
 		}
@@ -400,6 +399,34 @@ func (s *DiffService) ApplyAll(diff MultiFileDiff) map[string]string {
 		result[f.Path] = f.NewContent
 	}
 	return result
+}
+
+// ApplySelectedHunks keeps only the selected hunk indexes and returns the
+// reconstructed file content. An empty selection is a no-op (old content).
+func (s *DiffService) ApplySelectedHunks(fd FileDiff, selected []int) string {
+	if len(fd.Hunks) == 0 {
+		return fd.NewContent
+	}
+	keep := map[int]struct{}{}
+	for _, idx := range selected {
+		if idx >= 0 && idx < len(fd.Hunks) {
+			keep[idx] = struct{}{}
+		}
+	}
+	if len(keep) == 0 {
+		return fd.OldContent
+	}
+	if len(keep) == len(fd.Hunks) {
+		return fd.NewContent
+	}
+	content := fd.NewContent
+	for idx := len(fd.Hunks) - 1; idx >= 0; idx-- {
+		if _, ok := keep[idx]; ok {
+			continue
+		}
+		content = s.RejectHunk(FileDiff{Path: fd.Path, OldContent: fd.OldContent, NewContent: content, Hunks: fd.Hunks}, idx)
+	}
+	return content
 }
 
 // RejectHunk 拒绝单个 hunk（返回不含该 hunk 的内容）。
@@ -534,18 +561,18 @@ func (s *DiffService) ReviewPR(diff MultiFileDiff, reviews []FileReview) ReviewP
 func (s *DiffService) ExportMarkdown(diff MultiFileDiff, reviews []FileReview) string {
 	var b strings.Builder
 	b.WriteString("# Diff Review Report\n\n")
-	fmt.Fprintf(&b, "**Files:** %d  | **+%d / -%d**\n\n", len(diff.Files), diff.TotalAdded, diff.TotalRemoved)
+	b.WriteString(fmt.Sprintf("**Files:** %d  | **+%d / -%d**\n\n", len(diff.Files), diff.TotalAdded, diff.TotalRemoved))
 
 	for _, f := range diff.Files {
-		fmt.Fprintf(&b, "## %s (+%d / -%d)\n\n", f.Path, f.AddedLines, f.RemovedLines)
+		b.WriteString(fmt.Sprintf("## %s (+%d / -%d)\n\n", f.Path, f.AddedLines, f.RemovedLines))
 		// 查找此文件的审查意见
 		for _, r := range reviews {
 			if r.Path == f.Path {
 				for _, c := range r.Comments {
 					emoji := severityEmoji(c.Severity)
-					fmt.Fprintf(&b, "- %s **%s**: %s", emoji, c.Severity, c.Message)
+					b.WriteString(fmt.Sprintf("- %s **%s**: %s", emoji, c.Severity, c.Message))
 					if c.Suggestion != "" {
-						fmt.Fprintf(&b, "\n  > Suggestion: %s", c.Suggestion)
+						b.WriteString(fmt.Sprintf("\n  > Suggestion: %s", c.Suggestion))
 					}
 					b.WriteString("\n")
 				}
@@ -553,7 +580,7 @@ func (s *DiffService) ExportMarkdown(diff MultiFileDiff, reviews []FileReview) s
 		}
 		// 输出 diff hunk
 		for _, h := range f.Hunks {
-			fmt.Fprintf(&b, "```diff\n@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount)
+			b.WriteString(fmt.Sprintf("```diff\n@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount))
 			for _, l := range h.Lines {
 				switch l.Type {
 				case DiffLineAdded:
@@ -594,10 +621,10 @@ func severityEmoji(s AICommentSeverity) string {
 func (s *DiffService) ExportUnifiedDiff(diff MultiFileDiff) string {
 	var b strings.Builder
 	for _, f := range diff.Files {
-		fmt.Fprintf(&b, "--- a/%s\n", f.Path)
-		fmt.Fprintf(&b, "+++ b/%s\n", f.Path)
+		b.WriteString(fmt.Sprintf("--- a/%s\n", f.Path))
+		b.WriteString(fmt.Sprintf("+++ b/%s\n", f.Path))
 		for _, h := range f.Hunks {
-			fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount)
+			b.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldCount, h.NewStart, h.NewCount))
 			for _, l := range h.Lines {
 				switch l.Type {
 				case DiffLineAdded:
@@ -622,9 +649,9 @@ func (s *DiffService) ExportHTML(diff MultiFileDiff) string {
 	b.WriteString("</head><body>")
 
 	for _, f := range diff.Files {
-		fmt.Fprintf(&b, "<div class=\"file\"><h2>%s (+%d / -%d)</h2>", f.Path, f.AddedLines, f.RemovedLines)
+		b.WriteString(fmt.Sprintf("<div class=\"file\"><h2>%s (+%d / -%d)</h2>", f.Path, f.AddedLines, f.RemovedLines))
 		for _, h := range f.Hunks {
-			fmt.Fprintf(&b, "<div class=\"hunk\">@@ -%d,%d +%d,%d @@", h.OldStart, h.OldCount, h.NewStart, h.NewCount)
+			b.WriteString(fmt.Sprintf("<div class=\"hunk\">@@ -%d,%d +%d,%d @@", h.OldStart, h.OldCount, h.NewStart, h.NewCount))
 			for _, l := range h.Lines {
 				cls := "context"
 				prefix := " "
@@ -636,7 +663,7 @@ func (s *DiffService) ExportHTML(diff MultiFileDiff) string {
 					cls = "removed"
 					prefix = "-"
 				}
-				fmt.Fprintf(&b, "<div class=\"%s\">%s%s</div>", cls, prefix, escapeHTML(l.Content))
+				b.WriteString(fmt.Sprintf("<div class=\"%s\">%s%s</div>", cls, prefix, escapeHTML(l.Content)))
 			}
 			b.WriteString("</div>")
 		}

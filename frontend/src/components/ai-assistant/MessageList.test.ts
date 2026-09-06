@@ -1,13 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import type { ChatMessage } from "@/types";
+import type { AgentToolCatalog } from "@/api/automation";
 
 type TestMessage = ChatMessage & { id: string };
 
 // vi.hoisted: mock 引用需在 vi.mock 工厂中使用，必须提升到顶部避免 TDZ。
-const { aiStateObj } = vi.hoisted(() => ({
+const { aiStateObj, timelineStateObj } = vi.hoisted(() => ({
   aiStateObj: {
     messages: [] as TestMessage[],
+  },
+  timelineStateObj: {
+    entries: [] as Array<Record<string, unknown>>,
   },
 }));
 
@@ -22,6 +26,18 @@ vi.mock("@/stores/ai", async () => {
 vi.mock("@/stores/app", () => ({
   appState: { personalization: { bubbleStyle: "rounded" } },
 }));
+
+vi.mock("@/stores/agentTimeline", async () => {
+  const { reactive } = await import("vue");
+  return {
+    agentTimelineState: reactive(timelineStateObj),
+    bindAgentState: vi.fn(),
+    recordToolObservation: vi.fn(),
+    recordToolRequested: vi.fn(),
+    recordToolStage: vi.fn(),
+    resetAgentTimeline: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/i18n", () => ({
   useI18n: () => ({
@@ -43,21 +59,98 @@ vi.mock("@/components/common/MarkdownContent.vue", () => ({
   },
 }));
 
+vi.mock("@/components/ai-assistant/AgentToolCalls.vue", () => ({
+  default: {
+    name: "AgentToolCalls",
+    template: "<div class=\"agent-tool-calls-stub\" />",
+  },
+}));
+
 import MessageList from "./MessageList.vue";
+const { aiState } = await import("@/stores/ai");
+const { agentState, __setAgentToolCatalogForTests } = await import("@/stores/agent");
+const { agentTimelineState } = await import("@/stores/agentTimeline");
 
 let resizeCallback: ResizeObserverCallback | null = null;
 const observeMock = vi.fn();
 const unobserveMock = vi.fn();
 const disconnectMock = vi.fn();
+const resizeObserverArgument: ResizeObserver = {
+  observe: (target, options) => observeMock(target, options),
+  unobserve: (target) => unobserveMock(target),
+  disconnect: () => disconnectMock(),
+};
+
+function setScrollMetrics(
+  element: HTMLElement,
+  metrics: { scrollHeight: number; clientHeight: number },
+): void {
+  Object.defineProperty(element, "scrollHeight", {
+    configurable: true,
+    get: () => metrics.scrollHeight,
+  });
+  Object.defineProperty(element, "clientHeight", {
+    configurable: true,
+    get: () => metrics.clientHeight,
+  });
+}
+
+function resizeEntry(target: Element, height: number): ResizeObserverEntry {
+  return {
+    target,
+    contentRect: new DOMRectReadOnly(0, 0, 0, height),
+    borderBoxSize: [],
+    contentBoxSize: [],
+    devicePixelContentBoxSize: [],
+  };
+}
+
+function notifyResize(entries: ResizeObserverEntry[]): void {
+  if (!resizeCallback) {
+    throw new Error("ResizeObserver was not initialized");
+  }
+  resizeCallback(entries, resizeObserverArgument);
+}
+
+async function flushTailFollow(wrapper: ReturnType<typeof mount>): Promise<void> {
+  await wrapper.vm.$nextTick();
+  await wrapper.vm.$nextTick();
+}
+
+function builtinCatalog(): AgentToolCatalog {
+  return {
+    revision: 1,
+    tools: [{
+      id: "read",
+      wireName: "read",
+      description: "Read a file",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string", minLength: 1 } },
+        required: ["path"],
+        additionalProperties: false,
+      },
+      source: "builtin",
+      risk: "read-only",
+      approval: "backend-policy",
+      mutation: "none",
+    }],
+  };
+}
 
 describe("MessageList — M-25 虚拟滚动", () => {
   beforeEach(() => {
     aiStateObj.messages = [];
+    agentState.mode = "agent";
+    agentState.pendingToolCalls = [];
+    agentState.toolCallCount = 0;
+    __setAgentToolCatalogForTests(builtinCatalog());
+    agentTimelineState.entries = [];
     resizeCallback = null;
     observeMock.mockClear();
     unobserveMock.mockClear();
     disconnectMock.mockClear();
-    vi.stubGlobal("ResizeObserver", class {
+    vi.stubGlobal("ResizeObserver", class implements ResizeObserver {
       constructor(callback: ResizeObserverCallback) {
         resizeCallback = callback;
       }
@@ -75,6 +168,127 @@ describe("MessageList — M-25 虚拟滚动", () => {
     const wrapper = mount(MessageList);
     expect(wrapper.find(".ai-msg-list__empty").exists()).toBe(true);
     expect(wrapper.findAll(".ai-msg")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("首个 ai:chunk 到达后在当前挂载窗口立即显示 assistant 内容", async () => {
+    // sendMessage creates the assistant row before the first event arrives.
+    // The chunk handler then mutates that same reactive message in place; the
+    // mounted virtual row must update without remounting MessageList.
+    aiStateObj.messages.push({
+      role: "assistant",
+      content: "",
+      id: "streaming-assistant",
+    });
+
+    const wrapper = mount(MessageList);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAllComponents({ name: "AgentExecutionTimeline" })).toHaveLength(1);
+    const rowBeforeChunk = wrapper.find('[data-message-id="streaming-assistant"]').element;
+    expect(wrapper.find(".markdown-content").text()).toBe("");
+
+    aiState.messages[0].content = "首个 chunk 已显示";
+    await wrapper.vm.$nextTick();
+
+    const rowAfterChunk = wrapper.find('[data-message-id="streaming-assistant"]').element;
+    expect(rowAfterChunk).toBe(rowBeforeChunk);
+    expect(wrapper.find(".markdown-content").text()).toBe("首个 chunk 已显示");
+    wrapper.unmount();
+  });
+
+  it("仅隐藏 assistant fenced tool protocol，并保留普通代码块", async () => {
+    const providerContent = [
+      "I will inspect the file.",
+      "```",
+      "read: src/main.ts",
+      "```",
+      "Normal example:",
+      "```ts",
+      "const answer = 42;",
+      "```",
+    ].join("\n");
+    aiState.messages.push({ role: "assistant", content: providerContent, id: "tool-protocol" });
+
+    const wrapper = mount(MessageList);
+    await wrapper.vm.$nextTick();
+
+    const rendered = wrapper.find(".markdown-content").text();
+    expect(rendered).not.toContain("read: src/main.ts");
+    expect(rendered).toContain("I will inspect the file.");
+    expect(rendered).toContain("Normal example:");
+    expect(rendered).toContain("const answer = 42;");
+    expect(rendered).toContain("```ts");
+    wrapper.unmount();
+  });
+
+  it("原样显示 native 响应中额外出现的 fenced tool 文本", async () => {
+    aiState.messages.push({
+      role: "assistant",
+      content: "Native call plus unexpected text:\n```\nread: duplicate.ts\n```",
+      id: "mixed-native-protocol",
+      toolCalls: [{ id: "native-read", name: "read", arguments: '{"path":"a.ts"}' }],
+    });
+
+    const wrapper = mount(MessageList);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".markdown-content").text()).toContain("read: duplicate.ts");
+    expect(wrapper.find('[data-testid="message-tool-calls"]').text()).toContain("read");
+    wrapper.unmount();
+  });
+
+  it("在 near-bottom 时跟随挂载、chunk、追加消息和 activity 增长", async () => {
+    aiState.messages.push({ role: "assistant", content: "start", id: "follow-tail" });
+    const wrapper = mount(MessageList);
+    const list = wrapper.get(".ai-msg-list");
+    const metrics = { scrollHeight: 1_000, clientHeight: 200 };
+    setScrollMetrics(list.element as HTMLElement, metrics);
+    await flushTailFollow(wrapper);
+    expect((list.element as HTMLElement).scrollTop).toBe(800);
+
+    (list.element as HTMLElement).scrollTop = 800;
+    await list.trigger("scroll");
+    metrics.scrollHeight = 1_120;
+    aiState.messages[0].content += " streamed chunk";
+    await flushTailFollow(wrapper);
+    expect((list.element as HTMLElement).scrollTop).toBe(920);
+
+    metrics.scrollHeight = 1_220;
+    aiState.messages.push({ role: "assistant", content: "next turn", id: "next-turn" });
+    await flushTailFollow(wrapper);
+    expect((list.element as HTMLElement).scrollTop).toBe(1_020);
+
+    metrics.scrollHeight = 1_300;
+    agentTimelineState.entries.push({
+      id: "timeline-1",
+      kind: "tool",
+      stage: "requested",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await wrapper.vm.$nextTick();
+    const activity = wrapper.get(".ai-msg-list__activity").element;
+    notifyResize([resizeEntry(activity, 80)]);
+    await flushTailFollow(wrapper);
+    expect((list.element as HTMLElement).scrollTop).toBe(1_100);
+    wrapper.unmount();
+  });
+
+  it("用户已向上滚动时不因新 chunk 强制拉回底部", async () => {
+    aiState.messages.push({ role: "assistant", content: "start", id: "keep-position" });
+    const wrapper = mount(MessageList);
+    const list = wrapper.get(".ai-msg-list");
+    const metrics = { scrollHeight: 1_000, clientHeight: 200 };
+    setScrollMetrics(list.element as HTMLElement, metrics);
+    await flushTailFollow(wrapper);
+
+    (list.element as HTMLElement).scrollTop = 300;
+    await list.trigger("scroll");
+    metrics.scrollHeight = 1_120;
+    aiState.messages[0].content += " streamed chunk";
+    await flushTailFollow(wrapper);
+
+    expect((list.element as HTMLElement).scrollTop).toBe(300);
     wrapper.unmount();
   });
 
@@ -131,13 +345,10 @@ describe("MessageList — M-25 虚拟滚动", () => {
 
     const first = wrapper.find('[data-message-id="height-0"]').element;
     const second = wrapper.find('[data-message-id="height-1"]').element;
-    resizeCallback?.(
-      [
-        { target: first, contentRect: { height: 40 } },
-        { target: second, contentRect: { height: 240 } },
-      ] as unknown as ResizeObserverEntry[],
-      {} as ResizeObserver,
-    );
+    notifyResize([
+      resizeEntry(first, 40),
+      resizeEntry(second, 240),
+    ]);
     await wrapper.vm.$nextTick();
 
     expect(
@@ -159,6 +370,10 @@ describe("MessageList — M-25 虚拟滚动", () => {
     await wrapper.vm.$nextTick();
 
     const list = wrapper.find(".ai-msg-list");
+    setScrollMetrics(list.element as HTMLElement, {
+      scrollHeight: 5_400,
+      clientHeight: 600,
+    });
     (list.element as HTMLElement).scrollTop = 1_000;
     await list.trigger("scroll");
     await wrapper.vm.$nextTick();
@@ -166,10 +381,7 @@ describe("MessageList — M-25 虚拟滚动", () => {
     // message 5 is above the real viewport anchor, but remains mounted by the
     // 600px overscan window. Growing it by 100px must preserve the viewport.
     const overscanRow = wrapper.find('[data-message-id="anchor-5"]').element;
-    resizeCallback?.(
-      [{ target: overscanRow, contentRect: { height: 196 } }] as unknown as ResizeObserverEntry[],
-      {} as ResizeObserver,
-    );
+    notifyResize([resizeEntry(overscanRow, 196)]);
     await wrapper.vm.$nextTick();
 
     expect((list.element as HTMLElement).scrollTop).toBe(1_100);

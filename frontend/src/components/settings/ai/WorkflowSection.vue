@@ -72,6 +72,7 @@ const editorSteps = ref<Array<{
   onFailure: OnFailureAction;
   dependsOn: string;
   timeout: number;
+  original?: WorkflowStep;
 }>>([]);
 
 function blankStep() {
@@ -108,9 +109,20 @@ function openEditEditor(wf: WorkflowDef): void {
     onFailure: (s.onFailure || "abort") as OnFailureAction,
     dependsOn: (s.dependsOn ?? []).join(", "),
     timeout: s.timeout ?? 0,
+    original: cloneWorkflowStep(s),
   }));
   if (editorSteps.value.length === 0) editorSteps.value = [blankStep()];
   editorOpen.value = true;
+}
+
+function cloneWorkflowStep(step: WorkflowStep): WorkflowStep {
+  return {
+    ...step,
+    args: step.args ? [...step.args] : undefined,
+    dependsOn: step.dependsOn ? [...step.dependsOn] : undefined,
+    input: step.input ? { ...step.input } : undefined,
+    outputs: step.outputs ? { ...step.outputs } : undefined,
+  };
 }
 
 function addEditorStep(): void {
@@ -132,17 +144,23 @@ function moveEditorStep(idx: number, dir: -1 | 1): void {
 
 function buildDefFromEditor(): WorkflowDef {
   const steps: WorkflowStep[] = editorSteps.value
-    .filter((s) => s.name.trim() && s.command.trim())
-    .map((s) => ({
-      name: s.name.trim(),
-      command: s.command.trim(),
-      type: s.type,
-      onFailure: s.onFailure,
-      dependsOn: s.dependsOn
-        ? s.dependsOn.split(",").map((x) => x.trim()).filter(Boolean)
-        : undefined,
-      timeout: s.timeout > 0 ? s.timeout : undefined,
-    }));
+    .filter((s) => s.name.trim() && (s.command.trim() || (s.type !== "command" && s.original)))
+    .map((s) => {
+      const preserved = s.original && s.original.type === s.type
+        ? cloneWorkflowStep(s.original)
+        : { name: s.name.trim(), command: s.command.trim() };
+      return {
+        ...preserved,
+        name: s.name.trim(),
+        command: s.command.trim(),
+        type: s.type,
+        onFailure: s.onFailure,
+        dependsOn: s.dependsOn
+          ? s.dependsOn.split(",").map((x) => x.trim()).filter(Boolean)
+          : undefined,
+        timeout: s.timeout > 0 ? s.timeout : undefined,
+      };
+    });
   const def: WorkflowDef = {
     name: editorName.value.trim(),
     description: editorDescription.value.trim() || undefined,

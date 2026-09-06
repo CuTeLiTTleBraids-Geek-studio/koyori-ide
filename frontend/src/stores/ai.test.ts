@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { nextTick, watch } from "vue";
 
 vi.mock("@/lib/monaco-themes", () => ({
   accentThemes: [],
@@ -8,8 +9,28 @@ vi.mock("@/lib/monaco-themes", () => ({
 
 // Collect event handlers so tests can simulate backend events.
 // vi.hoisted ensures this runs before mock factories are evaluated.
-const { eventHandlers } = vi.hoisted(() => ({
+const { eventHandlers, testAgentCatalog } = vi.hoisted(() => ({
   eventHandlers: {} as Record<string, ((...args: any[]) => void) | undefined>,
+  testAgentCatalog: {
+    revision: 1,
+    tools: [
+      {
+        id: "read",
+        wireName: "read",
+        description: "Read a file",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string", minLength: 1 } },
+          required: ["path"],
+          additionalProperties: false,
+        },
+        source: "builtin",
+        risk: "read-only",
+        approval: "backend-policy",
+        mutation: "none",
+      },
+    ],
+  },
 }));
 
 vi.mock("@wailsio/runtime", () => ({
@@ -26,18 +47,29 @@ vi.mock("@/api/services", () => ({
   aiService: {
     setConfig: vi.fn().mockResolvedValue(undefined),
     startStream: vi.fn().mockResolvedValue("stream-test-1"),
+    startAgentStream: vi.fn().mockResolvedValue({
+      streamId: "agent-stream-test-1",
+      sessionId: "agent-session-test-1",
+    }),
     stopStream: vi.fn().mockResolvedValue(undefined),
     send: vi.fn().mockResolvedValue({ Content: "ok", FinishReason: "stop" }),
     getPresetPrompt: vi.fn().mockResolvedValue("Explain this code."),
     getDefaultSystemPrompt: vi.fn().mockResolvedValue("default prompt"),
     listPresets: vi.fn().mockResolvedValue([]),
     generateTitleWithAI: vi.fn().mockResolvedValue("AI generated title"),
+    getAgentSystemPrompt: vi.fn().mockResolvedValue("agent prompt"),
+  },
+  agentService: {
+    getToolCatalog: vi.fn().mockResolvedValue(testAgentCatalog),
   },
   conversationService: {
     save: vi.fn().mockResolvedValue(undefined),
     load: vi.fn().mockResolvedValue({ id: "1", title: "test", created_at: 0, messages: [] }),
     generateId: vi.fn().mockResolvedValue("new-id"),
     generateTitle: vi.fn().mockResolvedValue("test title"),
+  },
+  searchService: {
+    search: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -47,6 +79,10 @@ vi.mock("@/lib/notifications", () => ({
   notifyError: vi.fn(),
   notifyWarning: vi.fn(),
   notifyInfo: vi.fn(),
+}));
+
+vi.mock("@/stores/output", () => ({
+  pushOutput: vi.fn(),
 }));
 
 import {
@@ -62,28 +98,47 @@ import {
   parseAIStreamPayload,
   isOwnedStreamEvent,
   MAX_AI_MESSAGES,
+  MAX_PRE_ADMISSION_STREAM_EVENTS,
+  MAX_PRE_ADMISSION_STREAM_BYTES,
   STREAM_TIMEOUT_MS,
   cleanupAIEventListeners,
   ensureAIEventListeners,
   handleAIChunkEvent,
   handleAIDoneEvent,
   handleAIErrorEvent,
+  handleAIToolCallsEvent,
+  handleAIReasoningEvent,
   handleAIStreamBusyEvent,
+  handleConversationSavedEvent,
+  sendNativeToolResults,
+  flushConversationPersistence,
+  persistConversationNow,
   resetStreamState,
   addContextChip,
+  resolveCodebaseChips,
 } from "./ai";
 
-import { aiService } from "@/api/services";
+import { aiService, conversationService, searchService } from "@/api/services";
+import { notifyError } from "@/lib/notifications";
+import { pushOutput } from "@/stores/output";
+import { agentState } from "./agent";
+import { agentTimelineState, resetAgentTimeline } from "./agentTimeline";
 import { personaState } from "./persona";
 import { aiPlanState } from "./aiPlan";
+import { appState } from "@/stores/app";
+import type { Conversation } from "@/types";
 
 eventHandlers["ai:chunk"] = handleAIChunkEvent;
 eventHandlers["ai:done"] = handleAIDoneEvent;
 eventHandlers["ai:error"] = handleAIErrorEvent;
+eventHandlers["ai:tool_calls"] = handleAIToolCallsEvent;
+eventHandlers["ai:reasoning"] = handleAIReasoningEvent;
 eventHandlers["ai:stream-busy"] = handleAIStreamBusyEvent;
 
 describe("ai store", () => {
   beforeEach(() => {
+    resetStreamState();
+    ensureAIEventListeners();
     aiState.messages = [];
     aiState.streaming = false;
     aiState.globalStreamBusy = false;
@@ -102,23 +157,464 @@ describe("ai store", () => {
     personaState.personas = [];
     personaState.activePersonaId = null;
     aiPlanState.activePlan = null;
+    agentState.mode = "chat";
+    agentState.pendingToolCalls = [];
+    agentState.toolCallCount = 0;
     vi.mocked(aiService.setConfig).mockClear();
+    vi.mocked(aiService.startStream).mockReset().mockResolvedValue("stream-test-1");
+    vi.mocked(aiService.startAgentStream).mockReset().mockResolvedValue({
+      streamId: "agent-stream-test-1",
+      sessionId: "agent-session-test-1",
+    });
+    vi.mocked(aiService.stopStream).mockReset().mockResolvedValue(undefined);
+    vi.mocked(conversationService.load).mockReset().mockResolvedValue({
+      id: "1",
+      title: "test",
+      created_at: 0,
+      updated_at: 0,
+      revision: 0,
+      messages: [],
+    });
+    vi.mocked(notifyError).mockClear();
+    vi.mocked(pushOutput).mockClear();
+  });
+
+  it("waits for backend config admission before starting a stream", async () => {
+    let resolveConfig!: () => void;
+    const deferredConfig = new Promise<void>((resolve) => { resolveConfig = resolve; });
+    vi.mocked(aiService.setConfig).mockImplementationOnce(
+      () => deferredConfig as unknown as ReturnType<typeof aiService.setConfig>,
+    );
+
+    const sending = sendMessage("wait for config");
+    await vi.waitFor(() => expect(aiService.setConfig).toHaveBeenCalledOnce());
+    expect(await sendMessage("duplicate while admitting")).toBe(false);
+    expect(aiService.startStream).not.toHaveBeenCalled();
+    expect(aiService.startAgentStream).not.toHaveBeenCalled();
+
+    resolveConfig();
+    expect(await sending).toBe(true);
+
+    expect(aiService.startStream).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when backend config admission rejects", async () => {
+    vi.mocked(aiService.setConfig).mockRejectedValueOnce(new Error("config rejected"));
+
+    expect(await sendMessage("do not start")).toBe(false);
+
+    expect(aiService.startStream).not.toHaveBeenCalled();
+    expect(aiService.startAgentStream).not.toHaveBeenCalled();
+    expect(aiState.streaming).toBe(false);
+    expect(aiState.activeStreamId).toBeNull();
+    expect(notifyError).toHaveBeenCalledWith("config rejected", "AI Error");
+    expect(aiState.messages).toEqual([]);
+  });
+
+  it("routes the first stream chunk through the reactive assistant message", async () => {
+    const sending = sendMessage("show the first token");
+    await sending;
+
+    const assistant = aiState.messages[aiState.messages.length - 1];
+    expect(assistant?.role).toBe("assistant");
+    const changes: string[] = [];
+    const stop = watch(
+      () => assistant?.content,
+      (content) => { if (typeof content === "string") changes.push(content); },
+    );
+
+    handleAIChunkEvent({ data: { streamId: "stream-test-1", data: "first token" } });
+    await nextTick();
+
+    expect(assistant?.content).toBe("first token");
+    expect(changes).toEqual(["first token"]);
+    stop();
+    handleAIDoneEvent({ data: { streamId: "stream-test-1", data: "" } });
+  });
+
+  it("rejects a conversation load after the first chunk and keeps rendering the owned stream", async () => {
+    await sendMessage("keep this turn visible");
+    handleAIChunkEvent({ data: { streamId: "stream-test-1", data: "first" } });
+    const visibleAssistant = aiState.messages.at(-1);
+
+    expect(await loadConversation("other-conversation")).toBe(false);
+    expect(conversationService.load).not.toHaveBeenCalled();
+    handleAIChunkEvent({ data: { streamId: "stream-test-1", data: " second" } });
+
+    expect(aiState.messages.at(-1)).toBe(visibleAssistant);
+    expect(aiState.messages.at(-1)?.content).toBe("first second");
+    handleAIDoneEvent({ data: { streamId: "stream-test-1" } });
+    handleAIStreamBusyEvent({ data: { streamId: "stream-test-1", busy: false } });
+  });
+
+  it("buffers pre-return events and replays only the returned stream in order", async () => {
+    let resolveStart!: (streamId: string) => void;
+    vi.mocked(aiService.startStream).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveStart = resolve; }),
+    );
+    const save = vi.mocked((await import("@/api/services")).conversationService.save);
+    save.mockClear();
+
+    const sending = sendMessage("buffer events");
+    await vi.waitFor(() => expect(aiState.streaming).toBe(true));
+    eventHandlers["ai:chunk"]?.({ data: "legacy-no-id" });
+    eventHandlers["ai:done"]?.({ data: "" });
+    eventHandlers["ai:chunk"]?.({ data: { streamId: "foreign", data: "LEAK" } });
+    eventHandlers["ai:error"]?.({ data: { streamId: "foreign", data: "foreign error" } });
+    eventHandlers["ai:done"]?.({ data: { streamId: "foreign" } });
+    eventHandlers["ai:chunk"]?.({ data: { streamId: "owned", data: "first" } });
+    eventHandlers["ai:chunk"]?.({ data: { streamId: "owned", data: " second" } });
+    eventHandlers["ai:done"]?.({ data: { streamId: "owned" } });
+
+    expect(aiState.messages.at(-1)?.content).toBe("");
+    expect(aiState.streaming).toBe(true);
+    expect(aiState.error).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(pushOutput).not.toHaveBeenCalledWith("ai", "error", expect.any(String));
+
+    resolveStart("owned");
+    await sending;
+    await vi.waitFor(() => expect(save).toHaveBeenCalled());
+
+    expect(aiState.messages.at(-1)?.content).toBe("first second");
+    expect(aiState.messages.at(-1)?.content).not.toContain("LEAK");
+    expect(aiState.streaming).toBe(false);
+    expect(aiState.error).toBeNull();
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("shows only provider-declared reasoning summaries immediately", () => {
+    agentState.mode = "agent";
+    aiState.streaming = true;
+    aiState.activeStreamId = "reasoning-stream";
+    eventHandlers["ai:reasoning"]?.({ data: { streamId: "reasoning-stream", data: "checking files" } });
+    eventHandlers["ai:reasoning"]?.({ data: { streamId: "foreign", data: "must not leak" } });
+    expect(aiState.messages).toHaveLength(0);
+    agentState.mode = "chat";
+  });
+
+  it("does not report a buffered matching error until stream admission", async () => {
+    let resolveStart!: (streamId: string) => void;
+    vi.mocked(aiService.startStream).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveStart = resolve; }),
+    );
+
+    const sending = sendMessage("buffer error");
+    await vi.waitFor(() => expect(aiState.streaming).toBe(true));
+    eventHandlers["ai:error"]?.({ data: { streamId: "owned-error", data: "provider failed" } });
+
+    expect(aiState.error).toBeNull();
+    expect(aiState.streaming).toBe(true);
+    expect(notifyError).not.toHaveBeenCalled();
+
+    resolveStart("owned-error");
+    await sending;
+
+    expect(aiState.error).toBe("provider failed");
+    expect(aiState.streaming).toBe(false);
+    expect(notifyError).toHaveBeenCalledWith("provider failed", "AI Error");
+  });
+
+  it("buffers Agent tool calls until startAgentStream returns", async () => {
+    let resolveStart!: (value: { streamId: string; sessionId: string }) => void;
+    vi.mocked(aiService.startAgentStream).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveStart = resolve; }),
+    );
+    agentState.mode = "agent";
+
+    const sending = sendMessage("use a tool");
+    await vi.waitFor(() => expect(aiService.startAgentStream).toHaveBeenCalled());
+    const call = [{ id: "call-1", name: "read", arguments: '{"path":"README.md"}' }];
+    eventHandlers["ai:tool_calls"]?.({ data: { streamId: "foreign", data: call } });
+    eventHandlers["ai:tool_calls"]?.({ data: { streamId: "agent-owned", data: call } });
+
+    expect(agentState.pendingToolCalls).toHaveLength(0);
+    expect(agentState.toolCallCount).toBe(0);
+
+    resolveStart({ streamId: "agent-owned", sessionId: "agent-session-owned" });
+    await sending;
+
+    expect(agentState.pendingToolCalls).toHaveLength(1);
+    expect(agentState.pendingToolCalls[0].target).toBe("README.md");
+    expect(agentState.toolCallCount).toBe(1);
+    eventHandlers["ai:done"]?.({ data: { streamId: "agent-owned" } });
+    const assistant = aiState.messages.find((message) => message.role === "assistant");
+    expect(assistant).toMatchObject({
+      content: "",
+      toolCalls: [{ id: "call-1", name: "read", arguments: '{"path":"README.md"}' }],
+    });
+    agentState.mode = "chat";
+  });
+
+  it("does not execute a fenced call when the same assistant turn emitted native calls", async () => {
+    let resolveStart!: (value: { streamId: string; sessionId: string }) => void;
+    vi.mocked(aiService.startAgentStream).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveStart = resolve; }),
+    );
+    agentState.mode = "agent";
+
+    const sending = sendMessage("use native tools");
+    await vi.waitFor(() => expect(aiService.startAgentStream).toHaveBeenCalled());
+    resolveStart({ streamId: "native-mixed-stream", sessionId: "native-mixed-session" });
+    await sending;
+
+    eventHandlers["ai:tool_calls"]?.({
+      data: {
+        streamId: "native-mixed-stream",
+        data: [{ id: "native-mixed-call", name: "read", arguments: '{"path":"a.ts"}' }],
+      },
+    });
+    eventHandlers["ai:chunk"]?.({
+      data: { streamId: "native-mixed-stream", data: "```\nread: duplicate.ts\n```" },
+    });
+    eventHandlers["ai:done"]?.({ data: { streamId: "native-mixed-stream" } });
+
+    expect(agentState.pendingToolCalls).toHaveLength(1);
+    expect(agentState.pendingToolCalls[0].source).toBe("native");
+    expect(agentState.pendingToolCalls[0].target).toBe("a.ts");
+    expect(agentState.toolCallCount).toBe(1);
+    expect(aiState.messages.find((message) => message.role === "assistant")?.content)
+      .toContain("duplicate.ts");
+    agentState.mode = "chat";
+  });
+
+  it("fails closed on malformed native calls without using a fenced fallback", async () => {
+    let resolveStart!: (value: { streamId: string; sessionId: string }) => void;
+    vi.mocked(aiService.startAgentStream).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveStart = resolve; }),
+    );
+    agentState.mode = "agent";
+
+    const sending = sendMessage("reject malformed native");
+    await vi.waitFor(() => expect(aiService.startAgentStream).toHaveBeenCalled());
+    resolveStart({ streamId: "malformed-native-stream", sessionId: "malformed-native-session" });
+    await sending;
+
+    eventHandlers["ai:tool_calls"]?.({
+      data: {
+        streamId: "malformed-native-stream",
+        data: [{ id: "bad-native-call", name: "read", arguments: "{" }],
+      },
+    });
+    eventHandlers["ai:chunk"]?.({
+      data: { streamId: "malformed-native-stream", data: "```\nread: should-not-run.ts\n```" },
+    });
+    eventHandlers["ai:done"]?.({ data: { streamId: "malformed-native-stream" } });
+
+    expect(agentState.pendingToolCalls).toEqual([]);
+    expect(agentState.toolCallCount).toBe(0);
+    expect(aiState.error).toBe("Provider returned an invalid native tool-call batch");
+    agentState.mode = "chat";
+  });
+
+  it("continues an Agent turn with structured native tool results", async () => {
+    agentState.mode = "agent";
+    aiState.messages = [{
+      id: "assistant-tool-call",
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "call-read", name: "read", arguments: '{"path":"README.md"}' }],
+    }];
+
+    expect(await sendNativeToolResults([{
+      toolCallId: "call-read",
+      content: "file body",
+      isError: false,
+    }])).toBe(true);
+
+    expect(aiService.startAgentStream).toHaveBeenCalledWith(
+      expect.any(String),
+      [
+        expect.objectContaining({
+          role: "assistant",
+          toolCalls: [{ id: "call-read", name: "read", arguments: '{"path":"README.md"}' }],
+        }),
+        expect.objectContaining({
+          role: "tool",
+          toolResults: [{ toolCallId: "call-read", content: "file body", isError: false }],
+        }),
+      ],
+    );
+    expect(aiState.messages.some((message) => message.role === "user" && message.content.includes("Observation"))).toBe(false);
+  });
+
+  it("rolls back rejected native tool-result admissions without removing provider history", async () => {
+    agentState.mode = "agent";
+    aiState.messages = [{
+      id: "assistant-native-call",
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "call-rejected-result", name: "read", arguments: '{"path":"README.md"}' }],
+    }];
+    vi.mocked(aiService.startAgentStream)
+      .mockRejectedValueOnce(new Error("stream busy"))
+      .mockRejectedValueOnce(new Error("stream busy"));
+
+    expect(await sendNativeToolResults([{
+      toolCallId: "call-rejected-result",
+      content: "provider result",
+      isError: false,
+    }])).toBe(false);
+
+    expect(aiState.messages).toEqual([expect.objectContaining({
+      id: "assistant-native-call",
+      toolCalls: [expect.objectContaining({ id: "call-rejected-result" })],
+    })]);
+    expect(aiState.messages.some((message) => message.role === "tool")).toBe(false);
+    expect(aiState.messages.some((message) => message.role === "assistant" && !message.toolCalls?.length)).toBe(false);
+  });
+
+  it("discards buffered events when stream start rejects and keeps the next send clean", async () => {
+    let rejectStart!: (reason: Error) => void;
+    vi.mocked(aiService.startStream).mockImplementationOnce(
+      () => new Promise<string>((_resolve, reject) => { rejectStart = reject; }),
+    );
+
+    const failed = sendMessage("first attempt");
+    await vi.waitFor(() => expect(aiState.streaming).toBe(true));
+    eventHandlers["ai:chunk"]?.({ data: { streamId: "old", data: "STALE" } });
+    rejectStart(new Error("stream busy"));
+    expect(await failed).toBe(false);
+    expect(aiState.messages.some((message) => message.content === "first attempt")).toBe(false);
+
+    vi.mocked(aiService.startStream).mockResolvedValueOnce("next");
+    await sendMessage("second attempt");
+    eventHandlers["ai:chunk"]?.({ data: { streamId: "next", data: "fresh" } });
+    eventHandlers["ai:done"]?.({ data: { streamId: "next" } });
+
+    expect(aiState.messages.some((message) => message.content.includes("STALE"))).toBe(false);
+    expect(aiState.messages.at(-1)?.content).toBe("fresh");
+  });
+
+  it("discards buffered events when reset invalidates a pending admission", async () => {
+    let resolveStart!: (streamId: string) => void;
+    vi.mocked(aiService.startStream).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveStart = resolve; }),
+    );
+    const sending = sendMessage("reset attempt");
+    await vi.waitFor(() => expect(aiState.streaming).toBe(true));
+    eventHandlers["ai:chunk"]?.({ data: { streamId: "old", data: "STALE" } });
+    resetStreamState();
+    resolveStart("old");
+    expect(await sending).toBe(false);
+    await sending;
+
+    expect(aiState.messages.some((message) => message.content.includes("STALE"))).toBe(false);
+    expect(aiState.messages.some((message) => message.content === "reset attempt")).toBe(false);
+    expect(aiState.streaming).toBe(false);
+    expect(aiState.activeStreamId).toBeNull();
+  });
+
+  it("drops pre-return events when stopGeneration invalidates the stream", async () => {
+    let resolveStart!: (streamId: string) => void;
+    vi.mocked(aiService.startStream).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveStart = resolve; }),
+    );
+
+    const sending = sendMessage("stop attempt");
+    await vi.waitFor(() => expect(aiState.streaming).toBe(true));
+    eventHandlers["ai:chunk"]?.({ data: { streamId: "stopped", data: "STALE" } });
+    await stopGeneration();
+    resolveStart("stopped");
+    await sending;
+
+    expect(aiState.messages.some((message) => message.content.includes("STALE"))).toBe(false);
+    expect(aiState.streaming).toBe(false);
+    expect(aiState.activeStreamId).toBeNull();
+  });
+
+  it("fails closed without partial replay when the pre-return event limit is exceeded", async () => {
+    let resolveStart!: (streamId: string) => void;
+    vi.mocked(aiService.startStream).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveStart = resolve; }),
+    );
+
+    const sending = sendMessage("too many events");
+    await vi.waitFor(() => expect(aiState.streaming).toBe(true));
+    for (let i = 0; i <= MAX_PRE_ADMISSION_STREAM_EVENTS; i += 1) {
+      eventHandlers["ai:chunk"]?.({ data: { streamId: "owned", data: `chunk-${i}` } });
+    }
+    expect(aiState.messages.at(-1)?.content).toBe("");
+
+    resolveStart("owned");
+    await sending;
+
+    expect(aiState.messages.some((message) => message.content.includes("chunk-"))).toBe(false);
+    expect(aiState.streaming).toBe(false);
+    expect(aiState.activeStreamId).toBeNull();
+    expect(aiService.stopStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed without partial replay when the pre-return byte limit is exceeded", async () => {
+    let resolveStart!: (streamId: string) => void;
+    vi.mocked(aiService.startStream).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveStart = resolve; }),
+    );
+
+    const sending = sendMessage("oversized event");
+    await vi.waitFor(() => expect(aiState.streaming).toBe(true));
+    eventHandlers["ai:chunk"]?.({
+      data: { streamId: "owned", data: "x".repeat(MAX_PRE_ADMISSION_STREAM_BYTES + 1) },
+    });
+    expect(aiState.messages.at(-1)?.content).toBe("");
+
+    resolveStart("owned");
+    await sending;
+
+    expect(aiState.messages.some((message) => message.content.includes("x"))).toBe(false);
+    expect(aiState.streaming).toBe(false);
+    expect(aiService.stopStream).toHaveBeenCalledTimes(1);
   });
 
   it("sends a message and appends assistant response via events", async () => {
-    const promise = sendMessage("hi");
-    await promise;
-    // prompt-6 Task 2: structured payloads with streamId
-    const sid = aiState.activeStreamId || "stream-test-1";
-    eventHandlers["ai:chunk"]?.({ data: { streamId: sid, data: "hello" } });
-    eventHandlers["ai:chunk"]?.({ data: { streamId: sid, data: " world" } });
-    eventHandlers["ai:done"]?.({ data: { streamId: sid, data: "" } });
-    eventHandlers["ai:stream-busy"]?.({ data: { streamId: sid, busy: false } });
+    const previousProvider = appState.aiProvider;
+    const previousModel = appState.aiModel;
+    const previousReasoningEffort = appState.reasoningEffort;
+    appState.aiProvider = "openai";
+    appState.aiModel = "gpt-5";
+    appState.reasoningEffort = "high";
+    try {
+      const promise = sendMessage("hi");
+      expect(await promise).toBe(true);
+      expect(aiService.setConfig).toHaveBeenCalledWith(expect.objectContaining({
+        provider: "openai",
+        model: "gpt-5",
+        reasoningEffort: "high",
+        protocol: "openai",
+      }));
+      // prompt-6 Task 2: structured payloads with streamId
+      const sid = aiState.activeStreamId || "stream-test-1";
+      eventHandlers["ai:chunk"]?.({ data: { streamId: sid, data: "hello" } });
+      eventHandlers["ai:chunk"]?.({ data: { streamId: sid, data: " world" } });
+      eventHandlers["ai:done"]?.({ data: { streamId: sid, data: "" } });
+      eventHandlers["ai:stream-busy"]?.({ data: { streamId: sid, busy: false } });
 
-    expect(aiState.messages.length).toBe(2);
-    expect(aiState.messages[0].role).toBe("user");
-    expect(aiState.messages[1].role).toBe("assistant");
-    expect(aiState.messages[1].content).toBe("hello world");
+      expect(aiState.messages.length).toBe(2);
+      expect(aiState.messages[0].role).toBe("user");
+      expect(aiState.messages[1].role).toBe("assistant");
+      expect(aiState.messages[1].content).toBe("hello world");
+    } finally {
+      appState.aiProvider = previousProvider;
+      appState.aiModel = previousModel;
+      appState.reasoningEffort = previousReasoningEffort;
+    }
+  });
+
+  it("assigns a durable ID for a new conversation before the stream finishes", async () => {
+    const sending = sendMessage("persist while streaming");
+    await sending;
+    expect(aiState.streaming).toBe(true);
+    expect(aiState.currentConversationId).toBeNull();
+
+    const persistedId = await persistConversationNow();
+
+    expect(persistedId).toBe("new-id");
+    expect(aiState.currentConversationId).toBe("new-id");
+    expect(conversationService.save).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "new-id" }),
+    );
+    handleAIDoneEvent({ data: { streamId: "stream-test-1" } });
   });
 
   it("ignores chunks for a foreign streamId (prompt-6 Task 2)", async () => {
@@ -162,6 +658,25 @@ describe("ai store", () => {
     expect(aiState.globalStreamBusy).toBe(false);
   });
 
+  it("keeps stream ownership and the pending draft when stop fails so the user can retry", async () => {
+    await sendMessage("long request");
+    const streamId = aiState.activeStreamId;
+    const assistant = aiState.messages.at(-1);
+    vi.mocked(aiService.stopStream).mockRejectedValueOnce(new Error("stop denied"));
+
+    expect(await stopGeneration()).toBe(false);
+    expect(aiState.streaming).toBe(true);
+    expect(aiState.activeStreamId).toBe(streamId);
+    handleAIChunkEvent({ data: { streamId, data: "still owned" } });
+    expect(aiState.messages.at(-1)).toBe(assistant);
+    expect(assistant?.content).toBe("still owned");
+
+    expect(await stopGeneration()).toBe(true);
+    expect(aiState.streaming).toBe(false);
+    expect(aiState.activeStreamId).toBeNull();
+    expect(aiService.stopStream).toHaveBeenCalledTimes(2);
+  });
+
   it("handles error event", async () => {
     const promise = sendMessage("hi");
     await promise;
@@ -193,8 +708,14 @@ describe("ai store", () => {
 
   it("clears messages", () => {
     aiState.messages = [{ role: "user", content: "x", id: "message-to-clear" }];
-    clearMessages();
+    agentState.pendingToolCalls = [
+      { id: "stale-tool", kind: "read", target: "README.md", status: "pending" },
+    ];
+    agentState.toolCallCount = 1;
+    expect(clearMessages()).toBe(true);
     expect(aiState.messages).toHaveLength(0);
+    expect(agentState.pendingToolCalls).toEqual([]);
+    expect(agentState.toolCallCount).toBe(0);
   });
 
   // N-60: clearMessages also resets the system prompt override.
@@ -251,10 +772,197 @@ describe("ai store", () => {
     expect(aiState.currentSystemPromptOverride).toBeNull();
   });
 
+  it("does not let an older conversation load overwrite a newer selection", async () => {
+    const resolvers = new Map<string, (conversation: Conversation) => void>();
+    vi.mocked(conversationService.load).mockImplementation(
+      (id: string) => new Promise<Conversation>((resolve) => resolvers.set(id, resolve)),
+    );
+
+    const older = loadConversation("conv-older");
+    const newer = loadConversation("conv-newer");
+    resolvers.get("conv-newer")?.({
+      id: "conv-newer",
+      title: "newer",
+      created_at: 2,
+      updated_at: 2,
+      revision: 1,
+      messages: [{ role: "assistant", content: "new content" }],
+    });
+    await newer;
+    resolvers.get("conv-older")?.({
+      id: "conv-older",
+      title: "older",
+      created_at: 1,
+      updated_at: 1,
+      revision: 1,
+      messages: [{ role: "assistant", content: "stale content" }],
+    });
+    await older;
+
+    expect(aiState.currentConversationId).toBe("conv-newer");
+    expect(aiState.messages.map((message) => message.content)).toEqual(["new content"]);
+  });
+
+  it("keeps a cleared conversation empty when an earlier load resolves late", async () => {
+    let resolveLoad: ((conversation: Conversation) => void) | undefined;
+    vi.mocked(conversationService.load).mockImplementationOnce(
+      () => new Promise<Conversation>((resolve) => { resolveLoad = resolve; }),
+    );
+
+    const loading = loadConversation("conv-late");
+    clearMessages();
+    resolveLoad?.({
+      id: "conv-late",
+      title: "late",
+      created_at: 1,
+      updated_at: 1,
+      revision: 1,
+      messages: [{ role: "assistant", content: "must stay hidden" }],
+    });
+    await loading;
+
+    expect(aiState.currentConversationId).toBeNull();
+    expect(aiState.messages).toEqual([]);
+  });
+
+  it("does not let a late persist publish identity into a newly loaded conversation", async () => {
+    let resolveGeneratedId!: (id: string) => void;
+    vi.mocked(conversationService.generateId).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { resolveGeneratedId = resolve; }),
+    );
+    vi.mocked(conversationService.load).mockResolvedValueOnce({
+      id: "target-conversation",
+      title: "target title",
+      created_at: 2,
+      updated_at: 2,
+      revision: 7,
+      messages: [{ role: "assistant", content: "target content" }],
+    });
+
+    await sendMessage("old unsaved turn");
+    handleAIChunkEvent({ data: { streamId: "stream-test-1", data: "old answer" } });
+    handleAIDoneEvent({ data: { streamId: "stream-test-1", data: "" } });
+    handleAIStreamBusyEvent({ data: { busy: false } });
+    await vi.waitFor(() => expect(conversationService.generateId).toHaveBeenCalled());
+
+    await loadConversation("target-conversation");
+    resolveGeneratedId("late-old-id");
+    await flushConversationPersistence();
+
+    expect(aiState.currentConversationId).toBe("target-conversation");
+    expect(aiState.currentConversationTitle).toBe("target title");
+    expect(aiState.conversationRevision).toBe(7);
+    expect(aiState.messages.map((message) => message.content)).toEqual(["target content"]);
+  });
+
+  it("does not let conversation:saved for the old identity preempt an in-flight target load", async () => {
+    aiState.currentConversationId = "old-conversation";
+    const loadCountBefore = vi.mocked(conversationService.load).mock.calls.length;
+    let resolveTarget!: (conversation: Conversation) => void;
+    vi.mocked(conversationService.load).mockImplementationOnce(
+      () => new Promise<Conversation>((resolve) => { resolveTarget = resolve; }),
+    );
+
+    const loading = loadConversation("target-conversation");
+    handleConversationSavedEvent({
+      data: { origin: "peer-window", id: "old-conversation", revision: 9 },
+    });
+
+    expect(conversationService.load).toHaveBeenCalledTimes(loadCountBefore + 1);
+    resolveTarget({
+      id: "target-conversation",
+      title: "target",
+      created_at: 2,
+      updated_at: 2,
+      revision: 1,
+      messages: [{ role: "assistant", content: "target wins" }],
+    });
+    await loading;
+    expect(aiState.currentConversationId).toBe("target-conversation");
+  });
+
+  it("reloads a target when its saved revision arrives during the initial load", async () => {
+    const loadCountBefore = vi.mocked(conversationService.load).mock.calls.length;
+    let resolveInitial!: (conversation: Conversation) => void;
+    vi.mocked(conversationService.load)
+      .mockImplementationOnce(
+        () => new Promise<Conversation>((resolve) => { resolveInitial = resolve; }),
+      )
+      .mockResolvedValueOnce({
+        id: "target-live",
+        title: "complete",
+        created_at: 2,
+        updated_at: 3,
+        revision: 2,
+        messages: [{ role: "assistant", content: "final streamed content" }],
+      });
+
+    const loading = loadConversation("target-live");
+    handleConversationSavedEvent({
+      data: { origin: "peer-window", id: "target-live", revision: 2 },
+    });
+    resolveInitial({
+      id: "target-live",
+      title: "partial",
+      created_at: 2,
+      updated_at: 2,
+      revision: 1,
+      messages: [{ role: "assistant", content: "partial streamed content" }],
+    });
+
+    expect(await loading).toBe(true);
+    expect(conversationService.load).toHaveBeenCalledTimes(loadCountBefore + 2);
+    expect(aiState.conversationRevision).toBe(2);
+    expect(aiState.messages.map((message) => message.content)).toEqual([
+      "final streamed content",
+    ]);
+  });
+
+  it("coalesces saved revisions observed during one target load", async () => {
+    const loadCountBefore = vi.mocked(conversationService.load).mock.calls.length;
+    let resolveInitial!: (conversation: Conversation) => void;
+    vi.mocked(conversationService.load)
+      .mockImplementationOnce(
+        () => new Promise<Conversation>((resolve) => { resolveInitial = resolve; }),
+      )
+      .mockResolvedValueOnce({
+        id: "target-coalesced",
+        title: "latest",
+        created_at: 2,
+        updated_at: 4,
+        revision: 4,
+        messages: [{ role: "assistant", content: "latest content" }],
+      });
+
+    const loading = loadConversation("target-coalesced");
+    handleConversationSavedEvent({
+      data: { origin: "peer-window", id: "target-coalesced", revision: 2 },
+    });
+    handleConversationSavedEvent({
+      data: { origin: "peer-window", id: "target-coalesced", revision: 4 },
+    });
+    handleConversationSavedEvent({
+      data: { origin: "peer-window", id: "target-coalesced", revision: 3 },
+    });
+    resolveInitial({
+      id: "target-coalesced",
+      title: "partial",
+      created_at: 2,
+      updated_at: 2,
+      revision: 1,
+      messages: [{ role: "assistant", content: "partial content" }],
+    });
+
+    expect(await loading).toBe(true);
+    expect(conversationService.load).toHaveBeenCalledTimes(loadCountBefore + 2);
+    expect(aiState.conversationRevision).toBe(4);
+    expect(aiState.messages.map((message) => message.content)).toEqual(["latest content"]);
+  });
+
   it("does not send while streaming", async () => {
     aiState.streaming = true;
     const before = aiState.messages.length;
-    await sendMessage("hi");
+    expect(await sendMessage("hi")).toBe(false);
     expect(aiState.messages.length).toBe(before);
   });
 
@@ -314,7 +1022,7 @@ describe("ai store", () => {
   it("resets globalStreamBusy on sendMessage failure (M-17)", async () => {
     const { aiService } = await import("@/api/services");
     (aiService.startStream as any).mockRejectedValueOnce(new Error("network down"));
-    await sendMessage("hi");
+    expect(await sendMessage("hi")).toBe(false);
     // M-17: 失败后 globalStreamBusy 必须被重置
     expect(aiState.globalStreamBusy).toBe(false);
     expect(aiState.streaming).toBe(false);
@@ -389,7 +1097,7 @@ describe("ai store", () => {
     await vi.waitFor(() => expect(aiState.streaming).toBe(true));
     resetStreamState();
     resolveStart("late-stream");
-    await sending;
+    expect(await sending).toBe(false);
 
     expect(aiState.streaming).toBe(false);
     expect(aiState.globalStreamBusy).toBe(false);
@@ -491,6 +1199,8 @@ describe("C-6: MessageList 稳定 id 与 FIFO drop", () => {
     personaState.personas = [];
     personaState.activePersonaId = null;
     aiPlanState.activePlan = null;
+    agentState.mode = "chat";
+    vi.mocked(aiService.startStream).mockReset().mockResolvedValue("stream-test-1");
     vi.mocked(aiService.setConfig).mockClear();
   });
 
@@ -513,6 +1223,9 @@ describe("C-6: MessageList 稳定 id 与 FIFO drop", () => {
     );
     expect(aiState.messages[0].id).not.toBe(aiState.messages[1].id);
 
+    // SetConfig is an awaited backend admission, so the stream mock is
+    // installed on the next microtask rather than synchronously.
+    await vi.waitFor(() => expect(aiService.startStream).toHaveBeenCalledOnce());
     resolveStart("immediate-stream");
     await sending;
     eventHandlers["ai:done"]?.({ data: { streamId: "immediate-stream", data: "" } });
@@ -621,6 +1334,59 @@ describe("C-6: MessageList 稳定 id 与 FIFO drop", () => {
     expect(aiState.messages[1].content).toBe("persisted-assistant-1");
     expect(aiState.messages[2].content).toBe("persisted-user-2");
   });
+
+  it("loads an unfinished native tool round as interrupted without restoring execution authority", async () => {
+    vi.mocked(conversationService.load).mockResolvedValueOnce({
+      id: "interrupted-native-round",
+      title: "Interrupted tool round",
+      created_at: 0,
+      updated_at: 0,
+      revision: 3,
+      messages: [
+        { role: "user", content: "read the file" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "provider-call-1", name: "read", arguments: '{"path":"README.md"}' }],
+        },
+      ],
+    });
+    agentState.mode = "agent";
+    vi.mocked(aiService.startAgentStream).mockClear();
+
+    expect(await loadConversation("interrupted-native-round")).toBe(true);
+
+    expect(agentState.pendingToolCalls).toEqual([]);
+    expect(aiState.messages).toHaveLength(3);
+    expect(aiState.messages[2]).toMatchObject({
+      role: "tool",
+      toolResults: [{
+        toolCallId: "provider-call-1",
+        isError: true,
+      }],
+    });
+    expect(aiState.messages[2].content).toContain("interrupted");
+    expect(agentTimelineState.entries.map((entry) => entry.stage)).toEqual([
+      "requested",
+      "result",
+      "observation",
+    ]);
+    expect(agentTimelineState.entries.some((entry) => entry.stage === "approval")).toBe(false);
+
+    await sendMessage("continue safely");
+    const history = vi.mocked(aiService.startAgentStream).mock.calls[0]?.[1];
+    expect(history).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        toolResults: [expect.objectContaining({
+          toolCallId: "provider-call-1",
+          isError: true,
+        })],
+      }),
+    ]));
+    expect(agentState.pendingToolCalls).toEqual([]);
+    agentState.mode = "chat";
+  });
 });
 
 describe("G12: AI 请求上下文与 Plan 真接线", () => {
@@ -641,6 +1407,7 @@ describe("G12: AI 请求上下文与 Plan 真接线", () => {
     personaState.personas = [];
     personaState.activePersonaId = null;
     aiPlanState.activePlan = null;
+    agentState.mode = "chat";
     vi.mocked(aiService.setConfig).mockClear();
   });
 
@@ -652,6 +1419,30 @@ describe("G12: AI 请求上下文与 Plan 真接线", () => {
     eventHandlers["ai:done"]?.({ data: { streamId: sid, data: "" } });
     expect(aiState.messages[0].content).toContain("Persona: Senior Go Reviewer");
     expect(aiState.messages[0].content).toContain("review this");
+  });
+
+  it("resolves @codebase chips with text-search hits, not open files", async () => {
+    vi.mocked(searchService.search).mockResolvedValueOnce([
+      { path: "note.txt", matches: [{ line: 3, column: 1, preview: "needle here" }] },
+    ] as any);
+    addContextChip({ id: "cb1", kind: "codebase", label: "Codebase", query: "needle" });
+    const promise = sendMessage("find needle");
+    await promise;
+    const sid = aiState.activeStreamId || "stream-test-1";
+    eventHandlers["ai:done"]?.({ data: { streamId: sid, data: "" } });
+    expect(aiState.messages[0].content).toContain("Codebase text search (not a vector index)");
+    expect(aiState.messages[0].content).toContain("note.txt:3: needle here");
+    expect(aiState.messages[0].content).not.toContain("openFiles");
+  });
+
+  it("says honestly when codebase search has no hits", async () => {
+    vi.mocked(searchService.search).mockResolvedValueOnce([]);
+    addContextChip({ id: "cb2", kind: "codebase", label: "Codebase", query: "missing-token" });
+    const promise = sendMessage("look for missing-token");
+    await promise;
+    const sid = aiState.activeStreamId || "stream-test-1";
+    eventHandlers["ai:done"]?.({ data: { streamId: sid, data: "" } });
+    expect(aiState.messages[0].content).toMatch(/no matches/i);
   });
 
   it("sends image chips as structured attachments on the user message", async () => {
@@ -748,6 +1539,23 @@ describe("G12: AI 请求上下文与 Plan 真接线", () => {
     const promise = sendMessage("use the tool");
     await promise;
     expect(aiState.messages[0].content).not.toContain("MCP tool:");
+  });
+
+  it("serializes injected MCP context with its server provenance", async () => {
+    addContextChip({
+      id: "mcp-res:fs:fixture://notes",
+      kind: "mcp",
+      label: "fixture://notes",
+      content: "fixture notes body",
+      mcpServer: "fs",
+      mcpUri: "fixture://notes",
+      mcpGeneration: 3,
+    });
+    const promise = sendMessage("summarize the resource");
+    await promise;
+    expect(aiState.messages[0].content).toContain("MCP context from fs (fixture://notes):");
+    expect(aiState.messages[0].content).toContain("fixture notes body");
+    expect(aiState.messages[0].content).toContain("summarize the resource");
   });
 
   it("serializes a skill chip with its name and content", async () => {

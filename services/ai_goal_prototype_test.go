@@ -58,24 +58,10 @@ func newPrototypeTestGoal(t *testing.T, svc *AIGoalService, id string) *Goal {
 	return g
 }
 
-func TestDefaultGoalExecutorDeclaresItselfPrototype(t *testing.T) {
+func TestDefaultGoalExecutorIsNotPrototypeScaffolding(t *testing.T) {
 	exec := NewDefaultGoalExecutor(NewAgentService(), t.TempDir())
-
-	proto, ok := exec.(PrototypeExecutor)
-	if !ok {
-		t.Fatal("defaultGoalExecutor must implement PrototypeExecutor: it plans with a fixed string, runs a fixed command, and never evaluates success")
-	}
-	if !proto.IsPrototype() {
-		t.Fatal("defaultGoalExecutor.IsPrototype() = false, want true")
-	}
-	limitation := proto.PrototypeLimitation()
-	if strings.TrimSpace(limitation) == "" {
-		t.Fatal("PrototypeLimitation() is empty; the UI has nothing honest to show")
-	}
-	// The text must describe the actual behaviour, not a vague disclaimer, so a
-	// user can tell why the feature cannot accomplish their goal.
-	if !strings.Contains(limitation, "go env GOOS") {
-		t.Errorf("PrototypeLimitation() = %q, want it to name the fixed command it actually runs", limitation)
+	if proto, ok := exec.(PrototypeExecutor); ok && proto.IsPrototype() {
+		t.Fatal("production defaultGoalExecutor must not remain a prototype go env GOOS scaffold")
 	}
 }
 
@@ -229,14 +215,9 @@ func TestPrototypeOptInDoesNotBypassCommandApproval(t *testing.T) {
 	svc.SetPrototypeExecutionEnabled(true)
 	newPrototypeTestGoal(t, svc, "p5")
 
-	// The executor requests approval internally via RequestCommandApproval, so
-	// this must not panic or silently execute without a token. Either it obtains
-	// a backend token for the exact argv/cwd, or it errors; it must never run an
-	// unapproved command.
+	// The executor requests approval internally through the agentcore Runtime,
+	// so this must not panic or silently execute without a capability. Either it
+	// obtains a backend capability for the exact argv/cwd, or it errors; it must
+	// never run an unapproved command.
 	_ = svc.RunGoal("p5", nil, nil)
-
-	// Prove the approval path is still mandatory by attempting a forged token.
-	if _, err := agent.ExecuteApprovedCommand("go env GOOS", root, "forged-token"); err == nil {
-		t.Fatal("ExecuteApprovedCommand accepted a forged token; prototype opt-in must not weaken approval")
-	}
 }

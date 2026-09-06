@@ -143,7 +143,7 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 
 	blobDir := s.blobDir
 	if err := os.MkdirAll(blobDir, 0o755); err != nil {
@@ -156,8 +156,8 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 	tmpName := tmp.Name()
 	// 失败路径清理：关闭并删除临时文件
 	cleanupTmp := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		tmp.Close()
+		os.Remove(tmpName)
 	}
 
 	h := sha256.New()
@@ -173,7 +173,7 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 		return "", fmt.Errorf("sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		os.Remove(tmpName)
 		return "", fmt.Errorf("close temp file: %w", err)
 	}
 	hash := hex.EncodeToString(h.Sum(nil))
@@ -181,15 +181,15 @@ func (s *SnapshotService) storeBlobFromFile(path string) (string, error) {
 	blobPath := filepath.Join(blobDir, hash)
 	if _, err := os.Stat(blobPath); err == nil {
 		// 已存在（内容寻址去重），删除本次临时文件
-		_ = os.Remove(tmpName)
+		os.Remove(tmpName)
 		return hash, nil
 	}
 	if err := os.Chmod(tmpName, 0o644); err != nil {
-		_ = os.Remove(tmpName)
+		os.Remove(tmpName)
 		return "", fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, blobPath); err != nil {
-		_ = os.Remove(tmpName)
+		os.Remove(tmpName)
 		return "", fmt.Errorf("rename temp to blob: %w", err)
 	}
 	return hash, nil
@@ -215,7 +215,7 @@ func isValidHash(h string) bool {
 		return false
 	}
 	for _, c := range h {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			return false
 		}
 	}
@@ -693,7 +693,7 @@ func (s *SnapshotService) restoreFile(fs FileSnapshot, rootAbs string) error {
 	}
 	targetPath := filepath.Join(rootAbs, fs.Path)
 	// G-SEC-06: 验证目标路径在工作区内
-	if _, err := ValidatePathWithinRoot(rootAbs, targetPath); err != nil {
+	if _, err := ValidateMutatingPathWithinRoot(rootAbs, targetPath); err != nil {
 		return fmt.Errorf("path validation failed for %s: %w", fs.Path, err)
 	}
 	// 确保父目录存在

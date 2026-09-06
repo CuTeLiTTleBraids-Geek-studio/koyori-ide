@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,253 @@ func TestValidateWorkflow_ValidWorkflow(t *testing.T) {
 	}
 	if result.WorkflowName != "build-test" {
 		t.Errorf("expected workflowName 'build-test', got %q", result.WorkflowName)
+	}
+}
+
+func TestValidateWorkflow_RejectsUnknownStepType(t *testing.T) {
+	svc := NewWorkflowService()
+	wf := &WorkflowDef{
+		Name: "unknown-type",
+		Steps: []WorkflowStep{
+			{Name: "known", Command: "echo known", Type: WorkflowStepCommand},
+			{Name: "unknown", Command: "echo must-not-run", Type: WorkflowStepType("shell")},
+		},
+	}
+
+	result := svc.ValidateWorkflow(wf)
+	if result.Valid {
+		t.Fatal("expected unknown workflow step type to invalidate the workflow")
+	}
+	foundUnknownType := false
+	for _, validationErr := range result.Errors {
+		if validationErr.Field == "steps[1].type" && contains(validationErr.Message, "unknown step type") {
+			foundUnknownType = true
+		}
+	}
+	if !foundUnknownType {
+		t.Fatalf("expected unknown step type error, got: %v", result.Errors)
+	}
+}
+
+func TestWorkflowIsValid_RejectsUnknownStepTypeWithoutDroppingIt(t *testing.T) {
+	wf := &WorkflowDef{
+		Name: "unknown-type",
+		Steps: []WorkflowStep{
+			{Name: "known", Command: "echo known"},
+			{Name: "unknown", Command: "echo must-not-run", Type: WorkflowStepType("shell")},
+		},
+	}
+
+	if workflowIsValid(wf) {
+		t.Fatal("expected loader validation to reject the whole workflow")
+	}
+	if len(wf.Steps) != 2 {
+		t.Fatalf("unknown step must not be silently dropped, got %d steps", len(wf.Steps))
+	}
+}
+
+func TestValidateWorkflow_FileReadAdapterContract(t *testing.T) {
+	service := NewWorkflowService()
+	valid := &WorkflowDef{
+		Name: "read-notes",
+		Steps: []WorkflowStep{{
+			Name: "read", Type: WorkflowStepFile, Tool: "read",
+			Input: map[string]interface{}{"path": "notes/readme.txt"},
+		}},
+	}
+	if result := service.ValidateWorkflow(valid); !result.Valid {
+		t.Fatalf("valid file read rejected: %v", result.Errors)
+	}
+
+	tests := []struct {
+		name string
+		step WorkflowStep
+	}{
+		{name: "unknown tool", step: WorkflowStep{Name: "read", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": "notes.txt"}}},
+		{name: "missing path", step: WorkflowStep{Name: "read", Type: WorkflowStepFile, Tool: "read", Input: map[string]interface{}{}}},
+		{name: "parent traversal", step: WorkflowStep{Name: "read", Type: WorkflowStepFile, Tool: "read", Input: map[string]interface{}{"path": "../secret.txt"}}},
+		{name: "absolute path", step: WorkflowStep{Name: "read", Type: WorkflowStepFile, Tool: "read", Input: map[string]interface{}{"path": "/secret.txt"}}},
+		{name: "windows drive path", step: WorkflowStep{Name: "read", Type: WorkflowStepFile, Tool: "read", Input: map[string]interface{}{"path": `C:\\secret.txt`}}},
+		{name: "extra input", step: WorkflowStep{Name: "read", Type: WorkflowStepFile, Tool: "read", Input: map[string]interface{}{"path": "notes.txt", "root": "C:/"}}},
+		{name: "hidden command", step: WorkflowStep{Name: "read", Type: WorkflowStepFile, Tool: "read", Command: "payload", Input: map[string]interface{}{"path": "notes.txt"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := &WorkflowDef{Name: "invalid-file-read", Steps: []WorkflowStep{test.step}}
+			result := service.ValidateWorkflow(workflow)
+			if result.Valid {
+				t.Fatalf("invalid file adapter accepted: %+v", test.step)
+			}
+			if workflowIsValid(workflow) {
+				t.Fatalf("loader accepted invalid file adapter: %+v", test.step)
+			}
+		})
+	}
+}
+
+func TestValidateWorkflow_FileWriteAdapterContract(t *testing.T) {
+	service := NewWorkflowService()
+	valid := &WorkflowDef{
+		Name: "write-notes",
+		Steps: []WorkflowStep{{
+			Name: "write", Type: WorkflowStepFile, Tool: "write",
+			Input: map[string]interface{}{"path": "notes/readme.txt", "content": "updated"},
+		}},
+	}
+	if result := service.ValidateWorkflow(valid); !result.Valid {
+		t.Fatalf("valid file write rejected: %v", result.Errors)
+	}
+
+	tests := []struct {
+		name string
+		step WorkflowStep
+	}{
+		{name: "unknown tool", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "read", Input: map[string]interface{}{"path": "notes.txt", "content": "x"}}},
+		{name: "missing path", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"content": "x"}}},
+		{name: "missing content", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": "notes.txt"}}},
+		{name: "non-string content", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": "notes.txt", "content": 1}}},
+		{name: "parent traversal", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": "../secret.txt", "content": "x"}}},
+		{name: "absolute path", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": "/secret.txt", "content": "x"}}},
+		{name: "windows drive path", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": `C:\\secret.txt`, "content": "x"}}},
+		{name: "extra input", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": "notes.txt", "content": "x", "root": "C:/"}}},
+		{name: "hidden command", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Command: "payload", Input: map[string]interface{}{"path": "notes.txt", "content": "x"}}},
+		{name: "hidden args", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Args: []string{"payload"}, Input: map[string]interface{}{"path": "notes.txt", "content": "x"}}},
+		{name: "hidden cwd", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Cwd: "../outside", Input: map[string]interface{}{"path": "notes.txt", "content": "x"}}},
+		{name: "oversized content", step: WorkflowStep{Name: "write", Type: WorkflowStepFile, Tool: "write", Input: map[string]interface{}{"path": "notes.txt", "content": strings.Repeat("x", maxWorkflowFileWriteBytes+1)}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := &WorkflowDef{Name: "invalid-file-write", Steps: []WorkflowStep{test.step}}
+			result := service.ValidateWorkflow(workflow)
+			if result.Valid {
+				t.Fatalf("invalid file write accepted: %+v", test.step)
+			}
+			if workflowIsValid(workflow) {
+				t.Fatalf("loader accepted invalid file write: %+v", test.step)
+			}
+		})
+	}
+}
+
+func TestValidateWorkflow_GitStatusAdapterContract(t *testing.T) {
+	service := NewWorkflowService()
+	valid := &WorkflowDef{
+		Name: "inspect-repository",
+		Steps: []WorkflowStep{{
+			Name: "status", Type: WorkflowStepGit, Tool: "status",
+			Input: map[string]interface{}{},
+		}},
+	}
+	if result := service.ValidateWorkflow(valid); !result.Valid {
+		t.Fatalf("valid git status rejected: %v", result.Errors)
+	}
+
+	tests := []struct {
+		name string
+		step WorkflowStep
+	}{
+		{name: "unknown tool", step: WorkflowStep{Name: "status", Type: WorkflowStepGit, Tool: "log"}},
+		{name: "renderer repo input", step: WorkflowStep{Name: "status", Type: WorkflowStepGit, Tool: "status", Input: map[string]interface{}{"repo": "C:/outside"}}},
+		{name: "hidden command", step: WorkflowStep{Name: "status", Type: WorkflowStepGit, Tool: "status", Command: "git status"}},
+		{name: "hidden args", step: WorkflowStep{Name: "status", Type: WorkflowStepGit, Tool: "status", Args: []string{"--porcelain"}}},
+		{name: "hidden cwd", step: WorkflowStep{Name: "status", Type: WorkflowStepGit, Tool: "status", Cwd: "../outside"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := &WorkflowDef{Name: "invalid-git-status", Steps: []WorkflowStep{test.step}}
+			result := service.ValidateWorkflow(workflow)
+			if result.Valid {
+				t.Fatalf("invalid git adapter accepted: %+v", test.step)
+			}
+			if workflowIsValid(workflow) {
+				t.Fatalf("loader accepted invalid git adapter: %+v", test.step)
+			}
+		})
+	}
+}
+
+func TestValidateWorkflow_MCPAdapterContract(t *testing.T) {
+	service := NewWorkflowService()
+	valid := &WorkflowDef{
+		Name: "mcp-lookup",
+		Steps: []WorkflowStep{{
+			Name: "lookup", Type: WorkflowStepMCP, Tool: "mcp.docs.lookup",
+			Input: map[string]interface{}{"query": "agentcore"},
+		}},
+	}
+	if result := service.ValidateWorkflow(valid); !result.Valid {
+		t.Fatalf("valid MCP step rejected: %v", result.Errors)
+	}
+	if !workflowIsValid(valid) {
+		t.Fatal("loader rejected valid MCP step")
+	}
+
+	tests := []struct {
+		name string
+		step WorkflowStep
+	}{
+		{name: "missing tool", step: WorkflowStep{Name: "lookup", Type: WorkflowStepMCP, Input: map[string]interface{}{"query": "x"}}},
+		{name: "missing input", step: WorkflowStep{Name: "lookup", Type: WorkflowStepMCP, Tool: "mcp.docs.lookup"}},
+		{name: "empty input key", step: WorkflowStep{Name: "lookup", Type: WorkflowStepMCP, Tool: "mcp.docs.lookup", Input: map[string]interface{}{"": "x"}}},
+		{name: "hidden command", step: WorkflowStep{Name: "lookup", Type: WorkflowStepMCP, Tool: "mcp.docs.lookup", Command: "payload", Input: map[string]interface{}{"query": "x"}}},
+		{name: "hidden args", step: WorkflowStep{Name: "lookup", Type: WorkflowStepMCP, Tool: "mcp.docs.lookup", Args: []string{"payload"}, Input: map[string]interface{}{"query": "x"}}},
+		{name: "hidden cwd", step: WorkflowStep{Name: "lookup", Type: WorkflowStepMCP, Tool: "mcp.docs.lookup", Cwd: "outside", Input: map[string]interface{}{"query": "x"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := &WorkflowDef{Name: "invalid-mcp", Steps: []WorkflowStep{test.step}}
+			if result := service.ValidateWorkflow(workflow); result.Valid {
+				t.Fatalf("invalid MCP adapter accepted: %+v", test.step)
+			}
+			if workflowIsValid(workflow) {
+				t.Fatalf("loader accepted invalid MCP adapter: %+v", test.step)
+			}
+		})
+	}
+}
+
+func TestValidateWorkflow_SkillAdapterContract(t *testing.T) {
+	service := NewWorkflowService()
+	valid := &WorkflowDef{
+		Name: "activate-review-skill",
+		Steps: []WorkflowStep{{
+			Name: "review", Type: WorkflowStepSkill, Tool: "activate",
+			Input: map[string]interface{}{"id": "review"},
+		}},
+	}
+	if result := service.ValidateWorkflow(valid); !result.Valid {
+		t.Fatalf("valid Skill step rejected: %v", result.Errors)
+	}
+	if !workflowIsValid(valid) {
+		t.Fatal("loader rejected valid Skill step")
+	}
+
+	tests := []struct {
+		name string
+		step WorkflowStep
+	}{
+		{name: "missing tool", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Input: map[string]interface{}{"id": "review"}}},
+		{name: "unknown tool", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "review", Input: map[string]interface{}{"id": "review"}}},
+		{name: "missing input", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate"}},
+		{name: "missing id", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Input: map[string]interface{}{}}},
+		{name: "non-string id", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Input: map[string]interface{}{"id": 1}}},
+		{name: "noncanonical id whitespace", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Input: map[string]interface{}{"id": " review "}}},
+		{name: "noncanonical id separator", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Input: map[string]interface{}{"id": "review/other"}}},
+		{name: "extra input", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Input: map[string]interface{}{"id": "review", "scope": "user"}}},
+		{name: "hidden command", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Command: "payload", Input: map[string]interface{}{"id": "review"}}},
+		{name: "hidden args", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Args: []string{"payload"}, Input: map[string]interface{}{"id": "review"}}},
+		{name: "hidden cwd", step: WorkflowStep{Name: "review", Type: WorkflowStepSkill, Tool: "activate", Cwd: "../outside", Input: map[string]interface{}{"id": "review"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := &WorkflowDef{Name: "invalid-skill", Steps: []WorkflowStep{test.step}}
+			if result := service.ValidateWorkflow(workflow); result.Valid {
+				t.Fatalf("invalid Skill adapter accepted: %+v", test.step)
+			}
+			if workflowIsValid(workflow) {
+				t.Fatalf("loader accepted invalid Skill adapter: %+v", test.step)
+			}
+		})
 	}
 }
 

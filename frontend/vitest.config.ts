@@ -21,19 +21,20 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    // G-CI-15: the threads pool occasionally tears down while a worker console
-    // message is still in flight on busy runners ("Closing rpc while
-    // onUserConsoleLog was pending"), failing green runs. forks is the
-    // recommended stable pool for this scenario.
+    css: true,
+    // G-CI-15 (main line): the threads pool occasionally tears down while a
+    // worker console message is still in flight on busy runners ("Closing
+    // rpc while onUserConsoleLog was pending"), failing green runs. forks is
+    // the recommended stable pool for this scenario.
     pool: "forks",
-    // G-CI-17: the teardown RPC race above still fires occasionally on
-    // ubuntu runners even with the forks pool. All 2730 tests pass; this is
-    // worker teardown noise, not a test failure — ignore unhandled errors
-    // rather than failing green runs. Test failures are still reported.
+    // G-CI-17 (main line): the teardown RPC race above still fires
+    // occasionally even with the forks pool. All tests pass; this is worker
+    // teardown noise, not a test failure — ignore unhandled errors rather
+    // than failing green runs. Test failures are still reported.
     dangerouslyIgnoreUnhandledErrors: true,
-    // G-CI-11: clear timers registered by @wailsio/runtime module side
-    // effects (drag polling) so nothing fires after jsdom teardown.
-    setupFiles: ["src/test-setup.ts"],
+    // P19 CI 修复：默认桩掉 @wailsio/runtime（阻断 drag.js 的
+    // window.setInterval 泄漏），见 test-setup/vitest.setup.ts。
+    setupFiles: ["./test-setup/vitest.setup.ts"],
     // N-130: coverage configuration. Run with `npm run test:coverage`.
     // Reports go to frontend/coverage/. v8 provider requires no extra deps.
     coverage: {

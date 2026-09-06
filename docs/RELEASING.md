@@ -36,7 +36,7 @@ service signatures at runtime. Binding generation therefore uses the
 version-addressed repository wrapper rather than whichever `wails3` is on PATH.
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 node scripts/generate-bindings.mjs
 node scripts/check-bindings.mjs
 ```
@@ -361,7 +361,7 @@ execution evidence.
 
 An older 2026-08-03 harness record stopped at toolchain setup while the project
 still used the pre-release `wails3` pin; that record predates the current
-`v3.0.0-beta.8` toolchain and is not evidence for this release. No hosted tag
+the pre-convergence beta.8-line toolchain and is not evidence for this release. No hosted tag
 release artifact run is retained here, so packaged execution remains `U` for
 release qualification. Promote the job to required only after three consecutive
 successful manual runs on three distinct commits, each with its manifest and

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     koyori-ide Windows 桌面应用构建脚本。
 .DESCRIPTION
@@ -121,13 +121,17 @@ if (-not $SkipDeps) {
 
     # wails3 CLI（与 go.mod 锁定版本一致）
     if (-not (Get-Command wails3 -ErrorAction SilentlyContinue)) {
-        Write-Warn "未找到 wails3 CLI，尝试安装 v3.0.0-beta.8（与 go.mod 锁定一致）..."
-        go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+        Write-Warn "未找到 wails3 CLI，尝试安装 v3.0.0-alpha2.111（与 go.mod 锁定一致）..."
+        go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
         if (-not (Get-Command wails3 -ErrorAction SilentlyContinue)) {
-        Write-Fail "wails3 安装失败。请手动执行: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8"
+        Write-Fail "wails3 安装失败。请手动执行: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111"
         }
     }
-    Write-Ok "wails3: $((wails3 version 2>$null) -join ' ' | Select-Object -First 1)"
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $WailsVersion = (& wails3 version 2>&1 | Out-String).Trim()
+    $ErrorActionPreference = $oldEap
+    Write-Ok "wails3: $WailsVersion"
 
     if (-not $SkipNSIS) {
         # NSIS 编译器

@@ -301,7 +301,7 @@ onMounted(() => {
   width: 200px;
   padding: 12px;
   border-right: 1px solid var(--color-border-default, #2a2a2c);
-  background-color: var(--color-bg-surface-dim, #131313);
+  background-color: var(--color-bg-surface-container-low, #fafafc);
   overflow-y: auto;
 }
 
@@ -336,7 +336,7 @@ onMounted(() => {
 }
 
 .plugins-category-btn:hover {
-  background-color: var(--color-bg-surface-container, #1c1c1e);
+  background-color: var(--color-bg-surface-container, #f5f5f7);
   color: var(--color-on-background, #f0f0f0);
 }
 
@@ -439,7 +439,7 @@ onMounted(() => {
 
 .plugins-empty-desc code {
   font-family: var(--font-mono);
-  background: var(--color-bg-surface-container, #1c1c1e);
+  background: var(--color-bg-surface-container, #f5f5f7);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.8125rem;
@@ -456,7 +456,7 @@ onMounted(() => {
   padding: 16px;
   border: 1px solid var(--color-border-default, #2a2a2c);
   border-radius: var(--radius-lg);
-  background: var(--color-bg-surface-container-low, #161616);
+  background: var(--color-bg-surface-container-low, #fafafc);
   transition: border-color var(--transition-fast, 150ms) ease;
 }
 

@@ -563,7 +563,7 @@ watch(
 }
 
 .rpw-browse-item:hover {
-  background: var(--color-bg-surface-container, #2a2a2a);
+  background: var(--color-bg-surface-container, #f5f5f7);
 }
 
 .rpw-summary {

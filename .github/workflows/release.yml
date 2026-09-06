@@ -250,7 +250,7 @@ jobs:
 
       - name: Install pinned Wails CLI and real LSP fixture
         run: |
-          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
           go install golang.org/x/tools/gopls@v0.21.1
 
       - name: Run packaged E2E release gate
@@ -438,7 +438,7 @@ jobs:
           node scripts/check-bindings.mjs
 
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 
       - name: Build
         run: ${{ matrix.build_cmd }}

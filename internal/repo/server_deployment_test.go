@@ -8,9 +8,24 @@ import (
 )
 
 func TestServerDeploymentRequiresAuthenticatedBoundary(t *testing.T) {
+	// P20 dependency-line decision: the repository converged on
+	// wails v3.0.0-alpha2.111, whose WS upgrader hardcodes
+	// InsecureSkipVerify (any origin). Same-origin enforcement for the
+	// events/runtime endpoints is therefore provided at the project layer by
+	// serverTransportMiddleware (server_transport_guard.go), and this test
+	// pins both halves of that contract instead of the beta.8+ upgrade.
 	goMod := readRepositoryFile(t, "../../go.mod")
-	if !strings.Contains(goMod, "github.com/wailsapp/wails/v3 v3.0.0-beta.8") {
-		t.Error("server deployment must use Wails beta.8+, whose server WebSocket transport enforces same-origin checks")
+	if !strings.Contains(goMod, "github.com/wailsapp/wails/v3 v3.0.0-alpha2.111") {
+		t.Error("server deployment must pin the converged alpha2.111 Wails line")
+	}
+	guard := strings.ReplaceAll(readRepositoryFile(t, "../../server_transport_guard.go"), "\r\n", "\n")
+	for _, required := range []string{
+		`case "/wails/events":`,
+		"sameServerOrigin(r)",
+	} {
+		if !strings.Contains(guard, required) {
+			t.Errorf("server transport middleware is missing %q (same-origin enforcement for the raw WS upgrader)", required)
+		}
 	}
 	dockerfile := strings.ReplaceAll(readRepositoryFile(t, "../../build/docker/Dockerfile.server"), "\r\n", "\n")
 	for _, required := range []string{

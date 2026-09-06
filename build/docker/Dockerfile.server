@@ -6,12 +6,9 @@
 #
 # If your app needs CGO, override the build args, e.g.:
 #   docker build --build-arg CGO_ENABLED=1 \
-#                --build-arg GO_IMAGE=<digest-pinned-golang-image> \
-#                --build-arg RUNTIME_IMAGE=<digest-pinned-runtime-image> \
+#                --build-arg GO_IMAGE=golang:bookworm \
+#                --build-arg RUNTIME_IMAGE=gcr.io/distroless/base-debian12:nonroot \
 #                -f build/docker/Dockerfile.server .
-# Image overrides must include a full @sha256:<64-hex> digest. Mutable tags
-# are rejected during the build so a local override cannot silently weaken
-# release reproducibility.
 # CGO needs a C toolchain in the builder and a libc in the runtime image; keep
 # the builder and runtime libc compatible (a glibc builder -> a glibc runtime).
 # The Taskfile passes these through: task build:docker CGO_ENABLED=1 GO_IMAGE=... RUNTIME_IMAGE=...
@@ -43,6 +40,10 @@ ARG RUNTIME_IMAGE
 
 WORKDIR /app
 
+# Hardening (from the governance PR): every image reference reaching this
+# build must be digest-pinned, and the distroless static defaults cannot
+# serve a CGO build. Enforced here at build time so a direct `docker build`
+# cannot bypass the Taskfile preconditions.
 RUN if [ "$CGO_ENABLED" = "1" ] && \
       { [ "$GO_IMAGE" = "golang:1.25-alpine@sha256:3eb6c2b3db8d55e38537302edb510b4417f8a115efbd5906d131ceba9468e29a" ] || \
         [ "$RUNTIME_IMAGE" = "gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a" ]; }; then \
@@ -69,11 +70,8 @@ RUN if command -v apk >/dev/null 2>&1; then \
 COPY . .
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Remove local replace directive if present (for production builds)
-RUN sed -i '/^replace/d' go.mod || true
-
-# Consume the committed module graph without rewriting it during the image
-# build, then verify every downloaded module against go.sum.
+# Verify the locked module set without mutating go.mod/go.sum: the image
+# builds exactly what the repository pinned (no network-driven resolution).
 RUN go mod download && go mod verify
 
 # Build the production server binary and its authentication gateway.
@@ -102,7 +100,7 @@ EXPOSE 8080
 # gateway fails closed unless KOYORI_SERVER_TOKEN (at least 32 bytes) or
 # KOYORI_SERVER_TOKEN_FILE is supplied. For non-loopback deployments, terminate
 # TLS at the gateway (KOYORI_TLS_CERT_FILE / KOYORI_TLS_KEY_FILE) or at a trusted
-# reverse proxy, and set KOYORI_EXTERNAL_ORIGIN to the public HTTPS origin.
+# reverse proxy.
 ENV WAILS_SERVER_HOST=127.0.0.1 \
     WAILS_SERVER_PORT=8081 \
     KOYORI_GATEWAY_HOST=0.0.0.0 \

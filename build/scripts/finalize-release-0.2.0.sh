@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 OUT=/mnt/e/koyori-ide/Koyori IDE-main/bin/release-v0.2.0
-L=/home/cute_/koyori-ide-pkg-build/bin
+L="$HOME"/koyori-ide-pkg-build/bin
 mkdir -p "$OUT"
 # ensure 0.2.0 linux packages
 cp -f "$L"/koyori-ide_0.2.0-1_amd64.deb "$OUT/" 2>/dev/null || true

@@ -17,11 +17,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -46,7 +48,7 @@ func (d *marketplaceWalkTestDirEntry) Info() (fs.FileInfo, error) {
 // service without hitting the network. They build mock VSIX (zip) files in
 // memory and drive installFromVSIXData directly, covering:
 //   - VSIX path traversal protection (G-SEC-12: malicious "../../" entries)
-//   - SHA-256 verification (G-SEC-12 req. 3: mismatched hash rejected)
+//   - SHA-256 integrity checks (G-SEC-12 req. 3: mismatched hash rejected)
 //   - Default-disabled on install (G-SEC-12 req. 2 / G-VSC-03 req. 2)
 //   - ListInstalledExtensions
 //   - UninstallExtension
@@ -145,8 +147,32 @@ func buildUpdateVSIX(t *testing.T, version string, activationEvents []string, ma
 	})
 }
 
+// allowLoopbackDownloadURLs 替换包级下载 URL 校验器与 SSRF transport 提供者，
+// 允许环回 httptest 服务器充当 registry/下载源（P19 P1-04：生产校验器
+// ValidateNonPrivateURL 会拒绝环回；本桩仅放宽私网检查，scheme/userinfo/https
+// 规则仍生效。P20 P1-02：transport 提供者一并返回 nil，否则生产
+// NewSSRFSafeTransport 会在 dial 时拒绝环回 httptest）。生产校验由下方
+// P1-04/P1-02 专项测试在保持包级默认时单独覆盖。
+func allowLoopbackDownloadURLs(t *testing.T) {
+	t.Helper()
+	original := validateDownloadURL
+	originalTransport := marketplaceTransport
+	t.Cleanup(func() {
+		validateDownloadURL = original
+		marketplaceTransport = originalTransport
+	})
+	validateDownloadURL = func(raw string) (*url.URL, error) {
+		if err := ValidateBaseURL(raw); err != nil {
+			return nil, err
+		}
+		return url.Parse(raw)
+	}
+	marketplaceTransport = func() http.RoundTripper { return nil }
+}
+
 func configureUpdateRegistry(t *testing.T, svc *MarketplaceService, version string, vsix []byte, hash string) {
 	t.Helper()
+	allowLoopbackDownloadURLs(t)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -315,7 +341,7 @@ func TestMarketplaceLifecycleDefaultsToSuccessfulNoopWithoutRequester(t *testing
 	}
 }
 
-// --- SHA-256 verification (G-SEC-12 req. 3) ---
+// --- SHA-256 integrity checks (G-SEC-12 req. 3) ---
 
 // TestMarketplaceInstall_Sha256MismatchRejected verifies that a VSIX whose
 // computed SHA-256 does not match the registry-provided hash is rejected
@@ -329,8 +355,11 @@ func TestMarketplaceInstall_Sha256MismatchRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected SHA-256 mismatch error, got nil")
 	}
-	if !strings.Contains(err.Error(), "SHA-256 verification failed") {
-		t.Fatalf("expected SHA-256 verification error, got: %v", err)
+	if !strings.Contains(err.Error(), "SHA-256 integrity check failed") {
+		t.Fatalf("expected SHA-256 integrity error, got: %v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "signature") {
+		t.Fatalf("SHA-256 integrity error must not claim signature verification: %v", err)
 	}
 	// No extension directory should have been created on rejection.
 	dir := filepath.Join(svc.configDir, extensionsSubdir, "acme.hello")
@@ -388,6 +417,7 @@ func TestMarketplaceInstall_FailureAfterStopInvalidatesLifecycle(t *testing.T) {
 // raw hash. This test verifies the URL is fetched and the hash extracted.
 func TestMarketplaceResolveSha256_FromUrl(t *testing.T) {
 	wantHash := "232aeafb01f069824fdd92d3e628c1c442bbcfa1d3cc945ff97076340bb2b4a6"
+	allowLoopbackDownloadURLs(t) // 环回 httptest 充当 sha256 文件源（P1-04 SSRF 门见专项测试）
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The .sha256 file format: "<hash>  <filename>\n"
 		fmt.Fprintf(w, "%s  ms-python.python-2026.4.0.vsix\n", wantHash)
@@ -1233,6 +1263,12 @@ func TestMarketplaceInstall_CRIT02_RegistersWithSecurityService(t *testing.T) {
 	if !info.PendingReview {
 		t.Errorf("registered extension should be PendingReview=true (CRIT-02 pending review); got false")
 	}
+	if !info.IntegrityChecked {
+		t.Error("registered extension should be IntegrityChecked=true after a matching SHA-256 digest")
+	}
+	if info.Verified != info.IntegrityChecked {
+		t.Error("deprecated verified compatibility field must mirror IntegrityChecked")
+	}
 }
 
 func TestMarketplaceInstall_RegistersDeclaredPermissions(t *testing.T) {
@@ -1260,16 +1296,51 @@ func TestMarketplaceInstall_RegistersDeclaredPermissions(t *testing.T) {
 	}
 }
 
-func TestMarketplaceInstall_RejectsExecutableWithoutPermissionDeclaration(t *testing.T) {
-	svc, _ := newTestMarketplaceService(t)
-	pkg := `{"name":"runner","publisher":"acme","version":"1.0.0","main":"dist/main.js"}`
-	vsix, hash := buildVSIX(t, []zipEntry{{Name: "extension/package.json", Data: []byte(pkg)}})
-	err := svc.installFromVSIXData(vsix, hash, "acme", "runner", "1.0.0")
-	if err == nil || !strings.Contains(err.Error(), "must declare koyoriIde.permissions") {
-		t.Fatalf("expected missing permission declaration error, got %v", err)
+func TestMarketplaceInstall_InfersPermissionsWhenKoyoriDeclarationMissing(t *testing.T) {
+	svc, dir := newTestMarketplaceService(t)
+	ss := NewExtensionSecurityService(dir)
+	svc.setSecurityService(ss)
+	pkg := `{"name":"hello","publisher":"acme","version":"1.0.0","main":"dist/main.js","activationEvents":["onCommand:acme.hello"],"contributes":{"commands":[{"command":"acme.hello","title":"Hello"}]}}`
+	vsix, hash := buildVSIX(t, []zipEntry{
+		{Name: "extension/package.json", Data: []byte(pkg)},
+		{Name: "extension/dist/main.js", Data: []byte("vscode.commands.registerCommand('acme.hello', () => vscode.window.showInformationMessage('hi'));")},
+	})
+	if err := svc.installFromVSIXData(vsix, hash, "acme", "hello", "1.0.0"); err != nil {
+		t.Fatalf("command-only VSIX without koyoriIde.permissions must install: %v", err)
 	}
-	if _, statErr := os.Stat(svc.extensionDir("acme", "runner")); !os.IsNotExist(statErr) {
-		t.Fatalf("rejected extension should not be installed: %v", statErr)
+	info, err := ss.GetSecurityInfo("acme.hello")
+	if err != nil {
+		t.Fatalf("security info: %v", err)
+	}
+	if info.Level != SecurityTrusted && info.Level != SecurityReviewed {
+		t.Fatalf("command-only inferred level = %q, want Trusted or Reviewed", info.Level)
+	}
+	if info.Enabled {
+		t.Fatal("new installs remain disabled until the user enables them")
+	}
+}
+
+func TestMarketplaceInstall_InfersRestrictedForShellOrNetworkAndKeepsDisabled(t *testing.T) {
+	svc, dir := newTestMarketplaceService(t)
+	ss := NewExtensionSecurityService(dir)
+	svc.setSecurityService(ss)
+	pkg := `{"name":"net","publisher":"acme","version":"1.0.0","main":"dist/main.js"}`
+	vsix, hash := buildVSIX(t, []zipEntry{
+		{Name: "extension/package.json", Data: []byte(pkg)},
+		{Name: "extension/dist/main.js", Data: []byte("fetch('https://example.com'); require('child_process').spawn('echo');")},
+	})
+	if err := svc.installFromVSIXData(vsix, hash, "acme", "net", "1.0.0"); err != nil {
+		t.Fatalf("network/shell VSIX without koyoriIde.permissions must still install: %v", err)
+	}
+	info, err := ss.GetSecurityInfo("acme.net")
+	if err != nil {
+		t.Fatalf("security info: %v", err)
+	}
+	if info.Level != SecurityRestricted {
+		t.Fatalf("shell/network inferred level = %q, want restricted", info.Level)
+	}
+	if info.Enabled {
+		t.Fatal("Restricted inferred extensions must stay disabled by default")
 	}
 }
 
@@ -1292,6 +1363,10 @@ func TestMarketplaceInstall_RejectsUnknownPermission(t *testing.T) {
 // endpoints with canned data. Returns the server and a cleanup func.
 func mockRegistry(t *testing.T, searchHandler, detailHandler, readmeHandler func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, *MarketplaceService) {
 	t.Helper()
+	// P20 P1-02: httpGetBytes now applies the production SSRF gate and
+	// transport to registry-controlled URLs (readme 等); admit the loopback
+	// fixture through the shared seam.
+	allowLoopbackDownloadURLs(t)
 	mux := http.NewServeMux()
 	if searchHandler != nil {
 		mux.HandleFunc("/api/-/search", searchHandler)
@@ -1415,7 +1490,9 @@ func TestMarketplace_GetExtensionReadme_ReturnsContent(t *testing.T) {
 	}))
 	svc := NewMarketplaceService(t.TempDir())
 	// N-7: SetRegistryURL 现在拒绝 loopback（SSRF 校验）。测试直接设置
-	// registryURL 字段模拟公网 registry。
+	// registryURL 字段模拟公网 registry。P20 P1-02：readme 抓取走生产
+	// SSRF 门，环回 readme 源经共享接缝放行。
+	allowLoopbackDownloadURLs(t)
 	svc.mu.Lock()
 	svc.registryURL = server.URL + "/api"
 	svc.mu.Unlock()
@@ -1555,6 +1632,7 @@ func TestMarketplaceService_H2_HTTPGet_RejectsOversizedResponse(t *testing.T) {
 	oldLimit := maxHTTPResponseSize
 	maxHTTPResponseSize = 100
 	t.Cleanup(func() { maxHTTPResponseSize = oldLimit })
+	allowLoopbackDownloadURLs(t) // P20 P1-02：httpGetBytes 门放行环回 httptest
 
 	// Serve a body of 200 bytes (exceeds the 100-byte limit).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1718,6 +1796,7 @@ func TestSetRegistryURLSSRF(t *testing.T) {
 // 3. 安装后临时文件可被调用方删除
 func TestInstallVSIXFromTempFile(t *testing.T) {
 	svc, _ := newTestMarketplaceService(t)
+	allowLoopbackDownloadURLs(t)
 	vsixData, wantHash := buildValidVSIX(t)
 
 	// 用 httptest.Server 提供 VSIX 下载
@@ -1909,8 +1988,8 @@ func TestMarketplaceInstall_LargeVSIXStreamsThroughSecurityRegistration(t *testi
 	if err != nil {
 		t.Fatalf("get security info: %v", err)
 	}
-	if !info.Verified || !strings.EqualFold(info.SHA256, wantHash) {
-		t.Fatalf("security info verification = %v hash = %q, want verified hash %q", info.Verified, info.SHA256, wantHash)
+	if !info.IntegrityChecked || !info.Verified || !strings.EqualFold(info.SHA256, wantHash) {
+		t.Fatalf("security info integrityChecked = %v compatibilityVerified = %v hash = %q, want integrity-checked hash %q", info.IntegrityChecked, info.Verified, info.SHA256, wantHash)
 	}
 	if info.Enabled || !info.PendingReview {
 		t.Fatalf("large VSIX security state = enabled:%v pending:%v, want disabled and pending review", info.Enabled, info.PendingReview)
@@ -1955,5 +2034,193 @@ func TestManualRemoveWalkDirFunc_ClassifiesWithoutInfo(t *testing.T) {
 				t.Errorf("dirs = %v, want %v", dirs, tt.wantDirs)
 			}
 		})
+	}
+}
+
+// --- P19 P1-04: registry-supplied download/sha256 URL SSRF gate ---
+//
+// 以下测试保持包级默认校验器 ValidateNonPrivateURL（生产行为），验证
+// registry 响应中的 downloadUrl / sha256 URL 在发起任何请求前必须通过
+// 与 SetRegistryURL 相同的私网/环回/link-local 拒绝检查。
+
+func TestDownloadVSIXToTempFile_RejectsPrivateURLs(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	// 注意：刻意不调用 allowLoopbackDownloadURLs —— 本测试覆盖生产校验器。
+	cases := []struct{ name, rawURL string }{
+		{"loopback ipv4", "http://127.0.0.1:9/evil.vsix"},
+		{"loopback hostname", "http://localhost:9/evil.vsix"},
+		{"link-local metadata", "https://169.254.169.254/latest/meta-data/"},
+		{"rfc1918 private", "https://10.1.2.3/evil.vsix"},
+		{"non-http scheme", "file:///etc/passwd"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpPath, gotHash, err := svc.downloadVSIXToTempFile(tc.rawURL)
+			if err == nil {
+				os.Remove(tmpPath)
+				t.Fatalf("download URL %q must be rejected", tc.rawURL)
+			}
+			if tmpPath != "" {
+				os.Remove(tmpPath)
+				t.Errorf("no temp file must be created, got %q", tmpPath)
+			}
+			if gotHash != "" {
+				t.Errorf("no hash must be returned, got %q", gotHash)
+			}
+			if !strings.Contains(err.Error(), "rejected") {
+				t.Errorf("error should report the SSRF rejection, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveSha256_RejectsPrivateURL(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	_, err := svc.resolveSha256("http://127.0.0.1:9/evil.vsix.sha256")
+	if err == nil {
+		t.Fatal("private sha256 URL must be rejected before any fetch")
+	}
+	if !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("error should report the SSRF rejection, got: %v", err)
+	}
+}
+
+func TestDownloadVSIXToTempFile_DoesNotFollowRedirects(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	allowLoopbackDownloadURLs(t) // 环回 httptest 充当下载源
+	var privateHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			// 302 指向同服务器的 "私网目标"：若 client 跟随重定向，
+			// 计数器会递增。环回下载源本身已被桩校验器放行。
+			http.Redirect(w, r, "/private/target.vsix", http.StatusFound)
+		case "/private/target.vsix":
+			atomic.AddInt32(&privateHits, 1)
+			_, _ = w.Write([]byte("pwned"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmpPath, _, err := svc.downloadVSIXToTempFile(srv.URL)
+	if err == nil {
+		os.Remove(tmpPath)
+		t.Fatal("redirected download must be rejected")
+	}
+	if !strings.Contains(err.Error(), "302") {
+		t.Errorf("error should report the 3xx status, got: %v", err)
+	}
+	if atomic.LoadInt32(&privateHits) != 0 {
+		t.Error("redirect target must never be contacted")
+	}
+}
+
+// --- P20 P1-02: registry-controlled sidecar/readme URL SSRF gate ---
+
+// TestGetExtensionReadme_RejectsPrivateReadmeURL keeps the production
+// validateDownloadURL in place: a registry that answers over loopback (the
+// registry base itself is injected) must not be able to point files.readme at
+// a private/loopback target and have the service fetch it.
+func TestGetExtensionReadme_RejectsPrivateReadmeURL(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ovsxExtension{
+			Name:      "hello",
+			Namespace: "acme",
+			Version:   "1.0.0",
+			Files:     ovsxFileMap{"readme": "http://127.0.0.1:9/evil.readme"},
+		})
+	}))
+	defer reg.Close()
+	svc.mu.Lock()
+	svc.registryURL = reg.URL + "/api"
+	svc.mu.Unlock()
+
+	_, err := svc.GetExtensionReadme("acme", "hello")
+	if err == nil {
+		t.Fatal("private readme URL must be rejected before any fetch")
+	}
+	if !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("error should report the SSRF rejection, got: %v", err)
+	}
+}
+
+// TestGetExtensionReadme_DoesNotFollowRedirects proves the readme funnel never
+// chases a 302: the registry (loopback, seam-admitted) redirects the readme
+// request at a "private" target on the same server; a followed redirect would
+// hit the target handler.
+func TestGetExtensionReadme_DoesNotFollowRedirects(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	allowLoopbackDownloadURLs(t) // 环回 httptest 充当 registry/readme 源
+	var privateHits int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/acme/hello":
+			_ = json.NewEncoder(w).Encode(ovsxExtension{
+				Name:      "hello",
+				Namespace: "acme",
+				Version:   "1.0.0",
+				Files:     ovsxFileMap{"readme": srv.URL + "/readme"},
+			})
+		case "/readme":
+			// 302 指向同服务器的 "私网目标"：若 client 跟随重定向，
+			// 计数器会递增。环回 readme 源本身已被桩校验器放行。
+			http.Redirect(w, r, "/private/target.readme", http.StatusFound)
+		case "/private/target.readme":
+			atomic.AddInt32(&privateHits, 1)
+			_, _ = w.Write([]byte("pwned"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	svc.mu.Lock()
+	svc.registryURL = srv.URL + "/api"
+	svc.mu.Unlock()
+
+	_, err := svc.GetExtensionReadme("acme", "hello")
+	if err == nil {
+		t.Fatal("redirected readme fetch must be rejected")
+	}
+	if !strings.Contains(err.Error(), "302") {
+		t.Errorf("error should report the 3xx status, got: %v", err)
+	}
+	if atomic.LoadInt32(&privateHits) != 0 {
+		t.Error("redirect target must never be contacted")
+	}
+}
+
+func TestDownloadAndInstallExtension_RejectsPrivateDownloadURL(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	// registry 本身是环回 httptest（直接注入 registryURL，绕过
+	// SetRegistryURL 的环回拒绝），但它返回的 VSIX downloadUrl 指向私网
+	// —— 必须在下载前被生产校验器拒绝。sha256 为裸十六进制（不触发
+	// sha256 文件抓取），确保拒绝点位于 VSIX 下载门。
+	sum := sha256.Sum256([]byte("never downloaded"))
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ovsxExtension{
+			Name:      "hello",
+			Namespace: "acme",
+			Version:   "1.0.0",
+			Files: ovsxFileMap{
+				"download": "http://127.0.0.1:9/evil.vsix",
+				"sha256":   hex.EncodeToString(sum[:]),
+			},
+		})
+	}))
+	defer reg.Close()
+	svc.mu.Lock()
+	svc.registryURL = reg.URL + "/api"
+	svc.mu.Unlock()
+
+	err := svc.DownloadAndInstallExtension("acme", "hello", "1.0.0")
+	if err == nil {
+		t.Fatal("private download URL must be rejected before download")
+	}
+	if !strings.Contains(err.Error(), "download VSIX") || !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("error should report the download-gate rejection, got: %v", err)
 	}
 }

@@ -86,7 +86,7 @@ func libsecretLoad(account, markerB64 string) (string, error) {
 // L-4: account 参数化,传递给 libsecretStore 用于 secret service 条目属性。
 // AES fallback 路径不使用 account。
 func platformEncryptSecret(account, plaintext string) (string, error) {
-	if libsecretAvailable() {
+	if !secretsTestAESOnly && libsecretAvailable() {
 		stored, err := libsecretStore(account, plaintext)
 		if err == nil {
 			return stored, nil

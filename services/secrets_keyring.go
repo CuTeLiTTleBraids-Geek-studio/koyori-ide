@@ -10,8 +10,9 @@ import "strings"
 const (
 	// keyringServiceName is the namespace under which koyori-ide secrets are
 	// stored in the platform keyring. On macOS this is the Keychain "service"
-	// name; on Linux this becomes a libsecret attribute value.
-	keyringServiceName = "koyori-ide"
+	// name; on Linux this becomes a libsecret attribute value. 仅被
+	// GOOS=linux/darwin 平台文件引用；Windows 视角显式登记豁免。
+	keyringServiceName = "koyori-ide" //nolint:unused // 调用方在 GOOS=linux/darwin 平台文件中
 
 	// keyringAccount is the default account/label for the AI API key.
 	//
@@ -27,6 +28,11 @@ const (
 // trimCLIOutputNewline removes the single newline written by keyring CLIs
 // after a successful lookup. Any whitespace that belongs to the secret,
 // including additional trailing newlines, remains intact.
+//
+// 仅被 GOOS=linux/darwin 的 keyring CLI 路径（secrets_linux.go /
+// secrets_darwin.go）调用；Windows 的 lint 视角看不到调用方，显式登记豁免。
+//
+//nolint:unused // 调用方在 GOOS=linux/darwin 的平台文件中
 func trimCLIOutputNewline(value string) string {
 	return strings.TrimSuffix(value, "\n")
 }

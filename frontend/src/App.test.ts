@@ -14,9 +14,17 @@ const activationMocks = vi.hoisted(() => ({
   loadInstalledExtensionManifests: vi.fn(),
   activateEager: vi.fn(),
   setExtensionHostActiveEditorCallback: vi.fn(),
+  setExtensionHostWorkspaceFoldersCallback: vi.fn(),
+  setExtensionHostDecorationCallback: vi.fn(),
   setExtensionHostConfigurationCallback: vi.fn(),
+  notifyExtensionHostConfigurationChange: vi.fn(),
   setExtensionHostSaveAllCallback: vi.fn(),
   setExtensionHostNotifyCallback: vi.fn(),
+  setExtensionHostInputCallback: vi.fn(),
+  setExtensionHostQuickPickCallback: vi.fn(),
+  setExtensionHostStatusBarCallback: vi.fn(),
+  setExtensionHostOutputCallback: vi.fn(),
+  setExtensionHostProgressCallback: vi.fn(),
 }));
 
 const recoveryMocks = vi.hoisted(() => ({
@@ -38,7 +46,7 @@ vi.mock("@/stores/editor", () => ({
 vi.mock("@/stores/app", async () => {
   const { reactive } = await import("vue");
   return {
-    settingsStore: {},
+    settingsStore: reactive({}),
     appState: reactive<{ currentProject: string | null }>({ currentProject: "/workspace" }),
   };
 });

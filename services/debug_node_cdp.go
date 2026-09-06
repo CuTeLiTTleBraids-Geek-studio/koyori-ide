@@ -614,6 +614,8 @@ func (c *nodeCDPClient) handleEvent(ev cdpResponse) {
 		path := f.URL
 		if strings.HasPrefix(path, "file:///") {
 			path = strings.TrimPrefix(path, "file:///")
+			// windows 形如 file:///C:/...（盘符冒号），unix 形如 /...；
+			// 两种形态在后续处理中一致对待，无需分支。
 		} else if strings.HasPrefix(path, "file://") {
 			path = strings.TrimPrefix(path, "file://")
 		}

@@ -96,9 +96,11 @@ authentication.
 
 The standalone `-tags server` binary applies the same network boundary in a
 different way: it refuses a non-loopback `WAILS_SERVER_HOST`, defaults to
-`127.0.0.1`, and uses the pinned Wails beta.8 same-origin WebSocket policy.
-Do not weaken those guards to expose the raw Wails transport; use this
-authenticated gateway for a remote deployment.
+`127.0.0.1`, and enforces same-origin WebSocket upgrades in its transport
+middleware (the pinned Wails alpha2.111 upgrader accepts any origin, so the
+project middleware rejects cross-origin `/wails/events` and `/wails/runtime`
+requests itself). Do not weaken those guards to expose the raw Wails
+transport; use this authenticated gateway for a remote deployment.
 
 The gateway marks its private child process with an internal environment value
 so the child does not re-apply the external Origin check after proxying. That

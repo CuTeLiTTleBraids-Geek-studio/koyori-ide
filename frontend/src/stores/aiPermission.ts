@@ -13,6 +13,7 @@
 // 喵，这是 Koyori IDE 的 Ai Permission 模块（前端实现）~
 import { reactive } from "vue";
 import { notifyError, notifySuccess } from "@/lib/notifications";
+import type { ReasoningEffort } from "@/types";
 
 // 操作类型（与后端 AIOperation 对应）
 export type AIOperation =
@@ -29,6 +30,8 @@ export interface ModelAssignment {
   operation: AIOperation;
   providerId: string;
   model: string;
+  reasoningEffort?: ReasoningEffort;
+  fallbackReasoningEffort?: ReasoningEffort;
   temperature?: number;
   maxTokens?: number;
   fallbackProviderId?: string;

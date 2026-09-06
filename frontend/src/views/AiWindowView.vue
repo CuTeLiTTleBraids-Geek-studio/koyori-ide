@@ -13,7 +13,17 @@ import AiSkillsView from "@/components/ai-window/AiSkillsView.vue";
 import AiAutomationView from "@/components/ai-window/AiAutomationView.vue";
 import AiSettingsView from "@/components/ai-window/AiSettingsView.vue";
 import { aiState, loadConversation, clearMessages, addContextChip } from "@/stores/ai";
-import { aiAssistantState } from "@/stores/aiAssistant";
+import {
+  aiAssistantState,
+  acknowledgeAIConversationTarget,
+  parseAIConversationTargetEvent,
+  readPendingAIConversationTarget,
+  registerAIConversationTargetReceiver,
+  setActiveConversation,
+  switchMode,
+  unregisterAIConversationTargetReceiver,
+  type AIConversationTarget,
+} from "@/stores/aiAssistant";
 import { appState, openProject, saveSettings } from "@/stores/app";
 import {
   aiWindowState,
@@ -88,12 +98,9 @@ function closeMenus(): void {
 async function handleSelectConversation(id: string): Promise<void> {
   aiWindowState.activeView = "assistant";
   if (!id) {
-    aiState.currentConversationId = null;
-    aiState.currentConversationTitle = null;
     clearMessages();
     return;
   }
-  aiState.currentConversationId = id;
   await loadConversation(id);
 }
 
@@ -241,7 +248,144 @@ function handleMessageClick(event: MouseEvent): void {
 
 let unsubSelection: (() => void) | null = null;
 let unsubAIMaximised: (() => void) | null = null;
+let unsubConversationTarget: (() => void) | null = null;
 let systemThemeQuery: MediaQueryList | null = null;
+let conversationTargetPoll: ReturnType<typeof setInterval> | null = null;
+let conversationTargetReceiverEpoch = "";
+let conversationTargetApplyGeneration = 0;
+let applyingConversationTarget: AIConversationTarget | null = null;
+const appliedTargetBySource = new Map<string, AIConversationTarget>();
+let latestAppliedTarget: AIConversationTarget | null = null;
+const retiredTargetEpochs = new Set<string>();
+const appliedTargetRequests = new Set<string>();
+let deferredConversationTarget: AIConversationTarget | null = null;
+
+function isNewerConversationTarget(
+  target: AIConversationTarget,
+  reference: AIConversationTarget | null | undefined,
+): boolean {
+  if (!reference) return target.sequence <= 1024;
+  if (target.sourceOrigin !== reference.sourceOrigin) return target.sequence <= 1024;
+  if (target.sourceEpoch === reference.sourceEpoch) {
+    return target.sequence > reference.sequence && target.sequence - reference.sequence <= 1024;
+  }
+  return !retiredTargetEpochs.has(target.sourceEpoch) && target.createdAt >= reference.createdAt;
+}
+
+function isOlderAcrossSources(
+  target: AIConversationTarget,
+  reference: AIConversationTarget | null | undefined,
+): boolean {
+  return Boolean(
+    reference &&
+    target.sourceOrigin !== reference.sourceOrigin &&
+    target.createdAt < reference.createdAt,
+  );
+}
+
+function canApplyConversationTarget(target: AIConversationTarget): boolean {
+  if (appliedTargetRequests.has(target.requestId) || retiredTargetEpochs.has(target.sourceEpoch)) {
+    return false;
+  }
+  const applied = appliedTargetBySource.get(target.sourceOrigin);
+  if (!isNewerConversationTarget(target, applied)) return false;
+  if (isOlderAcrossSources(target, latestAppliedTarget)) return false;
+  if (isOlderAcrossSources(target, applyingConversationTarget)) return false;
+  if (isOlderAcrossSources(target, deferredConversationTarget)) return false;
+  if (
+    applyingConversationTarget?.sourceOrigin === target.sourceOrigin &&
+    !isNewerConversationTarget(target, applyingConversationTarget)
+  ) return false;
+  if (
+    deferredConversationTarget?.sourceOrigin === target.sourceOrigin &&
+    !isNewerConversationTarget(target, deferredConversationTarget)
+  ) return false;
+  return true;
+}
+
+function commitConversationTarget(target: AIConversationTarget): void {
+  const previous = appliedTargetBySource.get(target.sourceOrigin);
+  if (previous && previous.sourceEpoch !== target.sourceEpoch) {
+    retiredTargetEpochs.add(previous.sourceEpoch);
+  }
+  appliedTargetBySource.set(target.sourceOrigin, target);
+  latestAppliedTarget = target;
+  appliedTargetRequests.add(target.requestId);
+  if (appliedTargetRequests.size > 256) {
+    const oldest = appliedTargetRequests.values().next().value;
+    if (typeof oldest === "string") appliedTargetRequests.delete(oldest);
+  }
+}
+
+async function applyConversationTarget(target: AIConversationTarget): Promise<void> {
+  if (!canApplyConversationTarget(target)) return;
+  if (aiState.streaming || aiState.globalStreamBusy) {
+    deferredConversationTarget = target;
+    return;
+  }
+  deferredConversationTarget = null;
+  applyingConversationTarget = target;
+  const applyGeneration = ++conversationTargetApplyGeneration;
+  let committed = false;
+  try {
+    aiWindowState.activeView = "assistant";
+    if (!target.conversationId) {
+      if (!clearMessages()) return;
+      setActiveConversation(null);
+    } else {
+      const loaded = await loadConversation(target.conversationId);
+      // loadConversation is fail-closed: an error leaves the current messages
+      // untouched and returns false. Never commit/ACK a target that was not
+      // actually loaded, otherwise the durable retry is lost and the window
+      // appears to have refreshed while still showing stale content.
+      if (!loaded) return;
+      if (
+        applyGeneration !== conversationTargetApplyGeneration ||
+        aiState.currentConversationId !== target.conversationId
+      ) return;
+      setActiveConversation(target.conversationId);
+    }
+    if (applyGeneration !== conversationTargetApplyGeneration) return;
+    switchMode(target.mode);
+    commitConversationTarget(target);
+    acknowledgeAIConversationTarget(target, conversationTargetReceiverEpoch);
+    committed = true;
+  } finally {
+    if (
+      applyGeneration === conversationTargetApplyGeneration &&
+      applyingConversationTarget?.requestId === target.requestId
+    ) {
+      applyingConversationTarget = null;
+    }
+    if (!committed && applyGeneration === conversationTargetApplyGeneration) {
+      // Keep the durable target intact. A later live retry or remount may
+      // apply it after the transient backend load failure has cleared.
+      deferredConversationTarget = null;
+    }
+  }
+}
+
+function onConversationTargetEvent(event: unknown): void {
+  const target = parseAIConversationTargetEvent(event, conversationTargetReceiverEpoch);
+  if (!target) return;
+  if (appliedTargetRequests.has(target.requestId)) {
+    // ACK delivery can fail independently from target delivery. Re-ACK exact
+    // retries without reloading or reapplying the already committed target.
+    acknowledgeAIConversationTarget(target, conversationTargetReceiverEpoch);
+    return;
+  }
+  void applyConversationTarget(target);
+}
+
+function pollPendingConversationTarget(): void {
+  const target = readPendingAIConversationTarget(conversationTargetReceiverEpoch);
+  if (!target) return;
+  if (appliedTargetRequests.has(target.requestId)) {
+    acknowledgeAIConversationTarget(target, conversationTargetReceiverEpoch);
+    return;
+  }
+  void applyConversationTarget(target);
+}
 
 function applyCurrentAITheme(): void {
   applyAIWindowTheme(aiWindowState.theme);
@@ -255,6 +399,21 @@ function handleViewportResize(): void {
 }
 
 onMounted(async () => {
+  conversationTargetReceiverEpoch = registerAIConversationTargetReceiver();
+  try {
+    unsubConversationTarget = subscribeCrossWindowEvent(
+      "ai:open-conversation",
+      onConversationTargetEvent,
+    );
+  } catch {
+    unsubConversationTarget = null;
+  }
+  const pendingConversationTarget = readPendingAIConversationTarget(
+    conversationTargetReceiverEpoch,
+  );
+  if (pendingConversationTarget) void applyConversationTarget(pendingConversationTarget);
+  conversationTargetPoll = globalThis.setInterval(pollPendingConversationTarget, 250);
+
   aiWindowState.theme = appState.aiWindowTheme;
   setAISidebarWidth(appState.aiSidebarWidth);
   setAITerminalWidth(appState.aiTerminalWidth);
@@ -306,11 +465,23 @@ onBeforeUnmount(() => {
   systemThemeQuery?.removeEventListener?.("change", applyCurrentAITheme);
   unsubSelection?.();
   unsubAIMaximised?.();
+  unsubConversationTarget?.();
+  if (conversationTargetPoll !== null) {
+    globalThis.clearInterval(conversationTargetPoll);
+    conversationTargetPoll = null;
+  }
+  unregisterAIConversationTargetReceiver(conversationTargetReceiverEpoch);
 });
 
 watch(() => aiWindowState.theme, applyCurrentAITheme);
 watch(() => appState.currentProject, (path) => {
   selectedWorkspace.value = path ?? "";
+});
+watch(() => [aiState.streaming, aiState.globalStreamBusy] as const, ([streaming, globalBusy]) => {
+  if (streaming || globalBusy || !deferredConversationTarget) return;
+  const target = deferredConversationTarget;
+  deferredConversationTarget = null;
+  void applyConversationTarget(target);
 });
 watch(
   () => [appState.theme, appState.designLanguage],

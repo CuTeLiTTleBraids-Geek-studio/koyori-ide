@@ -944,7 +944,7 @@ func (s *RecoveryService) CompleteRecovery(
 		if err := ValidateNameForFlatDir(decision.WindowID); err != nil {
 			return fmt.Errorf("invalid recovery window id %q: %w", decision.WindowID, err)
 		}
-		abs, err := ValidatePathWithinRoot(root, decision.Path)
+		abs, err := ValidateMutatingPathWithinRoot(root, decision.Path)
 		if err != nil {
 			return err
 		}
@@ -1008,7 +1008,7 @@ func (s *RecoveryService) CompleteRecovery(
 	}
 	for _, file := range corruptFiles {
 		source := filepath.Join(wsDir, filepath.Clean(file))
-		if _, err := ValidatePathWithinRoot(wsDir, source); err != nil {
+		if _, err := ValidateMutatingPathWithinRoot(wsDir, source); err != nil {
 			rollbackErr := rollbackRecoveryMoves(moves)
 			return errors.Join(err, rollbackErr)
 		}

@@ -591,9 +591,7 @@ func (s *LanguagePackService) installArchive(archive verifiedLanguagePackArchive
 		if stageErr != nil {
 			return LanguagePackInfo{}, stageErr
 		}
-		defer func() {
-			_ = os.RemoveAll(stage)
-		}()
+		defer os.RemoveAll(stage)
 		if err := os.WriteFile(filepath.Join(stage, "manifest.json"), archive.manifestRaw, 0o600); err != nil {
 			return LanguagePackInfo{}, err
 		}
@@ -891,9 +889,7 @@ func readLanguagePackArchive(path string) (verifiedLanguagePackArchive, error) {
 	if err != nil {
 		return verifiedLanguagePackArchive{}, err
 	}
-	defer func() {
-		_ = file.Close()
-	}()
+	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
 		return verifiedLanguagePackArchive{}, err
@@ -1002,9 +998,7 @@ func readLanguagePackZipEntry(entry *zip.File, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		_ = reader.Close()
-	}()
+	defer reader.Close()
 	content, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return nil, err

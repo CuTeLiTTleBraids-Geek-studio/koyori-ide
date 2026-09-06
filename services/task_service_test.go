@@ -14,6 +14,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 )
 
 func writeTasksFile(t *testing.T, dir, relPath, content string) {
@@ -29,11 +32,93 @@ func writeTasksFile(t *testing.T, dir, relPath, content string) {
 
 func newTaskTestAgent(t *testing.T) *AgentService {
 	t.Helper()
-	agent := &AgentService{}
-	if err := agent.configureWorkspaceRoot(t.TempDir()); err != nil {
+	root := t.TempDir()
+	workspace := NewWorkspaceContext()
+	if err := workspace.Set(root); err != nil {
+		t.Fatalf("workspace.Set: %v", err)
+	}
+	agent := NewAgentServiceWithWorkspaceContext(workspace)
+	t.Cleanup(func() { _ = agent.Close() })
+	if err := agent.configureWorkspaceRoot(root); err != nil {
 		t.Fatalf("SetWorkspaceRoot: %v", err)
 	}
 	return agent
+}
+
+func TestTaskServiceWorkflowLifecycleAggregatesOneRun(t *testing.T) {
+	agent := newTaskTestAgent(t)
+	task := NewTaskService(agent)
+	permission := NewAIPermissionService(t.TempDir())
+	lifecycle, err := WireAgentLifecycle(
+		agent, NewAIService(), NewAIPlanService(), NewAIGoalService(), permission,
+	)
+	if err != nil {
+		t.Fatalf("WireAgentLifecycle: %v", err)
+	}
+	if err := WireTaskAgentLifecycle(task, lifecycle); err != nil {
+		t.Fatalf("WireTaskAgentLifecycle: %v", err)
+	}
+	sessionID, err := task.BeginWorkflowExecution(trustedTaskContext(), "build")
+	if err != nil {
+		t.Fatalf("BeginWorkflowExecution: %v", err)
+	}
+	if !strings.HasPrefix(sessionID, "workflow:") {
+		t.Fatalf("session ID = %q, want workflow namespace", sessionID)
+	}
+	initialUsage := permission.usageRecordsSnapshot()
+	if len(initialUsage) != 1 || initialUsage[0].UnitKind != string(agentcore.UsageUnitWorkflow) || !initialUsage[0].Pending {
+		t.Fatalf("workflow began without pending usage receipt: %+v", initialUsage)
+	}
+	now := time.Now()
+	if err := lifecycle.Record(agentcore.UsageRecord{
+		SessionID: sessionID, UnitKind: agentcore.UsageUnitTool, Operation: "workflow.step.one",
+		CostBasis: agentcore.CostNotApplicable, StartedAt: now, CompletedAt: now.Add(time.Second), Success: true,
+	}); err != nil {
+		t.Fatalf("Record first step: %v", err)
+	}
+	if err := task.FailWorkflowExecution(trustedTaskContext(), sessionID, "retryable step failed"); err != nil {
+		t.Fatalf("FailWorkflowExecution: %v", err)
+	}
+	failed, err := lifecycle.GetByID(sessionID)
+	if err != nil || failed.Status != agentcore.SessionFailed {
+		t.Fatalf("failed workflow = %+v, err=%v", failed, err)
+	}
+	if err := task.ResumeWorkflowExecution(trustedTaskContext(), sessionID); err != nil {
+		t.Fatalf("ResumeWorkflowExecution: %v", err)
+	}
+	workflowPending := 0
+	for _, record := range permission.usageRecordsSnapshot() {
+		if record.UnitKind == string(agentcore.UsageUnitWorkflow) && record.Pending {
+			workflowPending++
+		}
+	}
+	if workflowPending != 1 {
+		t.Fatalf("resumed workflow pending receipts = %d, want 1", workflowPending)
+	}
+	if err := task.CompleteWorkflowExecution(trustedTaskContext(), sessionID); err != nil {
+		t.Fatalf("CompleteWorkflowExecution: %v", err)
+	}
+	completed, err := lifecycle.GetByID(sessionID)
+	if err != nil || completed.Status != agentcore.SessionCompleted || len(completed.Checkpoints) < 2 {
+		t.Fatalf("completed workflow = %+v, err=%v", completed, err)
+	}
+	runtime, err := agent.coreRuntime()
+	if err != nil {
+		t.Fatalf("coreRuntime: %v", err)
+	}
+	if runtime.IsSessionRegistered(sessionID) {
+		t.Fatal("completed workflow retained runtime capability authority")
+	}
+	records := permission.usageRecordsSnapshot()
+	workflowRecords := 0
+	for _, record := range records {
+		if record.UnitKind == string(agentcore.UsageUnitWorkflow) {
+			workflowRecords++
+		}
+	}
+	if workflowRecords != 2 {
+		t.Fatalf("workflow usage records = %+v, want failed attempt and completed retry", records)
+	}
 }
 
 func TestLoadTasks_NoFileReturnsEmpty(t *testing.T) {
@@ -279,6 +364,18 @@ func TestTaskServiceStop_TerminatesRunningProcessAndCleansRegistration(t *testin
 func TestTaskServiceStop_ConcurrentCallsAreIdempotent(t *testing.T) {
 	t.Setenv("GO_WANT_TASK_SERVICE_HELPER", "1")
 	svc := NewTaskService(newTaskTestAgent(t))
+	terminatorStarted := make(chan struct{})
+	releaseTerminator := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseTerminator) }) })
+	var terminationAttempts atomic.Int32
+	svc.terminateProcess = func(process *os.Process) error {
+		if terminationAttempts.Add(1) == 1 {
+			close(terminatorStarted)
+		}
+		<-releaseTerminator
+		return normalizeTaskTerminationError(process.Kill())
+	}
 	executionID := "concurrent-stop"
 	resultCh := executeTaskForTest(svc, executionID, taskServiceHelperCommand())
 	waitForTaskProcess(t, svc, executionID)
@@ -286,13 +383,22 @@ func TestTaskServiceStop_ConcurrentCallsAreIdempotent(t *testing.T) {
 	const callers = 12
 	var wg sync.WaitGroup
 	errs := make(chan error, callers)
+	start := make(chan struct{})
 	for i := 0; i < callers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			errs <- svc.Stop(executionID)
 		}()
 	}
+	close(start)
+	select {
+	case <-terminatorStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent Stop calls did not reach the controlled terminator")
+	}
+	releaseOnce.Do(func() { close(releaseTerminator) })
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -300,9 +406,36 @@ func TestTaskServiceStop_ConcurrentCallsAreIdempotent(t *testing.T) {
 			t.Errorf("concurrent Stop returned an error: %v", err)
 		}
 	}
+	if got := terminationAttempts.Load(); got != 1 {
+		t.Fatalf("concurrent Stop spawned %d termination attempts, want 1", got)
+	}
 	result := waitForTaskResult(t, resultCh)
 	if result.err != nil || result.result.ExitCode != -1 {
 		t.Fatalf("unexpected result after concurrent Stop: %+v, err=%v", result.result, result.err)
+	}
+}
+
+func TestTaskServiceStop_AllowsTreeKillFallbackBeforeOuterDeadline(t *testing.T) {
+	t.Setenv("GO_WANT_TASK_SERVICE_HELPER", "1")
+	svc := NewTaskService(newTaskTestAgent(t))
+	const treeKillBudget = 2 * time.Second
+	svc.terminateProcess = func(process *os.Process) error {
+		// Model taskkill reaching its own deadline before the direct Process.Kill
+		// fallback completes. The outer Stop budget must include this handoff.
+		time.Sleep(treeKillBudget + 100*time.Millisecond)
+		return normalizeTaskTerminationError(process.Kill())
+	}
+	executionID := "near-deadline-stop"
+	resultCh := executeTaskForTest(svc, executionID, taskServiceHelperCommand())
+	waitForTaskProcess(t, svc, executionID)
+
+	if err := svc.Stop(executionID); err != nil {
+		_ = waitForTaskResult(t, resultCh)
+		t.Fatalf("Stop returned before the tree-kill fallback completed: %v", err)
+	}
+	result := waitForTaskResult(t, resultCh)
+	if result.err != nil || result.result.ExitCode != -1 {
+		t.Fatalf("unexpected near-deadline termination result: %+v, err=%v", result.result, result.err)
 	}
 }
 
@@ -314,20 +447,36 @@ func TestTaskServiceStop_TerminatesChildProcessTree(t *testing.T) {
 	executionID := "process-tree"
 	commandLine := shellQuote(os.Args[0]) + " '-test.run=TestTaskServiceProcessTreeHelper'"
 	resultCh := executeTaskForTest(svc, executionID, commandLine)
-	waitForTaskProcess(t, svc, executionID)
-	childPID := waitForTaskChildPID(t, pidFile)
+	childPID := 0
+	resultRead := false
 	t.Cleanup(func() {
-		if taskProcessExists(childPID) {
+		// Setup can fail before the child publishes its PID. Always tear down the
+		// tracked parent first, then make a best-effort pass over the child PID so
+		// a failed assertion cannot leave a process holding t.TempDir open.
+		if childPID == 0 {
+			childPID = readTaskChildPID(pidFile)
+		}
+		_ = svc.Stop(executionID)
+		if !resultRead {
+			select {
+			case <-resultCh:
+			case <-time.After(5 * time.Second):
+			}
+		}
+		if childPID > 0 {
 			if process, err := os.FindProcess(childPID); err == nil {
 				_ = process.Kill()
 			}
 		}
 	})
+	waitForTaskProcess(t, svc, executionID)
+	childPID = waitForTaskChildPID(t, pidFile)
 
 	if err := svc.Stop(executionID); err != nil {
 		t.Fatalf("Stop process tree returned an error: %v", err)
 	}
 	result := waitForTaskResult(t, resultCh)
+	resultRead = true
 	if result.err != nil || result.result.ExitCode != -1 {
 		t.Fatalf("unexpected process-tree result: %+v, err=%v", result.result, result.err)
 	}
@@ -403,6 +552,26 @@ func TestTaskServiceExecute_TimeoutTerminatesAndCleansProcess(t *testing.T) {
 	}
 	if got := taskServiceActiveCount(svc); got != 0 {
 		t.Fatalf("timed-out task leaked an active registration: %d", got)
+	}
+}
+
+func TestTaskServiceExecute_BoundsCapturedStdoutAndStderr(t *testing.T) {
+	svc := NewTaskService(newTaskTestAgent(t))
+	commandLine := shellQuote(os.Args[0]) + " '-test.run=TestAgentCommandOutputHelper' -- agent-command-output-helper"
+	result, err := svc.execute("bounded-output", commandLine, "")
+	if err != nil {
+		t.Fatalf("execute output helper: %v", err)
+	}
+	for name, output := range map[string]string{"stdout": result.Stdout, "stderr": result.Stderr} {
+		if len(output) > maxAgentCommandOutputBytes {
+			t.Fatalf("%s length = %d, want <= %d", name, len(output), maxAgentCommandOutputBytes)
+		}
+		if !utf8.ValidString(output) {
+			t.Fatalf("%s is not valid UTF-8", name)
+		}
+		if !strings.Contains(output, "[truncated,") {
+			t.Fatalf("%s lacks an explicit truncation marker", name)
+		}
 	}
 }
 
@@ -632,25 +801,25 @@ func TestTaskServiceExecuteApproved_BindsExecutionIDAndIsSingleUse(t *testing.T)
 	agent.approveCommand = func(command, cwd string, risk RiskLevel) bool { return true }
 	svc := NewTaskService(agent)
 
-	token, err := svc.RequestExecutionApproval("task-a", "go version", "")
+	token, err := svc.RequestExecutionApproval(trustedTaskContext(), "task-a", "go version", "")
 	if err != nil {
 		t.Fatalf("RequestExecutionApproval failed: %v", err)
 	}
-	if _, err := svc.ExecuteApproved("task-b", "go version", "", token); !errors.Is(err, ErrInvalidInput) {
+	if _, err := svc.ExecuteApproved(trustedTaskContext(), "task-b", "go version", "", token); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("mismatched execution ID should be rejected, got %v", err)
 	}
-	if _, err := svc.ExecuteApproved("task-a", "go version", "", token); !errors.Is(err, ErrInvalidInput) {
+	if _, err := svc.ExecuteApproved(trustedTaskContext(), "task-a", "go version", "", token); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("mismatched attempt should consume the task approval, got %v", err)
 	}
 
-	token, err = svc.RequestExecutionApproval("task-c", "go version", "")
+	token, err = svc.RequestExecutionApproval(trustedTaskContext(), "task-c", "go version", "")
 	if err != nil {
 		t.Fatalf("second RequestExecutionApproval failed: %v", err)
 	}
-	if _, err := svc.ExecuteApproved("task-c", "go version", "", token); err != nil {
+	if _, err := svc.ExecuteApproved(trustedTaskContext(), "task-c", "go version", "", token); err != nil {
 		t.Fatalf("ExecuteApproved failed: %v", err)
 	}
-	if _, err := svc.ExecuteApproved("task-c", "go version", "", token); !errors.Is(err, ErrInvalidInput) {
+	if _, err := svc.ExecuteApproved(trustedTaskContext(), "task-c", "go version", "", token); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("task approval should be single-use, got %v", err)
 	}
 }
@@ -718,22 +887,42 @@ func waitForTaskRegistrationCleanup(t *testing.T, svc *TaskService, executionID 
 func waitForTaskChildPID(t *testing.T, pidFile string) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(pidFile)
 		if err == nil {
 			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
-			if parseErr != nil || pid <= 0 {
-				t.Fatalf("invalid child pid file %q: %q", pidFile, data)
+			if parseErr == nil && pid > 0 {
+				return pid
 			}
-			return pid
+			// The helper publishes the file atomically, but tolerate an older or
+			// interrupted writer long enough to report a useful timeout.
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
-		if !os.IsNotExist(err) {
-			t.Fatalf("read child pid file: %v", err)
-		}
+		// Windows can briefly deny a second open while the helper's atomic
+		// rename/share state settles. Treat all transient open errors as a
+		// bounded wait; the timeout below preserves the final diagnostic.
+		lastErr = err
 		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("timed out waiting for task child pid %q: %v", pidFile, lastErr)
 	}
 	t.Fatal("timed out waiting for task child pid")
 	return 0
+}
+
+func readTaskChildPID(pidFile string) int {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
 }
 
 func waitForTaskProcessExit(t *testing.T, pid int) {
@@ -803,9 +992,14 @@ func TestTaskServiceProcessTreeHelper(t *testing.T) {
 			t.Fatalf("start child helper: %v", err)
 		}
 		pidFile := os.Getenv("TASK_SERVICE_CHILD_PID_FILE")
-		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
+		pidTemp := pidFile + ".tmp"
+		if err := os.WriteFile(pidTemp, []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
 			_ = child.Process.Kill()
 			t.Fatalf("write child pid: %v", err)
+		}
+		if err := os.Rename(pidTemp, pidFile); err != nil {
+			_ = child.Process.Kill()
+			t.Fatalf("publish child pid: %v", err)
 		}
 	}
 	for {

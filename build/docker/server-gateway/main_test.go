@@ -47,6 +47,17 @@ func TestLoadTokenFromFile(t *testing.T) {
 	}
 }
 
+func TestExternalOriginRequiresTLSOutsideLoopback(t *testing.T) {
+	if _, err := parseOptionalExternalOrigin("http://public.example"); err == nil {
+		t.Fatal("non-loopback HTTP external origin accepted; want TLS requirement")
+	}
+	for _, value := range []string{"http://127.0.0.1", "http://localhost", "https://public.example"} {
+		if _, err := parseOptionalExternalOrigin(value); err != nil {
+			t.Fatalf("parseOptionalExternalOrigin(%q) error = %v", value, err)
+		}
+	}
+}
+
 func TestGatewayRequiresAuthenticationAndStripsCredentials(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "" {
@@ -78,6 +89,26 @@ func TestGatewayRequiresAuthenticationAndStripsCredentials(t *testing.T) {
 	handler.ServeHTTP(authorized, req)
 	if authorized.Code != http.StatusOK || authorized.Body.String() != "upstream:/wails/runtime" {
 		t.Fatalf("authenticated response = (%d, %q), want upstream success", authorized.Code, authorized.Body.String())
+	}
+}
+
+func TestGatewayAddsPrivateNonceToBackendRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(gatewayNonceHeader); got != "nonce-value" {
+			t.Errorf("upstream gateway nonce = %q, want nonce-value", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	handler := newNonceGateway(t, upstream.URL, "nonce-value")
+	request := httptest.NewRequest(http.MethodPost, testOrigin+"/wails/runtime", strings.NewReader("{}"))
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set("Origin", testOrigin)
+	request.Header.Set(gatewayNonceHeader, "attacker-controlled")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("nonce-authenticated request status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
 
@@ -178,6 +209,50 @@ func TestGatewayRejectsCrossOriginAndOversizedRequests(t *testing.T) {
 	}
 }
 
+func TestGatewayRejectsNonLoopbackHostByDefault(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("rejected request reached upstream")
+	}))
+	defer upstream.Close()
+	handler := newTestGateway(t, upstream.URL, 1024)
+
+	request := httptest.NewRequest(http.MethodGet, "http://public.example/", nil)
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("non-loopback host status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestGatewayRequiresConfiguredExternalOriginForRemoteHost(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+	parsed, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := newGateway(gatewayConfig{
+		token:          []byte(testToken),
+		backendURL:     parsed,
+		maxBodyBytes:   1024,
+		externalOrigin: &origin{scheme: "https", host: "public.example", port: "443"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://public.example/", nil)
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set("Origin", "https://public.example")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "ok" {
+		t.Fatalf("configured external origin response = (%d, %q), want 200/ok", response.Code, response.Body.String())
+	}
+}
+
 func TestGatewayLeavesHealthCheckUnauthenticated(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"status":"ok"}`)
@@ -203,20 +278,30 @@ func TestBackendEnvironmentForcesLoopbackAndOmitsToken(t *testing.T) {
 		"PATH=/bin",
 		"KOYORI_SERVER_TOKEN=secret",
 		"KOYORI_SERVER_TOKEN_FILE=/run/secrets/token",
-		"KOYORI_SERVER_GATEWAY_MODE=0",
 		"WAILS_SERVER_HOST=0.0.0.0",
 		"WAILS_SERVER_PORT=8080",
 	}
 	got := strings.Join(backendEnvironment(environ, "8081"), "\n")
-	for _, forbidden := range []string{"KOYORI_SERVER_TOKEN=", "KOYORI_SERVER_TOKEN_FILE=", "KOYORI_SERVER_GATEWAY_MODE=0", "WAILS_SERVER_HOST=0.0.0.0", "WAILS_SERVER_PORT=8080"} {
+	for _, forbidden := range []string{"KOYORI_SERVER_TOKEN=", "KOYORI_SERVER_TOKEN_FILE=", "WAILS_SERVER_HOST=0.0.0.0", "WAILS_SERVER_PORT=8080"} {
 		if strings.Contains(got, forbidden) {
 			t.Errorf("backend environment contains %q", forbidden)
 		}
 	}
-	for _, required := range []string{"WAILS_SERVER_HOST=127.0.0.1", "WAILS_SERVER_PORT=8081", "KOYORI_SERVER_GATEWAY_MODE=1"} {
+	for _, required := range []string{"WAILS_SERVER_HOST=127.0.0.1", "WAILS_SERVER_PORT=8081"} {
 		if !strings.Contains(got, required) {
 			t.Errorf("backend environment missing %q", required)
 		}
+	}
+}
+
+func TestBackendEnvironmentAddsPrivateNonceOnlyWhenProvided(t *testing.T) {
+	without := strings.Join(backendEnvironmentWithNonce(nil, "8081", ""), "\n")
+	if strings.Contains(without, "KOYORI_SERVER_GATEWAY_NONCE=") {
+		t.Fatal("backend environment unexpectedly generated a nonce")
+	}
+	with := strings.Join(backendEnvironmentWithNonce(nil, "8081", "nonce-value"), "\n")
+	if !strings.Contains(with, "KOYORI_SERVER_GATEWAY_NONCE=nonce-value") {
+		t.Fatal("backend environment omitted configured gateway nonce")
 	}
 }
 
@@ -230,6 +315,24 @@ func newTestGateway(t *testing.T, upstreamURL string, maxBodyBytes int64) http.H
 		token:        []byte(testToken),
 		backendURL:   parsed,
 		maxBodyBytes: maxBodyBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func newNonceGateway(t *testing.T, upstreamURL string, nonce string) http.Handler {
+	t.Helper()
+	parsed, err := url.Parse(upstreamURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := newGateway(gatewayConfig{
+		token:        []byte(testToken),
+		backendURL:   parsed,
+		maxBodyBytes: 1024,
+		backendNonce: nonce,
 	})
 	if err != nil {
 		t.Fatal(err)

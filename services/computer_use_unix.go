@@ -40,3 +40,7 @@ func (u *unixExecutor) KeyboardHotkey(keys string) error {
 func newPlatformExecutor() platformExecutor {
 	return &unixExecutor{}
 }
+
+func platformForegroundProcessName() (string, error) {
+	return "", fmt.Errorf("unix computer use process lookup: %w", ErrPlatformUnsupported)
+}

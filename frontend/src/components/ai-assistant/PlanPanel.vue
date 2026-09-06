@@ -50,8 +50,8 @@ async function handleCreateFromGoal(): Promise<void> {
   creating.value = true;
   // 用时间戳生成唯一 id，避免与已有 Plan 冲突。
   const id = `plan-${Date.now()}`;
-  // Do not fabricate an executable step. The plan generator is not wired to
-  // this UI yet, so an empty plan must be completed through explicit replan.
+  // Do not fabricate an executable step. Empty plans remain valid; the user
+  // completes them through replan or by typing steps.
   const ok = await createPlan(id, goal, []);
   creating.value = false;
   if (ok) {
@@ -387,7 +387,7 @@ const completedCount = computed(() => {
   width: 320px;
   flex-shrink: 0;
   border-left: 1px solid var(--color-border-subtle, #2a2a2a);
-  background: var(--color-bg-surface, #1e1e1e);
+  background: var(--color-bg-surface, #fafafc);
   overflow: hidden;
 }
 .plan-panel__header {
@@ -409,7 +409,7 @@ const completedCount = computed(() => {
   border-radius: 4px;
   text-transform: uppercase;
   letter-spacing: 0.3px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-secondary, #aaa);
 }
 .plan-panel__status--executing {
@@ -462,7 +462,7 @@ const completedCount = computed(() => {
   font-size: 13px;
   font-family: inherit;
   padding: 8px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-primary, #e0e0e0);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 6px;
@@ -504,7 +504,7 @@ const completedCount = computed(() => {
 .plan-step {
   padding: 8px 10px;
   border-radius: 6px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   font-size: 12px;
   line-height: 1.4;
   border-left: 3px solid var(--color-border-default, #444);
@@ -590,7 +590,7 @@ const completedCount = computed(() => {
 .plan-step__error-content {
   margin: 0;
   padding: 6px;
-  background: var(--color-bg-base, #131316);
+  background: var(--color-bg-base, #ffffff);
   border-radius: 4px;
   font-family: var(--font-mono, monospace);
   font-size: 10px;
@@ -619,7 +619,7 @@ const completedCount = computed(() => {
   cursor: pointer;
 }
 .plan-panel__btn:hover:not(:disabled) {
-  background: var(--color-bg-elevated, #2a2a2a);
+  background: var(--color-bg-elevated, #f5f5f7);
 }
 .plan-panel__btn:disabled {
   opacity: 0.4;
@@ -692,7 +692,7 @@ const completedCount = computed(() => {
   max-height: 80vh;
   overflow-y: auto;
   padding: 16px;
-  background: var(--color-bg-surface, #1e1e1e);
+  background: var(--color-bg-surface, #fafafc);
   border: 1px solid var(--color-border-default, #333);
   border-radius: 8px;
   display: flex;
@@ -716,7 +716,7 @@ const completedCount = computed(() => {
 .plan-panel__replay-content {
   margin: 0;
   padding: 8px;
-  background: var(--color-bg-base, #131316);
+  background: var(--color-bg-base, #ffffff);
   border-radius: 4px;
   font-family: var(--font-mono, monospace);
   font-size: 11px;

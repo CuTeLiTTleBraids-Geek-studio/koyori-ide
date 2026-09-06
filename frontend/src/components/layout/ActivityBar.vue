@@ -10,19 +10,13 @@ import {
   Connection,
   MagicStick,
   Setting,
-  Share,
   Grid,
-  Promotion,
-  Tools,
-  Coin,
-  DocumentChecked,
-  List,
-  VideoPlay,
 } from "@element-plus/icons-vue";
 import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "@/lib/i18n";
 import { windowService } from "@/api/services";
+import { openAIDesktopWindow } from "@/stores/aiAssistant";
 import { notifyError } from "@/lib/notifications";
 import { listAllVscodeExtensionViews } from "@/lib/vscodeExtensions";
 import type { ExtensionViewContribution } from "@/types";
@@ -42,17 +36,9 @@ interface ActivityItem {
 
 const items: ActivityItem[] = [
   { icon: FolderOpened, labelKey: "activity.explorer", tab: "explorer" },
-  { icon: Tools, labelKey: "activity.build", tab: "build" },
-  { icon: Coin, labelKey: "activity.database", tab: "database" },
-  { icon: DocumentChecked, labelKey: "activity.inspections", tab: "inspections" },
   { icon: Search, labelKey: "activity.search", tab: "search" },
   { icon: Connection, labelKey: "activity.sourceControl", tab: "git" },
   { icon: SetUp, labelKey: "activity.extensions", tab: "extensions" },
-  { icon: Promotion, labelKey: "activity.httpClient", tab: "httpClient" },
-  { icon: VideoPlay, labelKey: "activity.debug", tab: null, route: "/debug" },
-  { icon: List, labelKey: "activity.testExplorer", tab: null, route: "/test" },
-  // F-1: Call/Type Hierarchy 侧边栏面板入口
-  { icon: Share, labelKey: "activity.callHierarchy", tab: "callHierarchy" },
   // 双窗协议：活动栏 AI 打开独立 OS 窗口，不占用主窗侧边栏
   { icon: MagicStick, labelKey: "activity.ai", tab: "ai-window" },
 ];
@@ -68,12 +54,15 @@ const activeTab = computed(() => appState.panelTab);
 /** AI 伴侣窗口是否打开（活动栏高亮用） */
 const aiWindowVisible = ref(false);
 const aiWindowPoll = ref<ReturnType<typeof setInterval> | null>(null);
+let aiWindowStateRequest = 0;
 
 async function refreshAiWindowState(): Promise<void> {
+  const request = ++aiWindowStateRequest;
   try {
-    aiWindowVisible.value = await windowService.isAIWindowVisible();
+    const visible = await windowService.isAIWindowVisible();
+    if (request === aiWindowStateRequest) aiWindowVisible.value = visible;
   } catch {
-    aiWindowVisible.value = false;
+    if (request === aiWindowStateRequest) aiWindowVisible.value = false;
   }
 }
 
@@ -109,10 +98,12 @@ const activeExtensionView = computed(() => appState.activeExtensionView);
 
 async function handleAiWindowClick(): Promise<void> {
   try {
-    // 切换独立 AI 窗口；隐藏后应立即清除活动态。
-    await windowService.toggleAIWindow();
+    // This entry is an open/focus command. The helper also hands the current
+    // conversation and mode to an already-mounted AI WebView.
+    await openAIDesktopWindow();
     await refreshAiWindowState();
   } catch (e) {
+    aiWindowStateRequest += 1;
     aiWindowVisible.value = false;
     notifyError(
       e instanceof Error ? e.message : t("aiWindow.toggleFailed"),
@@ -202,6 +193,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  aiWindowStateRequest += 1;
   if (aiWindowPoll.value !== null) {
     clearInterval(aiWindowPoll.value);
     aiWindowPoll.value = null;

@@ -1,18 +1,17 @@
 version: '3'
 
 tasks:
-  go:mod:tidy:
-    summary: Runs `go mod tidy`
+  go:mod:verify:
+    summary: Verifies the application module graph without modifying go.mod or go.sum
     internal: true
-    # Universal/multi-arch builds invoke this concurrently from parallel deps;
-    # two `go mod tidy` processes racing on go.mod can corrupt it (#4637).
     run: once
     cmds:
-      - go mod tidy
-
+      - go list -mod=readonly .
   install:frontend:deps:
     summary: Install frontend dependencies
     run: once
+    deps:
+      - task: go:mod:verify
     cmds:
       - task: install:frontend:deps:{{.PACKAGE_MANAGER}}
 
@@ -210,7 +209,7 @@ tasks:
     summary: Generates untracked bindings with the Wails version pinned by go.mod
     run: once
     deps:
-      - task: go:mod:tidy
+      - task: go:mod:verify
     sources:
       - "**/*.[jt]s"
       - exclude: frontend/**/*

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 )
 
 // ---------------------------------------------------------------------------
@@ -171,6 +173,68 @@ func TestAIGoalService_RunGoal_Success(t *testing.T) {
 	}
 	if v.FinishedAt == nil {
 		t.Error("FinishedAt should be set")
+	}
+}
+
+func TestAIGoalService_EvaluateFailureRecordsFailedIteration(t *testing.T) {
+	agent := NewAgentService()
+	t.Cleanup(func() { _ = agent.Close() })
+	permission := NewAIPermissionService(t.TempDir())
+	goal := NewAIGoalService()
+	if _, err := WireAgentLifecycle(agent, NewAIService(), NewAIPlanService(), goal, permission); err != nil {
+		t.Fatalf("WireAgentLifecycle: %v", err)
+	}
+	if _, err := goal.CreateGoal("eval-failure", "desc", "criteria", 1, 10, time.Minute, true); err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+	if err := goal.RunGoal("eval-failure", &mockGoalExecutor{
+		executeResult: GoalRoundResult{Tokens: 4, Cost: 0.01},
+		evaluateErr:   errors.New("checker unavailable"),
+	}, nil); err != nil {
+		t.Fatalf("RunGoal: %v", err)
+	}
+	records := permission.usageRecordsSnapshot()
+	if len(records) != 1 {
+		t.Fatalf("goal usage records = %+v, want one iteration", records)
+	}
+	if records[0].UnitKind != string(agentcore.UsageUnitGoal) || records[0].Success {
+		t.Fatalf("evaluate failure usage = %+v, want failed goal iteration", records[0])
+	}
+	if records[0].Error == "" {
+		t.Fatal("evaluate failure usage did not retain a bounded error marker")
+	}
+}
+
+func TestAIGoalService_IterationCheckpointFailureRecordsFailedIteration(t *testing.T) {
+	agent := NewAgentService()
+	t.Cleanup(func() { _ = agent.Close() })
+	permission := NewAIPermissionService(t.TempDir())
+	goal := NewAIGoalService()
+	lifecycle, err := WireAgentLifecycle(agent, NewAIService(), NewAIPlanService(), goal, permission)
+	if err != nil {
+		t.Fatalf("WireAgentLifecycle: %v", err)
+	}
+	if _, err := goal.CreateGoal("checkpoint-failure", "desc", "criteria", 1, 10, time.Minute, true); err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+	// Force the iteration-start checkpoint to hit a terminal session. The
+	// attempt must still be represented in the trusted usage ledger.
+	if err := lifecycle.Complete(agentcore.SessionGoal, "checkpoint-failure"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := goal.RunGoal("checkpoint-failure", &mockGoalExecutor{}, nil); err == nil {
+		t.Fatal("RunGoal succeeded after iteration checkpoint failure")
+	}
+	records := permission.usageRecordsSnapshot()
+	if len(records) != 1 || records[0].UnitKind != string(agentcore.UsageUnitGoal) || records[0].Success {
+		t.Fatalf("checkpoint failure usage = %+v, want one failed goal iteration", records)
+	}
+	view, err := goal.GetGoal("checkpoint-failure")
+	if err != nil {
+		t.Fatalf("GetGoal: %v", err)
+	}
+	if view.Status != GoalStatusFailed {
+		t.Fatalf("goal status = %s, want failed", view.Status)
 	}
 }
 

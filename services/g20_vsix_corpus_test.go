@@ -1,55 +1,11 @@
 package services
 
 import (
-	"archive/zip"
-	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-type g20VSIXCorpusManifest struct {
-	Main      string `json:"main"`
-	Browser   string `json:"browser"`
-	KoyoriIde *struct {
-		Permissions *[]ExtensionPermission `json:"permissions"`
-	} `json:"koyoriIde"`
-}
-
-func g20VSIXRequiresPermissionDeclaration(path string) (bool, error) {
-	archive, err := zip.OpenReader(path)
-	if err != nil {
-		return false, err
-	}
-	defer archive.Close()
-	for _, entry := range archive.File {
-		if entry.Name != "extension/package.json" {
-			continue
-		}
-		r, err := entry.Open()
-		if err != nil {
-			return false, err
-		}
-		data, readErr := io.ReadAll(r)
-		closeErr := r.Close()
-		if readErr != nil {
-			return false, readErr
-		}
-		if closeErr != nil {
-			return false, closeErr
-		}
-		var manifest g20VSIXCorpusManifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			return false, err
-		}
-		executable := strings.TrimSpace(manifest.Main) != "" || strings.TrimSpace(manifest.Browser) != ""
-		missingPermissions := manifest.KoyoriIde == nil || manifest.KoyoriIde.Permissions == nil
-		return executable && missingPermissions, nil
-	}
-	return false, os.ErrNotExist
-}
 
 // TestG20_VSIX_RealCorpusInstallMatrix is opt-in because the corpus is
 // downloaded from Open VSX and is intentionally not stored in the source
@@ -68,7 +24,6 @@ func TestG20_VSIX_RealCorpusInstallMatrix(t *testing.T) {
 		t.Fatalf("real VSIX corpus must contain at least two records")
 	}
 	installedCount := 0
-	rejectedCount := 0
 	for _, record := range records {
 		fields := strings.Split(record, "|")
 		if len(fields) != 5 {
@@ -81,24 +36,7 @@ func TestG20_VSIX_RealCorpusInstallMatrix(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("VSIX corpus file %q: %v", path, err)
 		}
-		expectedPermissionRejection, err := g20VSIXRequiresPermissionDeclaration(path)
-		if err != nil {
-			t.Fatalf("inspect real VSIX %s.%s: %v", publisher, name, err)
-		}
 		installErr := service.installFromVSIXFile(path, expectedHash, publisher, name, version)
-		if expectedPermissionRejection {
-			if installErr == nil || !strings.Contains(installErr.Error(), "koyoriIde.permissions explicitly") {
-				t.Fatalf("install real VSIX %s.%s error = %v, want explicit permission rejection", publisher, name, installErr)
-			}
-			if _, statErr := os.Stat(service.extensionDir(publisher, name)); !os.IsNotExist(statErr) {
-				t.Fatalf("permission-rejected VSIX %s.%s left install directory: %v", publisher, name, statErr)
-			}
-			if _, securityErr := security.GetSecurityInfo(publisher + "." + name); securityErr == nil {
-				t.Fatalf("permission-rejected VSIX %s.%s left security state", publisher, name)
-			}
-			rejectedCount++
-			continue
-		}
 		if installErr != nil {
 			t.Fatalf("install real VSIX %s.%s: %v", publisher, name, installErr)
 		}
@@ -124,5 +62,5 @@ func TestG20_VSIX_RealCorpusInstallMatrix(t *testing.T) {
 		}
 		installedCount++
 	}
-	t.Logf("real Open VSX corpus matrix: installed=%d rejected-for-missing-permissions=%d total=%d", installedCount, rejectedCount, len(records))
+	t.Logf("real Open VSX corpus matrix: installed=%d total=%d (missing koyoriIde.permissions is no longer an install rejection)", installedCount, len(records))
 }

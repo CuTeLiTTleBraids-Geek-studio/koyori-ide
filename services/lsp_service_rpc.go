@@ -77,7 +77,10 @@ func newJSONRPCClientWithHandler(
 		requestHandler: handler,
 	}
 	c.started = true
-	go c.readLoop()
+	go func() {
+		defer RecoverGoroutinePanic("lsp:readloop")
+		c.readLoop()
+	}()
 	return c
 }
 

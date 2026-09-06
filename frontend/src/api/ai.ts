@@ -30,19 +30,21 @@ export const aiService = {
   // backend to fetch the key from SettingsService via configId. The plaintext
   // key never crosses the Wails binding into the JS heap.
   setConfig: (config: {
-    apiKey?: string;
-    useStoredKey?: boolean;
-    configId?: string;
-    baseUrl: string;
-    model: string;
-    systemPrompt?: string;
-    agentSystemPrompt?: string;
-    conversationTitlePrompt?: string;
-    inlineCompletionPrompt?: string;
-    maxTokens?: number;
-    contextWindow?: number;
-    temperature?: number;
-    protocol?: string; // "openai" | "anthropic"
+	apiKey?: string;
+	useStoredKey?: boolean;
+	configId?: string;
+	provider?: string;
+	baseUrl: string;
+	model: string;
+	systemPrompt?: string;
+	agentSystemPrompt?: string;
+	conversationTitlePrompt?: string;
+	inlineCompletionPrompt?: string;
+	maxTokens?: number;
+	contextWindow?: number;
+	temperature?: number;
+	reasoningEffort?: "" | "low" | "medium" | "high";
+	protocol?: string; // "openai" | "anthropic"
     /** prompt-5 Task H: OpenAI-compatible tool definitions for native function calling. */
     tools?: Array<{
       type: "function";
@@ -54,26 +56,40 @@ export const aiService = {
     }>;
   }) =>
     AIServiceBindings.SetConfig({
-      APIKey: config.apiKey ?? "",
-      UseStoredKey: config.useStoredKey ?? false,
-      ConfigID: config.configId ?? "",
-      BaseURL: config.baseUrl,
-      Model: config.model,
-      SystemPrompt: config.systemPrompt ?? "",
-      AgentSystemPrompt: config.agentSystemPrompt ?? "",
-      ConversationTitlePrompt: config.conversationTitlePrompt ?? "",
-      InlineCompletionPrompt: config.inlineCompletionPrompt ?? "",
-      MaxTokens: config.maxTokens ?? 0,
-      ContextWindow: config.contextWindow ?? 0,
-      Temperature: config.temperature ?? 0,
-      Protocol: config.protocol ?? "",
-      Tools: config.tools ?? [],
-    }),
+		APIKey: config.apiKey ?? "",
+		Provider: config.provider ?? "",
+		UseStoredKey: config.useStoredKey ?? false,
+		ConfigID: config.configId ?? "",
+		BaseURL: config.baseUrl,
+		Model: config.model,
+		SystemPrompt: config.systemPrompt ?? "",
+		AgentSystemPrompt: config.agentSystemPrompt ?? "",
+		ConversationTitlePrompt: config.conversationTitlePrompt ?? "",
+		InlineCompletionPrompt: config.inlineCompletionPrompt ?? "",
+		MaxTokens: config.maxTokens ?? 0,
+		ContextWindow: config.contextWindow ?? 0,
+		Temperature: config.temperature ?? 0,
+		ReasoningEffort: config.reasoningEffort ?? "",
+		Protocol: config.protocol ?? "",
+		Tools: config.tools ?? [],
+	}),
+	getReasoningCapability: (provider: string, model: string, protocol: string) =>
+		AIServiceBindings.GetReasoningCapability(provider, model, protocol) as Promise<{
+			provider: string;
+			model: string;
+			protocol: string;
+			status: "supported" | "unsupported" | "unknown";
+			requestField?: string;
+		}>,
   send: (messages: ChatMessage[]) =>
     requireNonNull(AIServiceBindings.Send(messages), "AIService.Send"),
   // prompt-6/7: StartStream returns streamId (bindings typed as string).
   startStream: (messages: ChatMessage[]) =>
     AIServiceBindings.StartStream(messages) as Promise<string>,
+  startAgentStream: (sessionId: string, messages: ChatMessage[]) =>
+		AIServiceBindings.StartAgentStream(sessionId, messages) as Promise<{ streamId: string; sessionId: string }>,
+  isStreaming: () =>
+    AIServiceBindings.IsStreaming() as Promise<boolean>,
   stopStream: () =>
     AIServiceBindings.StopStream() as Promise<void>,
   getDefaultSystemPrompt: () =>

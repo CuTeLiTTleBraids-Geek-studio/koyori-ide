@@ -6,7 +6,7 @@ import * as SettingsServiceBindings from "../../bindings/github.com/CuTeLiTTleBr
 import * as WindowServiceBindings from "../../bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/windowservice.js";
 import * as TerminalServiceBindings from "../../bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/terminalservice.js";
 import * as ComputerUseServiceBindings from "../../bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/computeruseservice.js";
-import type { CreateProjectRequest, Project, Settings } from "@/types";
+import type { CreateProjectRequest, AgentPermissionMode, Project, Settings, ReasoningEffort } from "@/types";
 import {
   decodeWailsBytes, encodeWailsBytes, isRecord,
   optionalBoolean, optionalFiniteNumber, optionalInteger, optionalString,
@@ -107,7 +107,7 @@ export const projectService = {
     ProjectServiceBindings.CreateProject(req),
 };
 
-type BindingSettings = Parameters<typeof SettingsServiceBindings.SaveSettings>[0];
+type BindingSettings = Parameters<typeof SettingsServiceBindings.SaveSettings>[0] & { agentPermissionMode?: unknown };
 type BindingAIProviderConfig = NonNullable<BindingSettings["aiProviderConfigs"]>[number];
 type FrontendAIProviderConfig = NonNullable<Settings["aiProviderConfigs"]>[number];
 type FrontendPersonalization = NonNullable<Settings["personalization"]>;
@@ -130,6 +130,13 @@ function normalizeAIWindowTheme(
   }
 }
 
+function normalizeReasoningEffort(value: unknown, path: string): ReasoningEffort | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "low" || value === "medium" || value === "high") return value;
+  warnInvalidBoundaryValue(path, "a reasoning effort (low, medium, or high)", "unset");
+  return undefined;
+}
+
 function normalizeAIChatPosition(
   value: unknown,
   path: string,
@@ -140,35 +147,12 @@ function normalizeAIChatPosition(
   return undefined;
 }
 
-function normalizeToolApprovalConfig(
-  value: unknown,
-  path: string,
-): Settings["toolApprovalConfig"] {
-  if (value === undefined || value === null) return undefined;
-  if (!isRecord(value)) {
-    warnInvalidBoundaryValue(path, "an approval-policy object", "undefined");
-    return undefined;
+function normalizeAgentPermissionMode(value: unknown, path: string): AgentPermissionMode {
+  if (value === "always-ask" || value === "assist" || value === "allow-all") return value;
+  if (value !== undefined && value !== null && value !== "") {
+    warnInvalidBoundaryValue(path, '"always-ask", "assist", or "allow-all"', '"always-ask"');
   }
-  const entries: Array<[
-    string,
-    NonNullable<Settings["toolApprovalConfig"]>[string],
-  ]> = [];
-  let invalid = false;
-  for (const [key, policy] of Object.entries(value)) {
-    if (
-      policy === "always-ask" ||
-      policy === "auto-approve" ||
-      policy === "never-approve"
-    ) {
-      entries.push([key, policy]);
-    } else {
-      invalid = true;
-    }
-  }
-  if (invalid) {
-    warnInvalidBoundaryValue(path, "an approval-policy object", "valid entries only");
-  }
-  return safeRecordFromEntries(entries);
+  return "always-ask";
 }
 
 function normalizeShortcutMap(
@@ -277,6 +261,7 @@ function fromBindingAIProviderConfig(
     baseUrl: requiredString(config.baseUrl, `${path}.baseUrl`),
     model: requiredString(config.model, `${path}.model`),
     temperature: optionalFiniteNumber(config.temperature, `${path}.temperature`),
+    reasoningEffort: normalizeReasoningEffort(config.reasoningEffort, `${path}.reasoningEffort`),
     maxTokens: optionalInteger(config.maxTokens, `${path}.maxTokens`),
     systemPrompt: optionalString(config.systemPrompt, `${path}.systemPrompt`),
   };
@@ -300,6 +285,7 @@ function toBindingAIProviderConfig(
     baseUrl: requiredString(config.baseUrl, `${path}.baseUrl`),
     model: requiredString(config.model, `${path}.model`),
     temperature: optionalFiniteNumber(config.temperature, `${path}.temperature`),
+    reasoningEffort: normalizeReasoningEffort(config.reasoningEffort, `${path}.reasoningEffort`),
     maxTokens: optionalInteger(config.maxTokens, `${path}.maxTokens`),
     systemPrompt: optionalString(config.systemPrompt, `${path}.systemPrompt`),
   };
@@ -418,9 +404,9 @@ export function fromBindingSettings(settings: BindingSettings): Settings {
       "Settings.activityBarVisible",
       true,
     ),
-    toolApprovalConfig: normalizeToolApprovalConfig(
-      settings.toolApprovalConfig,
-      "Settings.toolApprovalConfig",
+    agentPermissionMode: normalizeAgentPermissionMode(
+      settings.agentPermissionMode,
+      "Settings.agentPermissionMode",
     ),
     accentTheme: optionalString(settings.accentTheme, "Settings.accentTheme"),
     customAccent: normalizeCustomAccent(settings.customAccent, "Settings.customAccent"),
@@ -541,9 +527,9 @@ export function toBindingSettings(settings: Settings): BindingSettings {
       "Settings.activityBarVisible",
       true,
     ),
-    toolApprovalConfig: normalizeToolApprovalConfig(
-      settings.toolApprovalConfig,
-      "Settings.toolApprovalConfig",
+    agentPermissionMode: normalizeAgentPermissionMode(
+      settings.agentPermissionMode,
+      "Settings.agentPermissionMode",
     ),
     accentTheme: optionalString(settings.accentTheme, "Settings.accentTheme"),
     customAccent: normalizeCustomAccent(settings.customAccent, "Settings.customAccent"),

@@ -175,7 +175,7 @@ jobs:
           node scripts/check-bindings.mjs
 
       - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 
       - name: Build Windows app
         shell: pwsh

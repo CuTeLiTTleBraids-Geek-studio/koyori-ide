@@ -11,8 +11,8 @@ import (
 // roots that were already applied are rolled back to their previous
 // values — preventing partial state across services (M-8).
 func TestAddProject_RollbackOnFailure(t *testing.T) {
-	initialDir := t.TempDir()
-	newDir := t.TempDir()
+	initialDir := canonicalTestPath(t, t.TempDir())
+	newDir := canonicalTestPath(t, t.TempDir())
 
 	// Make configPath a directory so load() fails (ReadFile on a
 	// directory returns a non-IsNotExist error), triggering rollback.
@@ -53,8 +53,8 @@ func TestAddProject_RollbackOnFailure(t *testing.T) {
 // TestAddProject_RollbackMultipleServices verifies that rollback
 // restores ALL services when AddProject fails, not just the first one.
 func TestAddProject_RollbackMultipleServices(t *testing.T) {
-	initialDir := t.TempDir()
-	newDir := t.TempDir()
+	initialDir := canonicalTestPath(t, t.TempDir())
+	newDir := canonicalTestPath(t, t.TempDir())
 
 	// Make configPath a directory so load() fails.
 	configBase := t.TempDir()
@@ -231,8 +231,8 @@ func TestProjectService_M8_AddProjectRollbackOnFailure(t *testing.T) {
 	// 子测试 2: 已应用的服务被回滚 — 所有 SetWorkspaceRoot 成功后
 	// load() 失败(configPath 是目录),确认所有服务回滚到初始根。
 	t.Run("rollback_restores_applied_services", func(t *testing.T) {
-		initialDir := t.TempDir()
-		newDir := t.TempDir()
+		initialDir := canonicalTestPath(t, t.TempDir())
+		newDir := canonicalTestPath(t, t.TempDir())
 
 		// 让 configPath 成为目录,使 load() 失败,触发回滚。
 		configBase := t.TempDir()

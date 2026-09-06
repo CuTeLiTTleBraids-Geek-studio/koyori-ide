@@ -15,8 +15,10 @@ import (
 
 // ConversationMessage is a single message in a persisted conversation.
 type ConversationMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role        string             `json:"role"`
+	Content     string             `json:"content"`
+	ToolCalls   []NativeToolCall   `json:"toolCalls,omitempty"`
+	ToolResults []NativeToolResult `json:"toolResults,omitempty"`
 }
 
 // Conversation is a saved AI chat conversation.
@@ -90,6 +92,9 @@ type ConversationService struct {
 
 // NewConversationService creates a ConversationService rooted at the given directory.
 func NewConversationService(storageDir string) *ConversationService {
+	if storageDir == "" {
+		storageDir = defaultStorageDir()
+	}
 	return &ConversationService{storageDir: storageDir}
 }
 
@@ -102,14 +107,19 @@ func defaultStorageDir() string {
 	return filepath.Join(home, "koyori-ide", "conversations")
 }
 
+// resolvedStorageDir keeps the zero value safe as well as the public
+// constructor. In particular, the first Save must never resolve an empty
+// storage directory relative to the process working directory.
+func (s *ConversationService) resolvedStorageDir() string {
+	if s != nil && s.storageDir != "" {
+		return s.storageDir
+	}
+	return defaultStorageDir()
+}
+
 // ensureDir creates the storage directory if it doesn't exist.
 func (s *ConversationService) ensureDir() error {
-	dir := s.storageDir
-	if dir == "" {
-		dir = defaultStorageDir()
-		s.storageDir = dir
-	}
-	return os.MkdirAll(dir, 0755)
+	return os.MkdirAll(s.resolvedStorageDir(), 0755)
 }
 
 // pathFor returns the absolute path for a conversation file after validating
@@ -122,7 +132,7 @@ func (s *ConversationService) ensureDir() error {
 // pathsec.go which rejects path separators, parent traversal, and absolute
 // paths via IsRelativePathSafe.
 func (s *ConversationService) pathFor(id string) (string, error) {
-	return SafeNameJoin(s.storageDir, id, ".json")
+	return SafeNameJoin(s.resolvedStorageDir(), id, ".json")
 }
 
 // Save writes a conversation to disk.
@@ -135,6 +145,16 @@ func (s *ConversationService) Save(conv Conversation) error {
 	const maxSystemPromptOverrideLen = 100_000
 	if len(conv.SystemPromptOverride) > maxSystemPromptOverrideLen {
 		return fmt.Errorf("system prompt override exceeds maximum length of %d characters", maxSystemPromptOverrideLen)
+	}
+	chatMessages := make([]ChatMessage, 0, len(conv.Messages))
+	for _, message := range conv.Messages {
+		chatMessages = append(chatMessages, ChatMessage{
+			Role: message.Role, Content: message.Content,
+			ToolCalls: message.ToolCalls, ToolResults: message.ToolResults,
+		})
+	}
+	if err := validateChatMessages(chatMessages); err != nil {
+		return fmt.Errorf("invalid conversation messages: %w", err)
 	}
 	path, err := s.pathFor(conv.ID)
 	if err != nil {
@@ -204,7 +224,8 @@ func (s *ConversationService) listPage(filter *ConversationFilter, offset, limit
 	if err := s.ensureDir(); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(s.storageDir)
+	storageDir := s.resolvedStorageDir()
+	entries, err := os.ReadDir(storageDir)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +238,7 @@ func (s *ConversationService) listPage(filter *ConversationFilter, offset, limit
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.storageDir, entry.Name()))
+		data, err := os.ReadFile(filepath.Join(storageDir, entry.Name()))
 		if err != nil {
 			continue
 		}
@@ -292,7 +313,8 @@ func (s *ConversationService) PurgeExpiredTrash(maxAge time.Duration) (int, erro
 	if err := s.ensureDir(); err != nil {
 		return 0, err
 	}
-	entries, err := os.ReadDir(s.storageDir)
+	storageDir := s.resolvedStorageDir()
+	entries, err := os.ReadDir(storageDir)
 	if err != nil {
 		return 0, err
 	}
@@ -302,7 +324,7 @@ func (s *ConversationService) PurgeExpiredTrash(maxAge time.Duration) (int, erro
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.storageDir, entry.Name()))
+		data, err := os.ReadFile(filepath.Join(storageDir, entry.Name()))
 		if err != nil {
 			continue
 		}

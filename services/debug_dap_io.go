@@ -410,25 +410,25 @@ func (d *DebugService) SetVariable(variablesReference int, name string, value st
 
 // RestartFrame sends the DAP restartFrame request for the given frame id
 // (prompt-5).
-func (d *DebugService) RestartFrame(frameID int) error {
-	if frameID <= 0 {
+func (d *DebugService) RestartFrame(frameId int) error {
+	if frameId <= 0 {
 		return fmt.Errorf("invalid frameId")
 	}
 	return d.dapRequest("restartFrame", map[string]interface{}{
-		"frameId": frameID,
+		"frameId": frameId,
 	})
 }
 
 // GetInlineValues sends the DAP inlineValues request for a frame; if the
 // adapter does not support it, falls back to a variables request on
 // variablesReference to compute inline values (prompt-5).
-func (d *DebugService) GetInlineValues(frameID int, variablesReference int) ([]InlineValue, error) {
-	if frameID <= 0 && variablesReference <= 0 {
+func (d *DebugService) GetInlineValues(frameId int, variablesReference int) ([]InlineValue, error) {
+	if frameId <= 0 && variablesReference <= 0 {
 		return nil, fmt.Errorf("invalid frameId and variablesReference")
 	}
-	if frameID > 0 {
+	if frameId > 0 {
 		body, err := d.dapRequestBody("inlineValues", map[string]interface{}{
-			"frameId": frameID,
+			"frameId": frameId,
 		})
 		if err == nil {
 			var resp struct {

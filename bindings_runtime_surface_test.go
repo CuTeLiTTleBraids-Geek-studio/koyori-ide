@@ -20,6 +20,28 @@ var wailsInternalServiceMethods = map[string]bool{
 	"ServeHTTP":       true,
 }
 
+// These methods remain on the Go service value for trusted shutdown wiring,
+// but //wails:ignore intentionally keeps them out of the renderer surface.
+var ignoredWailsRuntimeMethods = map[string]map[string]bool{
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/agentservice.ts": {
+		"CallMCPTool": true,
+		"Close":       true,
+	},
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/mcpservice.ts": {
+		"CallTool":            true,
+		"Close":               true,
+		"ExecuteApprovedTool": true,
+		"RequestToolApproval": true,
+	},
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/aiservice.ts": {
+		"SendStream":            true,
+		"SendStreamWithContext": true,
+	},
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/marketplaceservice.ts": {
+		"InstallVSIXFile": true,
+	},
+}
+
 var forbiddenWailsRuntimeMethods = map[string]map[string]bool{
 	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/settingsservice.ts": {
 		"DeleteExtensionSecret": true,
@@ -65,6 +87,12 @@ func TestRegisteredWailsRuntimeSurfaceMatchesManifest(t *testing.T) {
 		}
 		for index := 0; index < serviceType.NumMethod(); index++ {
 			method := serviceType.Method(index).Name
+			if ignoredWailsRuntimeMethods[module][method] {
+				if allowedSet[method] {
+					unexpected = append(unexpected, module+":"+method+" (ignored method remains in manifest)")
+				}
+				continue
+			}
 			if forbiddenWailsRuntimeMethods[module][method] {
 				unexpected = append(unexpected, module+":"+method+" (forbidden)")
 				continue

@@ -1,11 +1,11 @@
 package services
 
-import "errors"
+import (
+	"errors"
+	"sync"
+)
 
-// clearWorkspaceRoots removes cached roots after the active project is
-// removed. Every mutation has an inverse; a failure restores all adapters and
-// the exact WorkspaceContext generation instead of leaving a partial clear.
-func (p *ProjectService) clearWorkspaceRoots() error {
+func (p *ProjectService) beginWorkspaceRootClearWithinAuthority(authority *agentWorkspaceAuthorityGuard) (*workspaceClearTransition, error) {
 	actions := make([]workspaceClearAction, 0, 12)
 	if p.fileService != nil {
 		service := p.fileService
@@ -29,11 +29,26 @@ func (p *ProjectService) clearWorkspaceRoots() error {
 	}
 	if p.agentService != nil {
 		service := p.agentService
-		previous := service.currentWorkspaceRoot()
+		var transition workspaceRootChange
 		actions = append(actions, workspaceClearAction{
-			label:   "agent",
-			clear:   func() error { return service.restoreWorkspaceRoot("") },
-			restore: func() error { return service.restoreWorkspaceRoot(previous) },
+			label: "agent",
+			clear: func() error {
+				var err error
+				transition, err = service.beginWorkspaceRootClearTransitionWithinAuthority(authority)
+				return err
+			},
+			restore: func() error {
+				if transition != nil {
+					return transition.rollback()
+				}
+				return nil
+			},
+			commit: func() {
+				if transition == nil {
+					return
+				}
+				transition.commit()
+			},
 		})
 	}
 	if p.gitService != nil {
@@ -136,23 +151,70 @@ func (p *ProjectService) clearWorkspaceRoots() error {
 		})
 	}
 
+	if p.beforeWorkspaceSetters != nil {
+		p.beforeWorkspaceSetters()
+	}
 	applied := make([]workspaceClearAction, 0, len(actions))
 	for _, action := range actions {
 		applied = append(applied, action)
 		if err := action.clear(); err != nil {
-			return errors.Join(
+			rollbackErr := p.poisonAgentWorkspaceRollback(rollbackWorkspaceClear(applied))
+			return nil, errors.Join(
 				&workspaceClearError{label: action.label, cause: err},
-				rollbackWorkspaceClear(applied),
+				rollbackErr,
 			)
 		}
 	}
-	return nil
+	return &workspaceClearTransition{actions: applied, agent: p.agentService}, nil
+}
+
+type workspaceClearTransition struct {
+	mu      sync.Mutex
+	actions []workspaceClearAction
+	agent   agentServiceRootSetter
+	done    bool
+	result  error
+}
+
+func (t *workspaceClearTransition) commit() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return
+	}
+	for _, action := range t.actions {
+		if action.commit != nil {
+			action.commit()
+		}
+	}
+	t.done = true
+}
+
+func (t *workspaceClearTransition) rollback() error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return t.result
+	}
+	t.result = rollbackWorkspaceClear(t.actions)
+	if t.result != nil && t.agent != nil {
+		t.result = t.agent.poisonWorkspaceAuthorityAfterRollback(t.result)
+	}
+	t.done = true
+	return t.result
 }
 
 type workspaceClearAction struct {
 	label   string
 	clear   func() error
 	restore func() error
+	commit  func()
 }
 
 func rollbackWorkspaceClear(actions []workspaceClearAction) error {

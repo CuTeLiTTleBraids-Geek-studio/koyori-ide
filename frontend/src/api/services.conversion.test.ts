@@ -65,7 +65,7 @@ function createSettings(): Settings {
     },
     aiChatPosition: "right",
     activityBarVisible: true,
-    toolApprovalConfig: { run: "always-ask" },
+    agentPermissionMode: "always-ask",
     accentTheme: "blue",
     customAccent: null,
     enablePluginSandbox: true,
@@ -161,7 +161,6 @@ describe("Settings DTO conversion", () => {
   it("preserves __proto__ as an own data key across normalized settings maps", () => {
     const frontend = createSettings();
     const shortcut = { key: "p", ctrl: true, shift: false, alt: false };
-    const approval: NonNullable<Settings["toolApprovalConfig"]>[string] = "auto-approve";
     const lspConfig = { enabled: true };
 
     frontend.emmetIncludeLanguages = Object.fromEntries([
@@ -175,10 +174,6 @@ describe("Settings DTO conversion", () => {
     frontend.customShortcuts = Object.fromEntries([
       ["__proto__", shortcut],
       ["Save", { key: "s", ctrl: true, shift: false, alt: false }],
-    ]);
-    frontend.toolApprovalConfig = Object.fromEntries([
-      ["__proto__", approval],
-      ["run", "always-ask"],
     ]);
     frontend.personalization = {
       ...frontend.personalization,
@@ -197,7 +192,6 @@ describe("Settings DTO conversion", () => {
     expectPrototypeSafeRecord(binding.emmetIncludeLanguages ?? undefined, "html");
     expectPrototypeSafeRecord(binding.toolPaths ?? undefined, "C:/tools/proto");
     expectPrototypeSafeRecord(binding.customShortcuts ?? undefined, shortcut);
-    expectPrototypeSafeRecord(binding.toolApprovalConfig ?? undefined, approval);
     expectPrototypeSafeRecord(
       binding.personalization?.personaAvatars ?? undefined,
       "assets/proto.png",
@@ -275,6 +269,51 @@ describe("Workflow DTO conversion", () => {
     };
 
     expect(fromBindingWorkflow(toBindingWorkflow(workflow))).toEqual(workflow);
+  });
+
+  it("round-trips typed workflow adapter fields", () => {
+    const workflow: WorkflowDef = {
+      name: "read-notes",
+      steps: [{
+        name: "read",
+        command: "",
+        type: "file",
+        tool: "read",
+        input: { path: "notes.txt" },
+      }],
+      source: ".koyori-ide/workflows/read-notes.yml",
+    };
+
+    expect(fromBindingWorkflow(toBindingWorkflow(workflow))).toEqual(workflow);
+  });
+
+  it("rejects an unknown binding workflow step type", () => {
+    const binding = toBindingWorkflow({
+      name: "unknown-binding-type",
+      steps: [{ name: "step", command: "echo" }],
+      source: ".koyori-ide/workflows/unknown.yml",
+    });
+    const step = binding.steps?.[0];
+    expect(step).toBeDefined();
+    if (!step) throw new Error("test binding is missing its workflow step");
+    Reflect.set(step, "type", "shell");
+
+    expect(() => fromBindingWorkflow(binding)).toThrow(
+      /Workflow\.steps\[0\]\.type.*supported workflow step type/,
+    );
+  });
+
+  it("rejects an unknown frontend workflow step type", () => {
+    const workflow: WorkflowDef = {
+      name: "unknown-frontend-type",
+      steps: [{ name: "step", command: "echo" }],
+      source: ".koyori-ide/workflows/unknown.yml",
+    };
+    Reflect.set(workflow.steps[0], "type", "shell");
+
+    expect(() => toBindingWorkflow(workflow)).toThrow(
+      /Workflow\.steps\[0\]\.type.*supported workflow step type/,
+    );
   });
 
   it("normalizes a nullable binding step slice to an empty array", () => {

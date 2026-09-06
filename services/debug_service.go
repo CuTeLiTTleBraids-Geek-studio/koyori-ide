@@ -827,7 +827,7 @@ func (d *DebugService) GetActiveSession() string {
 	return d.activeSessionID
 }
 
-// DebugSessionListItem 描述调试会话的简略状态 (prompt-5)。
+// ListSessions 返回所有会话 ID 及各自简略状态 (prompt-5)。
 type DebugSessionListItem struct {
 	ID      string `json:"id"`
 	Active  bool   `json:"active"`

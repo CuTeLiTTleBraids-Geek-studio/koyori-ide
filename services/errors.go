@@ -13,11 +13,26 @@ var (
 	ErrInvalidInput         = errors.New("invalid input")
 	ErrNoCommitReceipt      = errors.New("no commit receipt")
 	ErrInvalidCommitReceipt = errors.New("invalid commit receipt")
-	ErrUnauthorized         = errors.New("unauthorized")
-	ErrTimeout              = errors.New("timeout")
+	// ErrUsageReceiptState means a trusted usage receipt was unknown, replayed
+	// with divergent identity, or would move a terminal unit back to pending.
+	ErrUsageReceiptState = errors.New("invalid usage receipt state")
+	// ErrUsagePersistence means a usage ledger write was rejected before any
+	// bytes were published and is safe to retry after repairing storage.
+	ErrUsagePersistence = errors.New("usage ledger write failed")
+	// ErrUsagePersistenceIndeterminate means a usage ledger write may have
+	// reached disk but its durability/visibility could not be confirmed.
+	ErrUsagePersistenceIndeterminate = errors.New("usage ledger durability is indeterminate")
+	// ErrUsagePersistencePoisoned means recovery is unavailable until a fresh
+	// process reloads and validates the append-only ledger.
+	ErrUsagePersistencePoisoned = errors.New("usage ledger recovery is poisoned")
+	ErrUnauthorized             = errors.New("unauthorized")
+	ErrTimeout                  = errors.New("timeout")
 	// ErrNotAllowed 表示操作被安全策略拒绝（G-SEC-02 / G-SEC-12）。
 	// 例如：Computer Use 未启用、坐标落入禁止区域、快捷键在黑名单中。
 	ErrNotAllowed = errors.New("not allowed")
+	// ErrConflict is the CAS / hash-precondition sentinel for workspace writes.
+	// Partial hunk apply must return this instead of writing a half file.
+	ErrConflict = errors.New("conflict")
 	// ErrGoalBudgetExhausted 表示 Goal 自治循环达到预算上限（迭代次数/成本/时长）。
 	// 这是正常的终止条件，不应被视为安全策略拒绝（BUG2）。
 	ErrGoalBudgetExhausted = errors.New("budget exhausted")
