@@ -8,12 +8,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 - `go.mod`: `ebcf55c7046776e9e2022ef295c4f9cc65afee6833ab91c03fad6e0f7addfb35`
 - `go.sum`: `06d461c712fd503b6474539a22d9d8c39d68838b97e6a4c25454799983d9aeb8`
-- `frontend/package-lock.json`: `309e1315dcaed73949aa129c6993b4debe5d38609373010767b82e9b9fe4a963`
+- `frontend/package-lock.json`: `672b7c6286e8a33ef427eed544557ff8af049ad06ef80809c5f91cf25a5a6222`
 
 ## Review Summary
 
 - Go modules: 53
-- Distinct npm package/version pairs: 407
+- Distinct npm package/version pairs: 402
 - Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
 - Documented Go source exceptions requiring release review: 0
@@ -46,7 +46,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | @vue/runtime-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/server-renderer@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | @vue/shared@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
-| @wailsio/runtime@3.0.0-beta.5 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @wailsio/runtime@3.0.0-beta.8 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | assertion-error@2.0.1 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@1.1.18 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@2.1.4 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -56,7 +56,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | csstype@3.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | dompurify@3.4.12 | (MPL-2.0 OR Apache-2.0) | package-lock v3 entry omitted license; checked installed package.json |
 | glob@10.5.0 | ISC | package-lock v3 entry omitted license; checked installed package.json |
-| nanoid@3.3.17 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | postcss@8.5.25 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vitest@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | vue-demi@0.14.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
@@ -336,14 +335,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | es-module-lexer | 2.3.0 | MIT | package-lock.json |
 | escape-string-regexp | 4.0.0 | MIT | package-lock.json |
 | eslint | 9.39.4 | MIT | package-lock.json |
-| eslint-plugin-vue | 9.33.0 | MIT | package-lock.json |
-| eslint-scope | 7.2.2 | BSD-2-Clause | package-lock.json |
+| eslint-plugin-vue | 10.10.0 | MIT | package-lock.json |
 | eslint-scope | 8.4.0 | BSD-2-Clause | package-lock.json |
 | eslint-visitor-keys | 3.4.3 | Apache-2.0 | package-lock.json |
 | eslint-visitor-keys | 4.2.1 | Apache-2.0 | package-lock.json |
 | eslint-visitor-keys | 5.0.1 | Apache-2.0 | package-lock.json |
 | espree | 10.4.0 | BSD-2-Clause | package-lock.json |
-| espree | 9.6.1 | BSD-2-Clause | package-lock.json |
 | esquery | 1.7.0 | BSD-3-Clause | package-lock.json |
 | esrecurse | 4.3.0 | BSD-2-Clause | package-lock.json |
 | estraverse | 5.3.0 | BSD-2-Clause | package-lock.json |
@@ -364,7 +361,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | fsevents | 2.3.3 | MIT | package-lock.json |
 | glob | 10.5.0 | ISC | manual package.json override |
 | glob-parent | 6.0.2 | ISC | package-lock.json |
-| globals | 13.24.0 | MIT | package-lock.json |
 | globals | 14.0.0 | MIT | package-lock.json |
 | globals | 15.15.0 | MIT | package-lock.json |
 | graceful-fs | 4.2.11 | ISC | package-lock.json |
@@ -459,7 +455,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | pkg-types | 1.3.1 | MIT | package-lock.json |
 | pkg-types | 2.3.1 | MIT | package-lock.json |
 | postcss | 8.5.25 | MIT | manual package.json override |
-| postcss-selector-parser | 6.1.4 | MIT | package-lock.json |
+| postcss-selector-parser | 7.1.5 | MIT | package-lock.json |
 | prelude-ls | 1.2.1 | MIT | package-lock.json |
 | prettier | 3.9.6 | MIT | package-lock.json |
 | proto-list | 1.2.4 | ISC | package-lock.json |
@@ -502,7 +498,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | ts-api-utils | 2.5.0 | MIT | package-lock.json |
 | tslib | 2.8.1 | 0BSD | package-lock.json |
 | type-check | 0.4.0 | MIT | package-lock.json |
-| type-fest | 0.20.2 | (MIT OR CC0-1.0) | package-lock.json |
 | typescript | 5.9.3 | Apache-2.0 | package-lock.json |
 | typescript-eslint | 8.62.1 | MIT | package-lock.json |
 | typescript-language-server | 5.3.0 | Apache-2.0 | package-lock.json |
@@ -518,7 +513,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | vue | 3.5.39 | MIT | package-lock.json |
 | vue-component-type-helpers | 3.3.6 | MIT | package-lock.json |
 | vue-demi | 0.14.10 | MIT | package-lock.json |
-| vue-eslint-parser | 9.4.3 | MIT | package-lock.json |
+| vue-eslint-parser | 10.4.1 | MIT | package-lock.json |
 | vue-router | 5.1.0 | MIT | package-lock.json |
 | vue-tsc | 2.2.12 | MIT | package-lock.json |
 | w3c-xmlserializer | 5.0.0 | MIT | package-lock.json |
@@ -531,7 +526,6 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | word-wrap | 1.2.5 | MIT | package-lock.json |
 | wrap-ansi | 8.1.0 | MIT | package-lock.json |
 | wrap-ansi-cjs | 7.0.0 | MIT | package-lock.json |
-| xml-name-validator | 4.0.0 | Apache-2.0 | package-lock.json |
 | xml-name-validator | 5.0.0 | Apache-2.0 | package-lock.json |
 | xmlchars | 2.2.0 | MIT | package-lock.json |
 | yaml | 2.9.0 | ISC | package-lock.json |
