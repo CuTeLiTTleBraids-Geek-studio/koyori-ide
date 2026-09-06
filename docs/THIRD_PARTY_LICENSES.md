@@ -7,7 +7,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 ## Source Digests
 
 - `go.mod`: `ebcf55c7046776e9e2022ef295c4f9cc65afee6833ab91c03fad6e0f7addfb35`
-- `go.sum`: `339811ad4025113d3c0e82f4240b6d7191b120fd2dd6f7843bd384557c87a568`
+- `go.sum`: `06d461c712fd503b6474539a22d9d8c39d68838b97e6a4c25454799983d9aeb8`
 - `frontend/package-lock.json`: `309e1315dcaed73949aa129c6993b4debe5d38609373010767b82e9b9fe4a963`
 
 ## Review Summary
@@ -26,13 +26,41 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 | Package | Reviewed license expression | Reason |
 |---|---|---|
+| @standard-schema/spec@1.1.0 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @types/chai@5.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @types/deep-eql@4.0.2 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/coverage-v8@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/expect@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/mocker@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/pretty-format@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/runner@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/snapshot@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/spy@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vitest/utils@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-core@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-sfc@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/compiler-ssr@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/reactivity@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/runtime-core@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/runtime-dom@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/server-renderer@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @vue/shared@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| @wailsio/runtime@3.0.0-beta.5 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| assertion-error@2.0.1 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@1.1.18 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@2.1.4 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | brace-expansion@5.0.9 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| chai@6.2.2 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| convert-source-map@2.0.0 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| csstype@3.2.3 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | dompurify@3.4.12 | (MPL-2.0 OR Apache-2.0) | package-lock v3 entry omitted license; checked installed package.json |
 | glob@10.5.0 | ISC | package-lock v3 entry omitted license; checked installed package.json |
 | nanoid@3.3.17 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 | postcss@8.5.25 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| vitest@4.1.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| vue-demi@0.14.10 | MIT | package-lock v3 entry omitted license; checked installed package.json |
+| vue@3.5.41 | MIT | package-lock v3 entry omitted license; checked installed package.json |
 
 ## Go Source Exceptions
 
