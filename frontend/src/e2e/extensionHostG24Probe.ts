@@ -20,6 +20,10 @@ import {
 import { ExtensionHost } from "@/lib/extensionHost/extensionHost";
 import type { ExtensionDescriptor } from "@/lib/extensionHost/extensionHost";
 import type { ExtensionWorkerRuntimePolicy } from "@/lib/vscodeExtensionActivation";
+import {
+  waitForWorkerReplacement,
+  WorkerReplacementTimeoutError,
+} from "./extensionHostG24Recovery";
 
 const resultEvent = "e2e:g24-extension-host-result";
 
@@ -47,6 +51,8 @@ interface FaultCommandResult {
 
 interface FaultProbeResult extends FaultCommandResult {
   restarted: boolean;
+  previousRuntimeId: string;
+  recoveredRuntimeId: string;
 }
 
 class WorkerRecoveryError extends Error {
@@ -90,7 +96,10 @@ function extensionId(config: ExtensionHostG24ProbeConfig): string {
   return `${config.publisher}.${config.name}`;
 }
 
-function commandId(config: ExtensionHostG24ProbeConfig, suffix: string): string {
+function commandId(
+  config: ExtensionHostG24ProbeConfig,
+  suffix: string,
+): string {
   return `${extensionId(config)}.${suffix}`;
 }
 
@@ -98,7 +107,10 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function hasCommand(config: ExtensionHostG24ProbeConfig, suffix: string): boolean {
+function hasCommand(
+  config: ExtensionHostG24ProbeConfig,
+  suffix: string,
+): boolean {
   return listVscodeExtensionCommands().some(
     (command) => command.id === commandId(config, suffix),
   );
@@ -107,7 +119,11 @@ function hasCommand(config: ExtensionHostG24ProbeConfig, suffix: string): boolea
 async function enableAndActivate(
   config: ExtensionHostG24ProbeConfig,
 ): Promise<string> {
-  await marketplaceService.setExtensionEnabled(config.publisher, config.name, true);
+  await marketplaceService.setExtensionEnabled(
+    config.publisher,
+    config.name,
+    true,
+  );
   await refreshExtensionCaches(config.publisher, config.name);
   const value = await executeVscodeExtensionCommand(
     commandId(config, "version"),
@@ -117,35 +133,29 @@ async function enableAndActivate(
 
 async function waitForWorkerRecovery(
   config: ExtensionHostG24ProbeConfig,
-): Promise<string | null> {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline && isExtensionActivated(extensionId(config))) {
-    await delay(25);
-  }
-  if (isExtensionActivated(extensionId(config))) {
+  previousRuntimeId: string,
+): Promise<{ runtimeId: string; latestError: string | null }> {
+  try {
+    return await waitForWorkerReplacement({
+      previousRuntimeId,
+      expectedVersion: config.expectedVersion ?? "",
+      readRuntimeId: async () =>
+        String(
+          await executeVscodeExtensionCommand(commandId(config, "runtime")),
+        ),
+      readVersion: async () =>
+        String(
+          await executeVscodeExtensionCommand(commandId(config, "version")),
+        ),
+    });
+  } catch (error: unknown) {
     throw new WorkerRecoveryError(
-      "Worker never entered the terminated state during recovery",
-      null,
+      errorMessage(error),
+      error instanceof WorkerReplacementTimeoutError
+        ? error.latestError
+        : latestErrorMessage(error),
     );
   }
-
-  let lastError: string | null = null;
-  while (Date.now() < deadline) {
-    try {
-      const version = await executeVscodeExtensionCommand(
-        commandId(config, "version"),
-      );
-      if (String(version) === config.expectedVersion) return lastError;
-      lastError = `reactivated version was ${String(version)}`;
-    } catch (error: unknown) {
-      lastError = latestErrorMessage(error);
-    }
-    await delay(50);
-  }
-  throw new WorkerRecoveryError(
-    `Worker recovery timed out: ${lastError ?? "Worker did not reactivate"}`,
-    lastError,
-  );
 }
 
 async function runAbiProbe(): Promise<Record<string, boolean>> {
@@ -203,16 +213,36 @@ async function runFaultProbe(
   config: ExtensionHostG24ProbeConfig,
   suffix: string,
 ): Promise<FaultProbeResult> {
+  let previousRuntimeId: string;
+  try {
+    previousRuntimeId = String(
+      await executeVscodeExtensionCommand(commandId(config, "runtime")),
+    );
+  } catch (error: unknown) {
+    throw new FaultProbeError(
+      "Could not read the active Worker runtime identity",
+      {
+        faultPhase: config.phase,
+        faultSuffix: suffix,
+        commandResult: null,
+        commandError: errorMessage(error),
+        active: isExtensionActivated(extensionId(config)),
+        latestActivationError: latestErrorMessage(error),
+      },
+    );
+  }
   let commandResult: unknown = null;
   let commandError: string | null = null;
   try {
-    commandResult = await executeVscodeExtensionCommand(commandId(config, suffix));
+    commandResult = await executeVscodeExtensionCommand(
+      commandId(config, suffix),
+    );
   } catch (error: unknown) {
     commandError = errorMessage(error);
   }
-  let latestActivationError: string | null = null;
+  let recovery: { runtimeId: string; latestError: string | null };
   try {
-    latestActivationError = await waitForWorkerRecovery(config);
+    recovery = await waitForWorkerRecovery(config, previousRuntimeId);
   } catch (error: unknown) {
     throw new FaultProbeError(errorMessage(error), {
       faultPhase: config.phase,
@@ -220,13 +250,14 @@ async function runFaultProbe(
       commandResult,
       commandError,
       active: isExtensionActivated(extensionId(config)),
+      previousRuntimeId,
       latestActivationError:
         error instanceof WorkerRecoveryError
           ? error.latestActivationError
           : latestErrorMessage(error),
     });
   }
-  const restarted = suffix === "crash" || commandError !== null;
+  const restarted = recovery.runtimeId !== previousRuntimeId;
   if (!restarted) {
     throw new FaultProbeError("Fault command did not fail closed", {
       faultPhase: config.phase,
@@ -234,7 +265,9 @@ async function runFaultProbe(
       commandResult,
       commandError,
       active: isExtensionActivated(extensionId(config)),
-      latestActivationError,
+      previousRuntimeId,
+      recoveredRuntimeId: recovery.runtimeId,
+      latestActivationError: recovery.latestError,
     });
   }
   return {
@@ -242,12 +275,16 @@ async function runFaultProbe(
     commandResult,
     commandError,
     active: isExtensionActivated(extensionId(config)),
-    latestActivationError,
+    previousRuntimeId,
+    recoveredRuntimeId: recovery.runtimeId,
+    latestActivationError: recovery.latestError,
     restarted,
   };
 }
 
-async function runProbe(config: ExtensionHostG24ProbeConfig): Promise<ProbeResult> {
+async function runProbe(
+  config: ExtensionHostG24ProbeConfig,
+): Promise<ProbeResult> {
   const id = extensionId(config);
   if (config.phase === "activate-v1" || config.phase === "activate-v2") {
     const version = await enableAndActivate(config);
@@ -342,7 +379,11 @@ async function runProbe(config: ExtensionHostG24ProbeConfig): Promise<ProbeResul
     const messageSizeRestarted = messageSize.restarted;
 
     try {
-      await marketplaceService.setExtensionEnabled(config.publisher, config.name, false);
+      await marketplaceService.setExtensionEnabled(
+        config.publisher,
+        config.name,
+        false,
+      );
     } catch (error: unknown) {
       throw new FaultProbeError(errorMessage(error), {
         faultPhase: config.phase,
@@ -354,16 +395,20 @@ async function runProbe(config: ExtensionHostG24ProbeConfig): Promise<ProbeResul
       });
     }
     await delay(0);
-    const disabled = !isExtensionActivated(id) && !hasCommand(config, "version");
+    const disabled =
+      !isExtensionActivated(id) && !hasCommand(config, "version");
     if (!disabled) {
-      throw new FaultProbeError("Disabled extension remained active or registered", {
-        faultPhase: config.phase,
-        faultSuffix: "disable",
-        commandResult: null,
-        commandError: null,
-        active: isExtensionActivated(id),
-        latestActivationError: null,
-      });
+      throw new FaultProbeError(
+        "Disabled extension remained active or registered",
+        {
+          faultPhase: config.phase,
+          faultSuffix: "disable",
+          commandResult: null,
+          commandError: null,
+          active: isExtensionActivated(id),
+          latestActivationError: null,
+        },
+      );
     }
     return {
       runId: config.runId,
@@ -390,10 +435,14 @@ async function runProbe(config: ExtensionHostG24ProbeConfig): Promise<ProbeResul
     };
   }
 
-  const uninstalled = !isExtensionActivated(id) && !hasCommand(config, "version");
+  const uninstalled =
+    !isExtensionActivated(id) && !hasCommand(config, "version");
   let installed = true;
   try {
-    await marketplaceService.getExtensionManifest(config.publisher, config.name);
+    await marketplaceService.getExtensionManifest(
+      config.publisher,
+      config.name,
+    );
   } catch {
     installed = false;
   }

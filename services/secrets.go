@@ -48,6 +48,7 @@ func newSerializedSecretAuditWriter(writer io.Writer) *serializedSecretAuditWrit
 		done:     make(chan struct{}),
 	}
 	go func() {
+		defer RecoverGoroutinePanic("secrets:audit-writer")
 		defer close(serialized.done)
 		for request := range serialized.requests {
 			n, err := writer.Write(request.data)
@@ -92,6 +93,11 @@ func (w *serializedSecretAuditWriter) Close() {
 //
 // Bare strings (no prefix) are treated as legacy plaintext for backward
 // compatibility with settings.json files written before N-13.
+// secretsTestAESOnly 是仅供测试使用的开关：置真时 darwin/linux 的
+// platformEncryptSecret 直接走 AES fallback，测试因此不会读写真实用户
+// keychain。由 services 包的 TestMain 设置；生产路径恒为 false。
+var secretsTestAESOnly = false
+
 const (
 	secretPrefixDPAPI   = "dpapi:"
 	secretPrefixAES     = "aes:"

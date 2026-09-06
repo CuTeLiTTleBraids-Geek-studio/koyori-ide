@@ -1,10 +1,11 @@
 # Versioned Extension Contribution Protocol
 
 > **Split status.** The G24 Worker ABI and lifecycle/fault-isolation path below
-> are implemented and have retained Windows packaged evidence. The E0-E5
+> are implemented and have historical Windows packaged evidence. The E0-E5
 > contribution envelope remains a design draft: there is still no implemented
-> versioned contribution schema or E0-E5 enforcement. The packaged result does
-> not make existing VSIX packages generally compatible or production-ready.
+> versioned contribution schema or E0-E5 enforcement. The historical packaged
+> result does not make existing VSIX packages generally compatible or
+> production-ready.
 
 ## Current boundary
 
@@ -44,16 +45,19 @@ This is a runtime protocol, distinct from the E0-E5 contribution envelope
 below. It does not implement the versioned contribution schema proposed in this
 document.
 
-### Retained G24 packaged evidence (2026-08-11)
+### Historical G24 packaged evidence (2026-08-11)
 
-`build/e2e-evidence/packaged-e2e/manifest.json` records `status=passed` and
-24/24 passed fixtures for a Windows x64, `desktop,production,e2e`-tagged
-artifact. The tested artifact SHA-256 is
-`7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181` and
-its source fingerprint is
+The 2026-08-11 historical Windows x64 run recorded `status=passed` and 24/24
+fixtures for a `desktop,production,e2e`-tagged artifact. The tested artifact
+SHA-256 was
+`7e8abff533098129f6cf858dd9278053c71786edbf5858a6003452589f07b181` and its
+source fingerprint was
 `690aa31cad880bf803037ab734207a9e1f7281d9e05140f65daaef15bd7b6180`.
-The workspace had no Git metadata, so the fingerprint is not a commit or CI
-attestation.
+The workspace had no Git metadata, so the fingerprint was not a commit or CI
+attestation. The current authoritative
+`build/e2e-evidence/packaged-e2e/manifest.json` has since overwritten that
+record and is partial (11/24); it does not satisfy current-code qualification
+or G40-AC6.
 
 The `extension-host-g24-package` fixture retains the following concrete
 evidence:

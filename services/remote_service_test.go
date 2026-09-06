@@ -7,27 +7,42 @@ package services
 //   - SSHConfig 校验: 空 Host、无效 Port、空 User、缺少认证
 //   - RemoteService: 无效主机连接失败、断开未连接会话、空连接列表
 //
-// 注意：完整的 SSH 连接测试需要 mock SSH server。本测试集仅做配置校验与
-// 失败路径测试，不依赖外部 SSH 服务器，可在 CI 中无网络环境下稳定运行。
+// 注意：完整的 SSH 连接测试需要 mock SSH server；task-4.md 要求通过
+// skipIfNoSSHServer 跳过此类测试。本测试集仅做配置校验与失败路径测试，
+// 不依赖外部 SSH 服务器，可在 CI 中无网络环境下稳定运行。
 
 import (
 	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
+
+func remoteTestSession(generation uint64) *SSHSession {
+	return &SSHSession{
+		generation: generation, HostID: "host-id", HostInstanceNonce: "host-instance-nonce",
+		WorkspaceID: "workspace-id",
+	}
+}
 
 func TestLocalFileSystem_WatchCancellationClosesChannel(t *testing.T) {
 	dir := t.TempDir()
@@ -466,7 +481,7 @@ func TestRemoteService_Connect_DuplicateName(t *testing.T) {
 	svc := NewRemoteService()
 	// 直接预填充 sessions 模拟已连接状态。
 	svc.mu.Lock()
-	svc.sessions["dup"] = &SSHSession{}
+	svc.sessions["dup"] = remoteTestSession(1)
 	svc.mu.Unlock()
 
 	err := svc.Connect("dup", SSHConfig{
@@ -509,7 +524,7 @@ func TestRemoteService_ExecuteCommand_NotConnected(t *testing.T) {
 
 func TestRemoteService_CommandApprovalFailClosed(t *testing.T) {
 	svc := NewRemoteService()
-	svc.sessions["session"] = &SSHSession{generation: 7}
+	svc.sessions["session"] = remoteTestSession(7)
 	svc.approveCommand = nil
 
 	if _, err := svc.RequestCommandApproval("session", []string{"ls"}); err == nil {
@@ -522,7 +537,7 @@ func TestRemoteService_CommandApprovalFailClosed(t *testing.T) {
 
 func TestRemoteService_CommandApprovalBindsPayloadAndIsSingleUse(t *testing.T) {
 	svc := NewRemoteService()
-	svc.sessions["session"] = &SSHSession{generation: 7}
+	svc.sessions["session"] = remoteTestSession(7)
 	svc.approveCommand = func(string, []string) bool { return true }
 
 	token, err := svc.RequestCommandApproval("session", []string{"ls", "-1"})
@@ -541,19 +556,19 @@ func TestRemoteService_CommandApprovalBindsGenerationAndTTL(t *testing.T) {
 	now := time.Now()
 	svc := NewRemoteService()
 	svc.now = func() time.Time { return now }
-	svc.sessions["session"] = &SSHSession{generation: 7}
+	svc.sessions["session"] = remoteTestSession(7)
 	svc.approveCommand = func(string, []string) bool { return true }
 
 	token, err := svc.RequestCommandApproval("session", []string{"ls"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.sessions["session"] = &SSHSession{generation: 8}
+	svc.sessions["session"] = remoteTestSession(8)
 	if _, err := svc.executeCommandContext(context.Background(), "session", []string{"ls"}, token); err == nil {
 		t.Fatal("approval token survived a connection generation change")
 	}
 
-	svc.sessions["session"] = &SSHSession{generation: 9}
+	svc.sessions["session"] = remoteTestSession(9)
 	token, err = svc.RequestCommandApproval("session", []string{"pwd"})
 	if err != nil {
 		t.Fatal(err)
@@ -564,13 +579,291 @@ func TestRemoteService_CommandApprovalBindsGenerationAndTTL(t *testing.T) {
 	}
 }
 
+func TestRemoteService_ApprovalBindsHostAndWorkspaceScope(t *testing.T) {
+	svc := NewRemoteService()
+	svc.approveCommand = func(string, []string) bool { return true }
+
+	hostA := remoteTestSession(7)
+	hostB := remoteTestSession(7)
+	hostB.HostID = "different-host-id"
+	svc.sessions["host-a"] = hostA
+	svc.sessions["host-b"] = hostB
+	token, err := svc.RequestCommandApproval("host-a", []string{"ls"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.executeCommandContext(context.Background(), "host-b", []string{"ls"}, token); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("cross-host approval error = %v, want ErrNotAllowed", err)
+	}
+
+	svc.sessions["workspace"] = remoteTestSession(8)
+	token, err = svc.RequestCommandApproval("workspace", []string{"pwd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.sessions["workspace"].WorkspaceID = "different-workspace-id"
+	if _, err := svc.executeCommandContext(context.Background(), "workspace", []string{"pwd"}, token); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("cross-workspace approval error = %v, want ErrNotAllowed", err)
+	}
+}
+
+func TestRemoteService_ApprovalBindingRejectsScopeTamper(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*remoteCommandApproval)
+	}{
+		{name: "host", mutate: func(a *remoteCommandApproval) { a.scope.HostID = "tampered-host" }},
+		{name: "nonce", mutate: func(a *remoteCommandApproval) { a.scope.HostInstanceNonce = "tampered-nonce" }},
+		{name: "workspace", mutate: func(a *remoteCommandApproval) { a.scope.WorkspaceID = "tampered-workspace" }},
+		{name: "generation", mutate: func(a *remoteCommandApproval) { a.scope.Generation++ }},
+	}
+	for _, tt := range mutations {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewRemoteService()
+			svc.sessions["session"] = remoteTestSession(7)
+			svc.approveCommand = func(string, []string) bool { return true }
+			token, err := svc.RequestCommandApproval("session", []string{"ls"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			approval := svc.approvals[token]
+			tt.mutate(&approval)
+			svc.approvals[token] = approval
+			if _, err := svc.executeCommandContext(context.Background(), "session", []string{"ls"}, token); !errors.Is(err, ErrNotAllowed) {
+				t.Fatalf("tampered binding error = %v, want ErrNotAllowed", err)
+			}
+		})
+	}
+}
+
+func TestRemoteService_DisconnectRevokesScopeApprovals(t *testing.T) {
+	svc := NewRemoteService()
+	svc.sessions["session"] = remoteTestSession(7)
+	svc.approveCommand = func(string, []string) bool { return true }
+	token, err := svc.RequestCommandApproval("session", []string{"ls"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Disconnect("session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := svc.approvals[token]; exists {
+		t.Fatal("Disconnect retained an approval for the disconnected scope")
+	}
+}
+
+func TestRemoteHostKeyDigestStableAndDistinct(t *testing.T) {
+	keyA := newRemoteTestSigner(t)
+	keyB := newRemoteTestSigner(t)
+	want := sha256.Sum256(keyA.PublicKey().Marshal())
+	if got := remoteHostID(keyA.PublicKey()); got != hex.EncodeToString(want[:]) {
+		t.Fatalf("HostID = %q, want SHA-256 of public key marshal bytes", got)
+	}
+	first := remoteHostID(keyA.PublicKey())
+	second := remoteHostID(keyA.PublicKey())
+	if first != second {
+		t.Fatal("same SSH host key produced unstable HostID")
+	}
+	if remoteHostID(keyA.PublicKey()) == remoteHostID(keyB.PublicKey()) {
+		t.Fatal("different SSH host keys produced the same HostID")
+	}
+}
+
+func TestRemoteService_HostIdentityConnectAndReconnectScope(t *testing.T) {
+	signer := newRemoteTestSigner(t)
+	host, port, knownHostsPath, stop := startRemoteTestSSHServer(t, signer)
+	defer stop()
+	config := SSHConfig{Host: host, Port: port, User: "test", Password: "test", KnownHostsPath: knownHostsPath}
+	svc := NewRemoteService()
+	svc.approveCommand = func(string, []string) bool { return true }
+
+	if err := svc.Connect("same-renderer-name", config); err != nil {
+		t.Fatal(err)
+	}
+	info, err := svc.hostInfo("same-renderer-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.HostID != remoteHostID(signer.PublicKey()) {
+		t.Fatalf("verified HostID = %q, want %q", info.HostID, remoteHostID(signer.PublicKey()))
+	}
+	scope, err := svc.scope("same-renderer-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.WorkspaceID != remoteWorkspaceID(remoteWorkspaceRootSentinel) || scope.HostID != info.HostID {
+		t.Fatalf("unexpected connected scope: %+v", scope)
+	}
+	oldToken, err := svc.RequestCommandApproval("same-renderer-name", []string{"ls"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Disconnect("same-renderer-name"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Connect("same-renderer-name", config); err != nil {
+		t.Fatal(err)
+	}
+	newInfo, err := svc.hostInfo("same-renderer-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newInfo.HostID != info.HostID {
+		t.Fatalf("same verified key changed HostID: %q -> %q", info.HostID, newInfo.HostID)
+	}
+	if newInfo.HostInstanceNonce == info.HostInstanceNonce {
+		t.Fatal("successful reconnect reused HostInstanceNonce")
+	}
+	if _, err := svc.executeCommandContext(context.Background(), "same-renderer-name", []string{"ls"}, oldToken); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("pre-reconnect token error = %v, want ErrNotAllowed", err)
+	}
+	_ = svc.Close()
+}
+
+func TestRemoteService_HostVerificationFailureDoesNotReturnIdentity(t *testing.T) {
+	serverSigner := newRemoteTestSigner(t)
+	wrongSigner := newRemoteTestSigner(t)
+	host, port, knownHostsPath, stop := startRemoteTestSSHServerWithKnownKey(t, serverSigner, wrongSigner.PublicKey())
+	defer stop()
+	client, hostID, err := dialSSHWithHostIdentity(SSHConfig{
+		Host: host, Port: port, User: "test", Password: "test", KnownHostsPath: knownHostsPath,
+	})
+	if client != nil {
+		_ = client.Close()
+		t.Fatal("host key mismatch unexpectedly connected")
+	}
+	if err == nil {
+		t.Fatal("host key mismatch returned no error")
+	}
+	if hostID != "" {
+		t.Fatalf("failed host verification returned identity %q", hostID)
+	}
+}
+
+func newRemoteTestSigner(t *testing.T) ssh.Signer {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
+
+func startRemoteTestSSHServer(t *testing.T, signer ssh.Signer) (string, int, string, func()) {
+	return startRemoteTestSSHServerWithKnownKey(t, signer, signer.PublicKey())
+}
+
+func startRemoteTestSSHServerWithKnownKey(t *testing.T, serverSigner ssh.Signer, knownKey ssh.PublicKey) (string, int, string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	knownLine := fmt.Sprintf("%s %s", knownhosts.Normalize(listener.Addr().String()), ssh.MarshalAuthorizedKey(knownKey))
+	if err := os.WriteFile(knownHostsPath, []byte(knownLine), 0600); err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	serverConfig := &ssh.ServerConfig{NoClientAuth: true}
+	serverConfig.AddHostKey(serverSigner)
+	done := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case <-stop:
+					return
+				default:
+					continue
+				}
+			}
+			go serveRemoteTestSSHConnection(conn, serverConfig)
+		}
+	}()
+	cleanup := func() {
+		close(stop)
+		_ = listener.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("remote SSH test server did not stop")
+		}
+	}
+	return host, port, knownHostsPath, cleanup
+}
+
+func serveRemoteTestSSHConnection(raw net.Conn, config *ssh.ServerConfig) {
+	defer raw.Close()
+	conn, channels, requests, err := ssh.NewServerConn(raw, config)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	go ssh.DiscardRequests(requests)
+	for incoming := range channels {
+		if incoming.ChannelType() != "session" {
+			_ = incoming.Reject(ssh.UnknownChannelType, "session required")
+			continue
+		}
+		channel, channelRequests, err := incoming.Accept()
+		if err != nil {
+			continue
+		}
+		go serveRemoteTestSSHSession(channel, channelRequests)
+	}
+}
+
+func serveRemoteTestSSHSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+	defer channel.Close()
+	for request := range requests {
+		switch request.Type {
+		case "subsystem":
+			if len(request.Payload) < 4 || string(request.Payload[4:]) != "sftp" {
+				_ = request.Reply(false, nil)
+				continue
+			}
+			_ = request.Reply(true, nil)
+			server := sftp.NewRequestServer(channel, sftp.InMemHandler())
+			_ = server.Serve()
+			return
+		case "exec":
+			_ = request.Reply(true, nil)
+			_ = channel.CloseWrite()
+			payload := make([]byte, 4)
+			_, _ = channel.SendRequest("exit-status", false, payload)
+			return
+		default:
+			_ = request.Reply(false, nil)
+		}
+	}
+}
+
 func TestRemoteService_CommandSecurityAudit(t *testing.T) {
 	logs := captureSecurityAudit(t)
 	client, cleanup := newAuditTestSSHClient(t)
 	defer cleanup()
 
 	svc := NewRemoteService()
-	svc.sessions["audit-session"] = &SSHSession{client: client}
+	svc.sessions["audit-session"] = remoteTestSession(1)
+	svc.sessions["audit-session"].client = client
 	svc.approveCommand = func(string, []string) bool { return true }
 
 	successArgv := []string{"audit-success-secret"}
@@ -737,7 +1030,7 @@ func TestRemoteService_ExecuteCommand_EmptyArgv(t *testing.T) {
 	svc := NewRemoteService()
 	// 预填充 sessions 模拟已连接（避免触发真实拨号）。
 	svc.mu.Lock()
-	svc.sessions["conn"] = &SSHSession{}
+	svc.sessions["conn"] = remoteTestSession(1)
 	svc.mu.Unlock()
 	defer svc.Disconnect("conn")
 
@@ -830,8 +1123,8 @@ func TestRemoteService_DisconnectAll(t *testing.T) {
 	svc := NewRemoteService()
 	// 预填充多个会话（模拟已连接状态）。
 	svc.mu.Lock()
-	svc.sessions["a"] = &SSHSession{}
-	svc.sessions["b"] = &SSHSession{}
+	svc.sessions["a"] = remoteTestSession(1)
+	svc.sessions["b"] = remoteTestSession(2)
 	svc.mu.Unlock()
 
 	svc.DisconnectAll()
@@ -843,8 +1136,8 @@ func TestRemoteService_DisconnectAll(t *testing.T) {
 func TestRemoteService_DisconnectIsolatesNamedSession(t *testing.T) {
 	svc := NewRemoteService()
 	svc.mu.Lock()
-	svc.sessions["keep"] = &SSHSession{}
-	svc.sessions["remove"] = &SSHSession{}
+	svc.sessions["keep"] = remoteTestSession(1)
+	svc.sessions["remove"] = remoteTestSession(2)
 	svc.mu.Unlock()
 
 	if err := svc.Disconnect("remove"); err != nil {
@@ -861,7 +1154,7 @@ func TestRemoteService_DisconnectIsolatesNamedSession(t *testing.T) {
 func TestRemoteService_CloseClearsSessionsAndPreventsReconnect(t *testing.T) {
 	svc := NewRemoteService()
 	svc.mu.Lock()
-	svc.sessions["existing"] = &SSHSession{}
+	svc.sessions["existing"] = remoteTestSession(1)
 	svc.mu.Unlock()
 
 	if err := svc.Close(); err != nil {

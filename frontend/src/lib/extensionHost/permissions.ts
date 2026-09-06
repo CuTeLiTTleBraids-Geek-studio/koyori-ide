@@ -137,21 +137,17 @@ export function classifyExtension(
 }
 
 /**
- * Executable extensions must explicitly declare their permission list, even
- * when it is empty. This preserves the distinction between a reviewed
- * `permissions: []` declaration and an omitted field from an untrusted
- * manifest. Non-executable contribution-only extensions may omit it.
+ * Normalize a descriptor's permissions without requiring the legacy
+ * `koyoriIde.permissions` declaration. VSIX installation derives this list
+ * from the manifest and bundled entrypoint before the descriptor is created;
+ * a missing list here therefore means the descriptor has no granted
+ * privileged capabilities, rather than an install-time rejection.
  */
 export function requireDeclaredPermissions(
   permissions: ExtensionPermission[] | undefined,
-  hasExecutableMain: boolean,
+  _hasExecutableMain: boolean,
 ): ExtensionPermission[] {
   if (!Array.isArray(permissions)) {
-    if (hasExecutableMain) {
-      throw new Error(
-        "Executable extensions must declare permissions explicitly (use an empty array when none are required)",
-      );
-    }
     return [];
   }
   const validated: ExtensionPermission[] = [];

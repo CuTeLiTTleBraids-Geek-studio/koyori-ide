@@ -232,7 +232,25 @@ func TestWindowService_SendSelectionToAI_EmptyCodeNoOp(t *testing.T) {
 	t.Parallel()
 	w := &WindowService{}
 	// Must not panic with empty code even without app.
-	w.SendSelectionToAI("", "go", "main.go")
+	if err := w.SendSelectionToAI("", "go", "main.go"); err != nil {
+		t.Fatalf("empty selection returned error: %v", err)
+	}
+}
+
+func TestWindowService_SendSelectionToAI_RequiresRuntimeWithoutOpeningWindow(t *testing.T) {
+	t.Parallel()
+	w := &WindowService{}
+	fake := &lifecycleTestAIWindow{service: w, visible: true}
+	w.mu.Lock()
+	w.aiWindow = fake
+	w.mu.Unlock()
+
+	if err := w.SendSelectionToAI("const answer = 42", "typescript", "main.ts"); err == nil {
+		t.Fatal("expected missing application runtime to fail closed")
+	}
+	if len(fake.operations) != 0 {
+		t.Fatalf("selection emit unexpectedly manipulated the AI window: %v", fake.operations)
+	}
 }
 
 func TestWindowService_OpenPathValidation(t *testing.T) {

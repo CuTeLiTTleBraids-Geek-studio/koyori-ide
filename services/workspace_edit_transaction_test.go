@@ -244,10 +244,21 @@ func TestApplyEditTransaction_DirtyBuffer_Conflict(t *testing.T) {
 
 // AC: pathsec — path outside root → fail-closed.
 func TestApplyEditTransaction_PathOutsideRoot_Rejected(t *testing.T) {
-	root, _ := tempWorkspace(t, nil)
-	outside := filepath.Join(os.TempDir(), "outside.txt")
-	_ = os.WriteFile(outside, []byte("secret"), 0644)
-	defer os.Remove(outside)
+	// Keep the outside fixture private to this test while retaining a real
+	// sibling boundary. A fixed path under the process-wide temp directory lets
+	// parallel worktrees overwrite one another and can make the assertion flaky.
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatalf("create workspace root: %v", err)
+	}
+	outside := filepath.Join(parent, "outside", "outside.txt")
+	if err := os.MkdirAll(filepath.Dir(outside), 0755); err != nil {
+		t.Fatalf("create outside fixture directory: %v", err)
+	}
+	if err := os.WriteFile(outside, []byte("secret"), 0644); err != nil {
+		t.Fatalf("seed outside fixture: %v", err)
+	}
 
 	pf := WorkspaceEditPreviewFile{
 		FilePath:        outside,

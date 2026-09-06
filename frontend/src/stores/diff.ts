@@ -177,6 +177,11 @@ export function setDiffBackend(b: DiffBackend): void {
 
 // ---- Step 1: 计算 diff ----
 
+export async function computeFileDiffPreview(path: string, oldContent: string, newContent: string): Promise<FileDiff> {
+  const b = await getBackend();
+  return b.computeFileDiff(path, oldContent, newContent);
+}
+
 export async function computeFileDiff(path: string, oldContent: string, newContent: string): Promise<void> {
   diffState.loading = true;
   diffState.error = null;

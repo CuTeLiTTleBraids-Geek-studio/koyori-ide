@@ -18,6 +18,11 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const callByNameMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const callByIdMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
+const appStateMock = vi.hoisted(() => ({
+  currentProject: "/test/project",
+  language: "en",
+  workspaceGeneration: 1,
+}));
 
 function callExtensionBinding(...args: unknown[]): Promise<unknown> {
   const handler = (
@@ -57,18 +62,14 @@ vi.mock("../../../bindings/github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/se
 // Mock @/stores/app to break the Monaco editor import chain in jsdom
 // (mirrors pluginRegistry.test.ts). appState.currentProject is the
 // workspace root used to resolve relative URIs from extensions.
-vi.mock("@/stores/app", () => ({
-  appState: {
-    currentProject: "/test/project",
-    language: "en",
-  },
-}));
+vi.mock("@/stores/app", () => ({ appState: appStateMock }));
 
 // Mock @/api/services so workspace.fs bridges to a controllable fake
 // instead of the real Wails FileService bindings (which are absent in
 // jsdom).
 const readFileMock = vi.fn<(path: string) => Promise<string>>();
 const writeFileMock = vi.fn<(path: string, content: string) => Promise<void>>();
+const listDirectoryMock = vi.fn<(path: string) => Promise<Array<Record<string, unknown>>>>();
 const launchWithConfigMock = vi.fn<
   (config: Record<string, unknown>) => Promise<void>
 >();
@@ -84,6 +85,7 @@ vi.mock("@/api/services", () => ({
   fileService: {
     readFile: (path: string) => readFileMock(path),
     writeFile: (path: string, content: string) => writeFileMock(path, content),
+    listDirectory: (path: string) => listDirectoryMock(path),
   },
   debugService: {
     launchWithConfig: (config: Record<string, unknown>) =>
@@ -145,8 +147,12 @@ beforeEach(() => {
     }
   ).__koyoriIdeExtensionBindingCall = (...args: unknown[]) => callByIdMock(...args);
   vi.stubGlobal("crypto", webcrypto as unknown as Crypto);
+  appStateMock.currentProject = "/test/project";
+  appStateMock.workspaceGeneration = 1;
   readFileMock.mockReset();
   writeFileMock.mockReset();
+  listDirectoryMock.mockReset();
+  listDirectoryMock.mockResolvedValue([]);
   launchWithConfigMock.mockReset();
   launchWithConfigMock.mockResolvedValue(undefined);
   startSessionMock.mockReset();
@@ -274,9 +280,10 @@ describe("ExtensionHost activation", () => {
     ).rejects.toThrow(/unknown extension permission/i);
   });
 
-  it("rejects an executable extension that omitted its permissions declaration", async () => {
+  it("activates an executable extension when permissions are omitted", async () => {
+    const activate = vi.fn();
     const loadModule = vi.fn<() => Promise<ExtensionModule>>().mockResolvedValue({
-      activate: vi.fn(),
+      activate,
     });
     const host = new ExtensionHost({ loadModule });
     const descriptor = {
@@ -284,8 +291,13 @@ describe("ExtensionHost activation", () => {
       mainPath: "/exts/undeclared/main.js",
     } as ExtensionDescriptor;
 
-    await expect(host.activate(descriptor)).rejects.toThrow(/declare permissions/i);
-    expect(loadModule).not.toHaveBeenCalled();
+    await expect(host.activate(descriptor)).resolves.toBeUndefined();
+    expect(loadModule).toHaveBeenCalledWith(
+      "undeclared.ext",
+      "/exts/undeclared/main.js",
+    );
+    expect(activate).toHaveBeenCalledTimes(1);
+    expect(host.getSecurityLevel("undeclared.ext")).toBe("Trusted");
   });
 
   it("activates an extension and invokes its activate() with the vscode API", async () => {
@@ -376,7 +388,14 @@ describe("ExtensionHost activation", () => {
 
 describe("ExtensionHost deactivation", () => {
   it("calls deactivate() and disposes all tracked disposables", async () => {
-    const host = new ExtensionHost();
+    const host = new ExtensionHost({
+      monaco: {
+        languages: {
+          registerCompletionItemProvider: () => ({ dispose: () => undefined }),
+          registerHoverProvider: () => ({ dispose: () => undefined }),
+        },
+      },
+    });
     const disposed: string[] = [];
     const deactivate = vi.fn(() => Promise.resolve());
 
@@ -897,6 +916,55 @@ describe("Monaco language-provider bridging", () => {
     expect(registerHover).toHaveBeenCalledTimes(1);
     const call0 = registerHover.mock.calls[0] as unknown as [string, unknown];
     expect(call0[0]).toBe("typescript");
+  });
+
+  it("fails closed when Monaco lacks the requested provider method", async () => {
+    const host = new ExtensionHost({
+      monaco: {
+        languages: {
+          registerCompletionItemProvider: vi.fn(() => ({ dispose: vi.fn() })),
+          registerHoverProvider: vi.fn(() => ({ dispose: vi.fn() })),
+        },
+      },
+    });
+
+    await expect(host.activateWithModule(makeDescriptor({ id: "missing-provider" }), {
+      activate: (api: VscodeAPI) => {
+        api.languages.registerReferenceProvider(
+          { language: "typescript" },
+          { provideReferences: () => [] },
+        );
+      },
+    })).rejects.toThrow(/KOYORI_IDE_EXT_API_UNSUPPORTED.*languages\.registerProvider/);
+    expect(host.isActive("missing-provider")).toBe(false);
+  });
+
+  it("rolls back selector-array registrations after a later filter fails", async () => {
+    const firstDisposable = { dispose: vi.fn() };
+    const registerDefinitionProvider = vi.fn()
+      .mockReturnValueOnce(firstDisposable)
+      .mockImplementationOnce(() => { throw new Error("second selector failed"); });
+    const host = new ExtensionHost({
+      monaco: {
+        languages: {
+          registerCompletionItemProvider: vi.fn(() => ({ dispose: vi.fn() })),
+          registerHoverProvider: vi.fn(() => ({ dispose: vi.fn() })),
+          registerDefinitionProvider,
+        },
+      },
+    });
+
+    await expect(host.activateWithModule(makeDescriptor({ id: "selector-rollback" }), {
+      activate: (api: VscodeAPI) => {
+        api.languages.registerDefinitionProvider(
+          [{ language: "go" }, { language: "typescript" }],
+          { provideDefinition: () => null },
+        );
+      },
+    })).rejects.toThrow("second selector failed");
+    expect(registerDefinitionProvider).toHaveBeenCalledTimes(2);
+    expect(firstDisposable.dispose).toHaveBeenCalled();
+    expect(host.isActive("selector-rollback")).toBe(false);
   });
 });
 
@@ -1632,52 +1700,47 @@ describe("env.openExternal runtime confirmation", () => {
 });
 
 describe("window.createTerminal runtime confirmation", () => {
-  it("creates distinct backend sessions for same-millisecond terminals", async () => {
-    const { terminalService } = await import("@/api/services");
-    const startSessionSpy = vi
-      .spyOn(terminalService, "startSession")
-      .mockImplementation((id, cwd, shell) => startSessionMock(id, cwd, shell));
-    const killSessionSpy = vi
-      .spyOn(terminalService, "killSession")
-      .mockImplementation((id) => killSessionMock(id));
+  it("creates distinct backend sessions for consecutive terminals", async () => {
     await import("@/stores/app");
-    const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
-    let timeRestored = false;
+    const confirmHandler = vi.fn(async () => true);
+    const host = new ExtensionHost({ confirmHandler });
+    let first: ReturnType<VscodeAPI["window"]["createTerminal"]> | undefined;
+    let second: ReturnType<VscodeAPI["window"]["createTerminal"]> | undefined;
     try {
-      const confirmHandler = vi.fn(async () => true);
-      const host = new ExtensionHost({ confirmHandler });
       let api: VscodeAPI | undefined;
       await host.activateWithModule(
         makeDescriptor({ id: "terminal/ext", permissions: ["shell.execute"] }),
         { activate: (value: VscodeAPI) => { api = value; } },
       );
 
-      const first = api!.window.createTerminal();
-      const second = api!.window.createTerminal();
+      first = api!.window.createTerminal();
+      second = api!.window.createTerminal();
       expect(confirmHandler).toHaveBeenCalledTimes(2);
-      now.mockRestore();
-      timeRestored = true;
       await vi.waitFor(
-        () => expect(startSessionSpy).toHaveBeenCalledTimes(2),
+        () => expect(startSessionMock).toHaveBeenCalledTimes(2),
         { timeout: 10_000 },
       );
 
-      const firstId = startSessionSpy.mock.calls[0][0];
-      const secondId = startSessionSpy.mock.calls[1][0];
+      const firstId = startSessionMock.mock.calls[0][0];
+      const secondId = startSessionMock.mock.calls[1][0];
       expect(firstId).not.toBe(secondId);
       expect(firstId).toMatch(/^ext-terminal%2Fext-/);
       expect(secondId).toMatch(/^ext-terminal%2Fext-/);
 
       first.dispose();
       second.dispose();
+      first = undefined;
+      second = undefined;
       await vi.waitFor(
-        () => expect(killSessionSpy).toHaveBeenCalledTimes(2),
+        () => expect(killSessionMock).toHaveBeenCalledTimes(2),
         { timeout: 5_000 },
       );
-      expect(killSessionSpy).toHaveBeenCalledWith(firstId);
-      expect(killSessionSpy).toHaveBeenCalledWith(secondId);
+      expect(killSessionMock).toHaveBeenCalledWith(firstId);
+      expect(killSessionMock).toHaveBeenCalledWith(secondId);
     } finally {
-      if (!timeRestored) now.mockRestore();
+      first?.dispose();
+      second?.dispose();
+      await host.disposeAll();
     }
   }, 20_000);
 
@@ -2275,5 +2338,152 @@ describe("G13 extension API no-fake-success", () => {
 
     await api!.window.showErrorMessage("boom");
     expect(onNotify).toHaveBeenCalledWith("error", expect.stringContaining("boom"));
+  });
+
+  it("returns input and picker callback results, including explicit cancellation", async () => {
+    const onShowInputBox = vi.fn().mockResolvedValue("typed value");
+    const onShowQuickPick = vi.fn().mockResolvedValue("second");
+    const host = new ExtensionHost({ onShowInputBox, onShowQuickPick });
+    let api: VscodeAPI | undefined;
+    await host.activateWithModule(
+      makeDescriptor({ id: "picker.ext", permissions: ["ui.notifications"] }),
+      { activate: (value: VscodeAPI) => { api = value; } },
+    );
+    await expect(api!.window.showInputBox({ prompt: "Name" })).resolves.toBe("typed value");
+    await expect(api!.window.showQuickPick(["first", "second"])).resolves.toBe("second");
+    onShowInputBox.mockResolvedValueOnce(undefined);
+    onShowQuickPick.mockResolvedValueOnce(undefined);
+    await expect(api!.window.showInputBox()).resolves.toBeUndefined();
+    await expect(api!.window.showQuickPick(["first"])).resolves.toBeUndefined();
+  });
+
+  it("fails closed when a G39 callback is absent", async () => {
+    const host = new ExtensionHost();
+    let api: VscodeAPI | undefined;
+    await host.activateWithModule(
+      makeDescriptor({ id: "missing-ui.ext", permissions: ["ui.notifications"] }),
+      { activate: (value: VscodeAPI) => { api = value; } },
+    );
+    await expect(
+      Promise.resolve().then(() => api!.window.withProgress({ title: "Work" }, async () => "done")),
+    ).rejects.toThrow(/KOYORI_IDE_EXT_API_UNSUPPORTED/);
+    expect(() => api!.window.setStatusBarMessage("Ready"))
+      .toThrow(/KOYORI_IDE_EXT_API_UNSUPPORTED/);
+    expect(() => api!.window.createStatusBarItem())
+      .toThrow(/KOYORI_IDE_EXT_API_UNSUPPORTED/);
+    expect(() => api!.window.createOutputChannel("Missing"))
+      .toThrow(/KOYORI_IDE_EXT_API_UNSUPPORTED/);
+    expect(() => api!.workspace.createFileSystemWatcher("**/*.ts"))
+      .toThrow(/fs.read|permission|watch/i);
+  });
+
+  it("awaits progress work and exposes status/output lifecycle", async () => {
+    const events: string[] = [];
+    const statusItem = {
+      text: "",
+      tooltip: undefined as string | undefined,
+      command: undefined as string | undefined,
+      show: vi.fn(() => events.push("show")),
+      hide: vi.fn(() => events.push("hide")),
+      dispose: vi.fn(() => events.push("dispose")),
+    };
+    const statusMessage = vi.fn(() => ({ dispose: vi.fn(() => events.push("status-dispose")) }));
+    const output = vi.fn<(channel: string, action: "append" | "appendLine" | "clear" | "show" | "hide" | "dispose", value?: string) => void>();
+    const onWithProgress = vi.fn(async (_options, task) => task({ report: (value: { message?: string }) => events.push(value.message ?? "reported") }));
+    const host = new ExtensionHost({
+      onSetStatusBarMessage: statusMessage,
+      onCreateStatusBarItem: () => statusItem,
+      onOutput: output,
+      onWithProgress,
+    });
+    let api: VscodeAPI | undefined;
+    await host.activateWithModule(
+      makeDescriptor({ id: "surface.ext", permissions: ["ui.notifications"] }),
+      { activate: (value: VscodeAPI) => { api = value; } },
+    );
+    const message = api!.window.setStatusBarMessage("Ready", 1000);
+    message.dispose();
+    expect(statusMessage).toHaveBeenCalledWith("Ready", 1000);
+    const item = api!.window.createStatusBarItem();
+    item.text = "Ready";
+    item.show();
+    item.hide();
+    item.dispose();
+    const channel = api!.window.createOutputChannel("Surface");
+    channel.appendLine("hello");
+    channel.show();
+    channel.clear();
+    channel.dispose();
+    await expect(api!.window.withProgress({ title: "Work" }, async (progress) => {
+      progress.report({ message: "half" });
+      await Promise.resolve();
+      return "done";
+    })).resolves.toBe("done");
+    expect(onWithProgress).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(expect.arrayContaining(["show", "hide", "dispose", "half", "status-dispose"]));
+    expect(output.mock.calls.map((call) => call[1])).toEqual(["appendLine", "show", "clear", "dispose"]);
+  });
+
+  it("forwards configuration changes and stops after listener disposal", async () => {
+    const host = new ExtensionHost({ onGetConfiguration: () => ({ editor: { fontSize: 14 } }) });
+    let api: VscodeAPI | undefined;
+    await host.activateWithModule(
+      makeDescriptor({ id: "config.ext" }),
+      { activate: (value: VscodeAPI) => { api = value; } },
+    );
+    const listener = vi.fn();
+    const disposable = api!.workspace.onDidChangeConfiguration(listener);
+    host.notifyConfigurationChange("editor");
+    expect(listener).toHaveBeenCalledTimes(1);
+    const event = listener.mock.calls[0][0] as { affectsConfiguration(section: string): boolean };
+    expect(event.affectsConfiguration("editor.fontSize")).toBe(true);
+    disposable.dispose();
+    host.notifyConfigurationChange("editor");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports watcher create/change/delete, ignores outside paths, and invalidates on generation change", async () => {
+    vi.useFakeTimers();
+    try {
+      let entries: Array<Record<string, unknown>> = [];
+      listDirectoryMock.mockImplementation(async (directory) => {
+        if (directory === "/test/project") return entries;
+        return [];
+      });
+      const host = new ExtensionHost();
+      let api: VscodeAPI | undefined;
+      await host.activateWithModule(
+        makeDescriptor({ id: "watcher.ext", permissions: ["fs.read"] }),
+        { activate: (value: VscodeAPI) => { api = value; } },
+      );
+      const watcher = api!.workspace.createFileSystemWatcher("**/*.ts");
+      const created: string[] = [];
+      const changed: string[] = [];
+      const deleted: string[] = [];
+      watcher.onDidCreate((uri) => created.push(uri.fsPath));
+      watcher.onDidChange((uri) => changed.push(uri.fsPath));
+      watcher.onDidDelete((uri) => deleted.push(uri.fsPath));
+      await vi.advanceTimersByTimeAsync(0);
+      entries = [
+        { path: "/test/project/src/a.ts", isDir: false, size: 1, modified: 1 },
+        { path: "/outside/ignored.ts", isDir: false, size: 1, modified: 1 },
+      ];
+      await vi.advanceTimersByTimeAsync(500);
+      expect(created).toEqual(["/test/project/src/a.ts"]);
+      entries = [{ path: "/test/project/src/a.ts", isDir: false, size: 2, modified: 2 }];
+      await vi.advanceTimersByTimeAsync(500);
+      expect(changed).toEqual(["/test/project/src/a.ts"]);
+      entries = [];
+      await vi.advanceTimersByTimeAsync(500);
+      expect(deleted).toEqual(["/test/project/src/a.ts"]);
+      appStateMock.workspaceGeneration = 2;
+      entries = [{ path: "/test/project/src/new.ts", isDir: false, size: 1, modified: 1 }];
+      await vi.advanceTimersByTimeAsync(500);
+      expect(created).toEqual(["/test/project/src/a.ts"]);
+      watcher.dispose();
+      expect(listDirectoryMock).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

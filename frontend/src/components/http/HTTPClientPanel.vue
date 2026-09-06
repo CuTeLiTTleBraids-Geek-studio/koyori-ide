@@ -230,7 +230,7 @@ async function togglePrivateNetwork(event: Event): Promise<void> {
   min-width: 0;
   height: 100%;
   color: var(--color-text-primary, #d7d7d7);
-  background: var(--color-bg-base, #181818);
+  background: var(--color-bg-base, #ffffff);
   flex-direction: column;
   font-size: 12px;
   container-type: inline-size;
@@ -253,7 +253,7 @@ async function togglePrivateNetwork(event: Event): Promise<void> {
   color: inherit;
   border: 1px solid var(--color-border-default, #424242);
   border-radius: 3px;
-  background: var(--color-bg-surface-container, #242424);
+  background: var(--color-bg-surface-container, #f5f5f7);
 }
 
 .numeric-option,
@@ -271,7 +271,7 @@ async function togglePrivateNetwork(event: Event): Promise<void> {
   color: inherit;
   border: 1px solid var(--color-border-default, #424242);
   border-radius: 3px;
-  background: var(--color-bg-surface-container, #242424);
+  background: var(--color-bg-surface-container, #f5f5f7);
 }
 
 button {

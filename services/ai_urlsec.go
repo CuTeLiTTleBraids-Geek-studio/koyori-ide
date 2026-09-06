@@ -238,3 +238,80 @@ func NewSSRFSafeTransport() *http.Transport {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 }
+
+// NewAISSRFSafeTransport is the AI Chat/stream/completions dialer.
+//
+// Unlike NewSSRFSafeTransport (MCP / HTTP client / PR — never loopback),
+// local LLM servers (Ollama, LM Studio, llama.cpp) must remain reachable
+// over http://127.0.0.1 and http://localhost. Non-loopback private,
+// link-local, and metadata addresses stay fail-closed so a rebinding
+// hostname cannot send the API key to 169.254.169.254.
+func NewAISSRFSafeTransport() *http.Transport {
+	return newAIDialTransport(10 * time.Second)
+}
+
+func newAIDialTransport(dialTimeout time.Duration) *http.Transport {
+	dialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("ssrf guard: split host port %q: %w", addr, err)
+			}
+			if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+				return dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+			}
+			if ip := net.ParseIP(host); ip != nil {
+				if ip.IsLoopback() {
+					return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				}
+				if isPrivateHost(ip) {
+					return nil, fmt.Errorf("ssrf guard: refusing private address %s", host)
+				}
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}
+			ipAddrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("ssrf guard: resolve %q: %w", host, err)
+			}
+			if len(ipAddrs) == 0 {
+				return nil, fmt.Errorf("ssrf guard: no addresses for %q", host)
+			}
+			var lastErr error
+			sawPublic := false
+			for _, ia := range ipAddrs {
+				if ia.IP == nil {
+					continue
+				}
+				if ia.IP.IsLoopback() {
+					conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(ia.IP.String(), port))
+					if derr == nil {
+						return conn, nil
+					}
+					lastErr = derr
+					continue
+				}
+				if isPrivateHost(ia.IP) {
+					return nil, fmt.Errorf("ssrf guard: host %q resolves to private address %s", host, ia.IP)
+				}
+				sawPublic = true
+				conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(ia.IP.String(), port))
+				if derr == nil {
+					return conn, nil
+				}
+				lastErr = derr
+			}
+			if lastErr != nil {
+				return nil, fmt.Errorf("ssrf guard: dial %q failed: %w", host, lastErr)
+			}
+			if !sawPublic {
+				return nil, fmt.Errorf("ssrf guard: host %q resolved to no dialable addresses", host)
+			}
+			return nil, fmt.Errorf("ssrf guard: dial %q failed", host)
+		},
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}

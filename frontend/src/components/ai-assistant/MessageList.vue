@@ -24,8 +24,11 @@ import {
 import { useI18n } from "@/lib/i18n";
 import { aiState } from "@/stores/ai";
 import { appState } from "@/stores/app";
+import { extractToolCallBlocks, isAgentMode } from "@/stores/agent";
 import { renderMarkdown } from "@/lib/markdown";
 import MarkdownContent from "@/components/common/MarkdownContent.vue";
+import AgentExecutionTimeline from "@/components/ai-assistant/AgentExecutionTimeline.vue";
+import AgentToolCalls from "@/components/ai-assistant/AgentToolCalls.vue";
 
 const { t } = useI18n();
 
@@ -38,17 +41,40 @@ const DEFAULT_ITEM_HEIGHT = 96;
 const MIN_ITEM_HEIGHT = 36;
 const ITEM_GAP = 12;
 const OVERSCAN_PX = 600;
+const FOLLOW_TAIL_THRESHOLD_PX = 96;
 
 const listElement = ref<HTMLElement | null>(null);
+const activityElement = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
 const viewportHeight = ref(600);
 const messageHeights = reactive(new Map<string, number>());
 const messageElements = new Map<string, HTMLElement>();
 let resizeObserver: ResizeObserver | null = null;
+let shouldFollowTail = true;
+let followTailScheduled = false;
+
+function isNearTail(element: HTMLElement): boolean {
+  const distance = element.scrollHeight - element.clientHeight - element.scrollTop;
+  return distance <= FOLLOW_TAIL_THRESHOLD_PX;
+}
+
+function scheduleFollowTail(): void {
+  if (!shouldFollowTail || followTailScheduled) return;
+  followTailScheduled = true;
+  void nextTick(() => {
+    followTailScheduled = false;
+    const element = listElement.value;
+    if (!element || !shouldFollowTail) return;
+    const nextScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = nextScrollTop;
+    scrollTop.value = nextScrollTop;
+  });
+}
 
 function onScroll(e: Event): void {
   const el = e.target as HTMLElement;
   scrollTop.value = el.scrollTop;
+  shouldFollowTail = isNearTail(el);
   // jsdom 中 clientHeight 为 0，保留默认值避免渲染全量
   if (el.clientHeight > 0) {
     viewportHeight.value = el.clientHeight;
@@ -157,6 +183,7 @@ function recordMessageHeight(messageId: string, rawHeight: number): void {
     listElement.value.scrollTop += delta;
     scrollTop.value = listElement.value.scrollTop;
   }
+  scheduleFollowTail();
 }
 
 function onResize(entries: ResizeObserverEntry[]): void {
@@ -164,12 +191,35 @@ function onResize(entries: ResizeObserverEntry[]): void {
     if (entry.target === listElement.value) {
       const height = entry.contentRect.height || listElement.value?.clientHeight || 0;
       if (height > 0) viewportHeight.value = height;
+      scheduleFollowTail();
+      continue;
+    }
+    if (entry.target === activityElement.value) {
+      scheduleFollowTail();
       continue;
     }
     const element = entry.target as HTMLElement;
     const messageId = element.dataset.messageId;
     if (messageId) recordMessageHeight(messageId, entry.contentRect.height);
   }
+}
+
+function messageContent(
+  role: string,
+  content: string,
+  hasNativeToolCalls: boolean,
+): string {
+  if (role !== "assistant" || !isAgentMode.value || hasNativeToolCalls) return content;
+  return extractToolCallBlocks(content).cleanedMessage;
+}
+
+function boundedToolArguments(value: string): string {
+  const text = value.trim();
+  return text.length > 480 ? `${text.slice(0, 480)}\n...` : text;
+}
+
+function boundedToolResult(value: string): string {
+  return value.length > 640 ? `${value.slice(0, 640)}\n...` : value;
 }
 
 watch(
@@ -183,12 +233,23 @@ watch(
   { flush: "post" },
 );
 
+watch(
+  () => {
+    const tail = aiState.messages[aiState.messages.length - 1];
+    return [aiState.messages.length, tail?.id ?? "", tail?.content ?? ""] as const;
+  },
+  scheduleFollowTail,
+  { flush: "post" },
+);
+
 onMounted(() => {
   const element = listElement.value;
   if (element?.clientHeight) viewportHeight.value = element.clientHeight;
+  scheduleFollowTail();
   if (typeof ResizeObserver === "undefined") return;
   resizeObserver = new ResizeObserver(onResize);
   if (element) resizeObserver.observe(element);
+  if (activityElement.value) resizeObserver.observe(activityElement.value);
   for (const messageElement of messageElements.values()) {
     resizeObserver.observe(messageElement);
   }
@@ -231,13 +292,29 @@ onBeforeUnmount(() => {
         <div class="ai-msg" :class="[`ai-msg--${msg.role}`, bubbleClass]">
           <div class="ai-msg__role">{{ msg.role }}</div>
           <MarkdownContent
-            v-if="msg.role !== 'user'"
+            v-if="msg.role !== 'user' && (msg.content || !(msg.toolCalls?.length || msg.toolResults?.length))"
             class="ai-msg__body markdown-body"
-            :html="renderMarkdown(msg.content)"
+            :html="renderMarkdown(messageContent(msg.role, msg.content, (msg.toolCalls?.length ?? 0) > 0))"
           />
-          <div v-else class="ai-msg__body">{{ msg.content }}</div>
+          <div v-else-if="msg.role === 'user'" class="ai-msg__body">{{ msg.content }}</div>
+          <div v-if="msg.toolCalls?.length" class="ai-msg__tools" data-testid="message-tool-calls">
+            <div v-for="call in msg.toolCalls" :key="call.id" class="ai-msg__tool">
+              <strong>{{ call.name }}</strong>
+              <code>{{ boundedToolArguments(call.arguments) }}</code>
+            </div>
+          </div>
+          <div v-if="msg.toolResults?.length" class="ai-msg__tools" data-testid="message-tool-results">
+            <div v-for="result in msg.toolResults" :key="result.toolCallId" class="ai-msg__tool" :class="{ 'ai-msg__tool--error': result.isError }">
+              <strong>{{ result.isError ? 'Tool error' : 'Tool result' }}</strong>
+              <pre>{{ boundedToolResult(result.content) }}</pre>
+            </div>
+          </div>
         </div>
       </div>
+    </div>
+    <div ref="activityElement" class="ai-msg-list__activity">
+      <AgentToolCalls />
+      <AgentExecutionTimeline />
     </div>
   </div>
 </template>
@@ -258,6 +335,9 @@ onBeforeUnmount(() => {
 }
 .ai-msg-list__virtual {
   position: relative;
+  width: 100%;
+}
+.ai-msg-list__activity {
   width: 100%;
 }
 .ai-msg-list__item {
@@ -282,7 +362,7 @@ onBeforeUnmount(() => {
   color: #fff;
 }
 .ai-msg--assistant {
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
 }
 .ai-msg__role {
   font-size: 11px;
@@ -290,4 +370,19 @@ onBeforeUnmount(() => {
   margin-bottom: 4px;
   text-transform: uppercase;
 }
+.ai-msg__tools {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.ai-msg__tool {
+  display: grid;
+  gap: 4px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--color-accent, #3b82f6);
+  background: color-mix(in srgb, var(--color-bg, #fff) 82%, var(--color-accent, #3b82f6));
+}
+.ai-msg__tool--error { border-left-color: var(--color-danger, #dc2626); }
+.ai-msg__tool code, .ai-msg__tool pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

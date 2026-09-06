@@ -7,8 +7,11 @@ vi.mock("@/lib/monaco-themes", () => ({
   },
   applyMonacoTheme: vi.fn(),
   applyMonacoThemeForMode: vi.fn(),
+  clearVscodeExtensionTheme: vi.fn(),
   registerAllThemes: vi.fn(),
 }));
+
+import { clearVscodeExtensionTheme } from "@/lib/monaco-themes";
 
 vi.mock("@/api/services", () => ({
   settingsService: {
@@ -70,6 +73,7 @@ import {
   aiConfigStore,
   projectStore,
   windowStore,
+  applyAccentTheme,
   applyMode,
   resolveSystemMode,
   saveSettings,
@@ -136,6 +140,13 @@ describe("Theme Mode", () => {
   it("applyMode updates appState.theme", () => {
     applyMode("light");
     expect(appState.theme).toBe("light");
+  });
+
+  it("clears an active extension theme when selecting a built-in accent", () => {
+    applyAccentTheme("blue");
+
+    expect(clearVscodeExtensionTheme).toHaveBeenCalledTimes(1);
+    expect(appState.accentTheme).toBe("blue");
   });
 });
 

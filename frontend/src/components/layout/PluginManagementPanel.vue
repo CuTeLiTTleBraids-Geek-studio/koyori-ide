@@ -265,7 +265,7 @@ function securityLabel(level: VscodeExtensionSecurityLevel): string {
   padding: 10px 12px;
   border: 1px solid var(--color-border-default, #2a2a2c);
   border-radius: var(--radius-md);
-  background: var(--color-bg-surface-container-low, #161616);
+  background: var(--color-bg-surface-container-low, #fafafc);
   transition: border-color var(--transition-fast, 150ms) ease;
 }
 

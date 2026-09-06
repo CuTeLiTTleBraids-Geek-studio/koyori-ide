@@ -438,7 +438,10 @@ function terminalFontFamily(): string {
   const cssFont = getComputedStyle(document.documentElement)
     .getPropertyValue("--font-mono")
     .trim();
-  return `${cssFont || "JetBrains Mono"}, JetBrains Mono, Consolas, 'Courier New', monospace`;
+  // BUG1: append CJK-capable fallbacks so cmd.exe output on CJK Windows
+  // (box-drawing + CJK glyphs) renders in a consistent font instead of
+  // falling back to an unrelated system font mid-line.
+  return `${cssFont || "JetBrains Mono"}, JetBrains Mono, Consolas, 'Courier New', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans Mono CJK SC', 'SimHei', monospace`;
 }
 
 function fitTerminal(): void {

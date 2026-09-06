@@ -2,18 +2,22 @@ package services
 
 // Plan 11 Task 9 — Plan 模式（先规划后执行）。
 //
-// Plan 模式下 AI 只能用 `plan` 工具生成步骤，不能直接调其他工具。
+// Agent catalog 现含只读 `plan` 工具。CreatePlan 仍接受调用方提供的步骤；
+// 空步骤是合法的，UI 必须提示用户 replan 或手填，不得伪造步骤。
 // 用户审批：单步/全部批准/全部拒绝/编辑后批准（Step 4）。
-// Plan 与 Goal 互斥：Plan 用户驱动逐步，Goal AI 自治连续（Step 8）。
+// Plan 与 Goal 互斥：Plan 用户驱动逐步；Goal 默认仍要求 opt-in 后才跑 LLM/catalog 循环。
 //
 // 安全（G-SEC-02）：
 //   - 每步 Tool 调用经 AgentService.CheckCommand 审批（Step 9）。
 //   - 步骤执行失败暂停 + 重试/跳过/重新规划（Step 7）。
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 )
 
 // ---------------------------------------------------------------------------
@@ -85,6 +89,7 @@ type AIPlanService struct {
 	wsCtx *WorkspaceContext
 	// 内部 executor，当前端通过 Wails bindings 传入 nil 时回退使用。
 	internalExecutor StepExecutor
+	lifecycle        *AgentLifecycle
 }
 
 // NewAIPlanService 创建服务。
@@ -181,6 +186,18 @@ func (s *AIPlanService) CreatePlan(id, goal string, steps []PlanStep) (*Plan, er
 	defer s.mu.Unlock()
 	if _, exists := s.plans[id]; exists {
 		return nil, fmt.Errorf("plan %q: %w", id, ErrAlreadyExists)
+	}
+	if s.lifecycle != nil {
+		if _, err := s.lifecycle.Begin(agentcore.SessionPlan, id); err != nil {
+			return nil, err
+		}
+		if _, err := s.lifecycle.Checkpoint(agentcore.SessionPlan, id, "plan-created", map[string]interface{}{
+			"phase": "plan-created",
+			"steps": len(steps),
+		}); err != nil {
+			_ = s.lifecycle.Fail(agentcore.SessionPlan, id, err)
+			return nil, err
+		}
 	}
 	// 初始化步骤状态。
 	for i := range steps {
@@ -324,7 +341,48 @@ func (s *AIPlanService) ExecuteStep(planID string, stepIdx int, executor StepExe
 	now := time.Now()
 	step.StartedAt = &now
 	p.Status = PlanStatusExecuting
+	lifecycle := s.lifecycle
 	s.mu.Unlock()
+	operation := fmt.Sprintf("plan.step.%d", stepIdx)
+	var usageReceipt agentcore.UsageReceipt
+	failStep := func(cause error) error {
+		finished := time.Now()
+		s.mu.Lock()
+		step.Status = PlanStepFailed
+		step.Error = cause.Error()
+		step.FinishedAt = &finished
+		p.Status = PlanStatusPaused
+		s.mu.Unlock()
+		meterErr := s.completePlanExecution(usageReceipt, planID, operation, now, finished, cause)
+		var lifecycleErr error
+		if lifecycle != nil {
+			lifecycleErr = lifecycle.Fail(agentcore.SessionPlan, planID, cause)
+		}
+		return errors.Join(cause, meterErr, lifecycleErr)
+	}
+
+	if lifecycle != nil {
+		if err := s.checkpointPlanExecution(planID, stepIdx, "step-started"); err != nil {
+			return failStep(err)
+		}
+		if err := lifecycle.Append(agentcore.SessionPlan, planID, agentcore.StreamEventInput{
+			Kind: agentcore.StreamStatus, Data: "step-started",
+		}); err != nil {
+			return failStep(err)
+		}
+		var err error
+		usageReceipt, err = s.beginPlanExecution(planID, operation, now)
+		if err != nil {
+			finished := time.Now()
+			s.mu.Lock()
+			step.Status = PlanStepFailed
+			step.Error = err.Error()
+			step.FinishedAt = &finished
+			p.Status = PlanStatusPaused
+			s.mu.Unlock()
+			return errors.Join(err, lifecycle.Fail(agentcore.SessionPlan, planID, err))
+		}
+	}
 
 	// 前端调用时 executor 为 nil，回退到内部注入的实现。
 	if executor == nil {
@@ -333,39 +391,29 @@ func (s *AIPlanService) ExecuteStep(planID string, stepIdx int, executor StepExe
 		s.mu.RUnlock()
 	}
 	if executor == nil {
-		s.mu.Lock()
-		step.Status = PlanStepFailed
-		step.Error = "executor required (inject via SetInternalExecutor)"
-		p.Status = PlanStatusPaused
-		s.mu.Unlock()
-		return fmt.Errorf("executor required (inject via SetInternalExecutor): %w", ErrInvalidInput)
+		return failStep(fmt.Errorf("executor required (inject via SetInternalExecutor): %w", ErrInvalidInput))
 	}
 
 	// Step 3 / GOAL-P0-02: create the pre-step snapshot before any write. A
 	// snapshot failure aborts the step instead of executing without a recovery
 	// point, so a mis-wired workspace root can no longer cause silent data loss.
 	if err := s.tryCreateSnapshot(SnapshotReasonPlanStep); err != nil {
-		s.mu.Lock()
-		step.Status = PlanStepFailed
-		step.Error = err.Error()
-		p.Status = PlanStatusPaused
-		s.mu.Unlock()
-		return err
+		return failStep(err)
 	}
 
 	// 执行（不持锁，允许长时间运行）。
-	result, err := executor.Execute(step.Tool, step.Args)
+	result, err := executor.Execute(planID, stepIdx, step.Tool, step.Args)
+
+	finished := time.Now()
+	if err != nil {
+		return failStep(err)
+	}
+	if meterErr := s.completePlanExecution(usageReceipt, planID, operation, now, finished, nil); meterErr != nil {
+		return s.failPlanMetering(planID, stepIdx, meterErr)
+	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	finished := time.Now()
 	step.FinishedAt = &finished
-	if err != nil {
-		step.Status = PlanStepFailed
-		step.Error = err.Error()
-		p.Status = PlanStatusPaused // Step 7：失败暂停
-		return err
-	}
 	step.Status = PlanStepCompleted
 	step.Result = result
 	// 检查是否全部完成。
@@ -380,16 +428,52 @@ func (s *AIPlanService) ExecuteStep(planID string, stepIdx int, executor StepExe
 		p.Status = PlanStatusCompleted
 		p.FinishedAt = &finished
 	}
+	s.mu.Unlock()
+
+	if lifecycle != nil {
+		if allDone {
+			if err := lifecycle.Complete(agentcore.SessionPlan, planID); err != nil {
+				return err
+			}
+		} else if err := s.checkpointPlanExecution(planID, stepIdx, "step-completed"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // StepExecutor 是步骤执行器接口（Step 2）。
 // 由 AgentService 实现（调用 CheckCommand + 实际工具执行）。
 type StepExecutor interface {
-	Execute(tool, args string) (result string, err error)
+	Execute(planID string, stepIndex int, tool, args string) (result string, err error)
 }
 
 // SkipStep 跳过步骤（Step 7）。
+// failPlanMetering keeps the domain state honest when a successful step could
+// not be durably recorded. A completed step with a missing ledger row would
+// make retries and cost summaries disagree about what actually ran.
+func (s *AIPlanService) failPlanMetering(planID string, stepIdx int, cause error) error {
+	if cause == nil {
+		cause = fmt.Errorf("plan metering failed: %w", ErrNotAllowed)
+	}
+	s.mu.Lock()
+	p, ok := s.plans[planID]
+	if ok && stepIdx >= 0 && stepIdx < len(p.Steps) {
+		finished := time.Now()
+		p.Steps[stepIdx].Status = PlanStepFailed
+		p.Steps[stepIdx].Error = cause.Error()
+		p.Steps[stepIdx].FinishedAt = &finished
+		p.Status = PlanStatusPaused
+	}
+	lifecycle := s.lifecycle
+	s.mu.Unlock()
+	var lifecycleErr error
+	if lifecycle != nil {
+		lifecycleErr = lifecycle.Fail(agentcore.SessionPlan, planID, cause)
+	}
+	return errors.Join(cause, lifecycleErr)
+}
+
 func (s *AIPlanService) SkipStep(planID string, stepIdx int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -403,6 +487,11 @@ func (s *AIPlanService) SkipStep(planID string, stepIdx int) error {
 	p.Steps[stepIdx].Status = PlanStepSkipped
 	// 如果因失败暂停，尝试恢复。
 	if p.Status == PlanStatusPaused {
+		if s.lifecycle != nil {
+			if err := s.lifecycle.ResumeLatest(agentcore.SessionPlan, planID); err != nil {
+				return err
+			}
+		}
 		p.Status = PlanStatusExecuting
 	}
 	return nil
@@ -416,6 +505,11 @@ func (s *AIPlanService) Replan(planID string, newSteps []PlanStep) error {
 	p, ok := s.plans[planID]
 	if !ok {
 		return fmt.Errorf("plan %q: %w", planID, ErrNotFound)
+	}
+	if s.lifecycle != nil && p.Status == PlanStatusPaused {
+		if err := s.lifecycle.ResumeLatest(agentcore.SessionPlan, planID); err != nil {
+			return err
+		}
 	}
 	// 保留已完成/跳过的步骤。
 	var remaining []PlanStep
@@ -446,6 +540,9 @@ func (s *AIPlanService) AbortPlan(planID string) error {
 	p.FinishedAt = &now
 	if s.active == p {
 		s.active = nil
+	}
+	if s.lifecycle != nil {
+		return s.lifecycle.Abort(agentcore.SessionPlan, planID)
 	}
 	return nil
 }

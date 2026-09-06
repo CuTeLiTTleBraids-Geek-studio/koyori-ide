@@ -7,7 +7,6 @@ export interface DirEntry {
   size: number;
   modified: number;
 }
-
 export interface Project {
   id: string;
   name: string;
@@ -145,6 +144,9 @@ export interface ShortcutKeys {
 export type AIWindowTheme =
   "apple-dark" | "apple-light" | "claude-dark" | "claude-light" | "system";
 
+/** Provider-agnostic reasoning depth; empty/undefined preserves legacy requests. */
+export type ReasoningEffort = "" | "low" | "medium" | "high";
+
 export interface Settings {
   /** Persisted settings JSON schema, independent from the CAS version. */
   schemaVersion: number;
@@ -170,6 +172,8 @@ export interface Settings {
   aiBaseUrl: string;
   aiModel: string;
   aiSystemPrompt: string;
+  aiProvider: string;
+  temperature: number;
   // Plan 54: optional user overrides for the other three built-in prompts.
   // Empty string means "use the built-in".
   aiAgentSystemPrompt?: string;
@@ -180,9 +184,8 @@ export interface Settings {
   bracketColorization: boolean;
   autoSave: boolean;
   autoSaveDelay: string;
-  aiProvider: string;
-  temperature: number;
   maxTokens: number;
+
   defaultShell: string;
   terminalFontSize: number;
   terminalCursorStyle: string;
@@ -210,9 +213,8 @@ export interface Settings {
   // N-20: layout state.
   aiChatPosition?: "left" | "right";
   activityBarVisible: boolean;
-  // Agent approval policy per tool kind (Plan 47). Missing entries default
-  // to "always-ask". Keys are tool kinds (read/write/run/search + custom).
-  toolApprovalConfig?: ToolApprovalConfig;
+  /** Session-wide Agent permission intent. Missing/invalid values normalize to always-ask. */
+  agentPermissionMode?: AgentPermissionMode;
   // Plan 48: accent theme persistence. Can be a built-in key
   // ("blue"/"teal"/.../"indigo") or "custom".
   accentTheme?: string;
@@ -226,10 +228,9 @@ export interface Settings {
   designLanguage?: "apple" | "claude";
   // Multi-provider AI configs (CC Switch-style). Each entry is a named
   // configuration with its own provider/apiKey/baseUrl/model/temperature/
-  // maxTokens/systemPrompt. activeAIConfigId points at the currently
-  // active config. The legacy single-config fields (aiApiKey/aiBaseUrl/
-  // aiModel/aiProvider/temperature/maxTokens/aiSystemPrompt) mirror the
-  // active config so existing AI call paths work unchanged.
+  // maxTokens/systemPrompt/reasoningEffort. activeAIConfigId points at the
+  // currently active config. Legacy single-config fields mirror the active
+  // config so existing AI call paths work unchanged.
   aiProviderConfigs?: AIProviderConfig[];
   activeAIConfigId?: string;
   /** G-FEAT-03: optional toolchain binary path overrides (e.g. { "golangci-lint": "/usr/local/bin/golangci-lint" }). */
@@ -287,6 +288,7 @@ export interface AIProviderConfig {
   baseUrl: string;
   model: string;
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
   maxTokens?: number;
   systemPrompt?: string;
 }
@@ -310,17 +312,23 @@ export interface CustomAccentTheme {
   onPrimaryContainer?: string;
 }
 
-// ApprovalPolicy controls whether a tool call requires user approval.
-// - "always-ask": user must approve each call (default, safest).
-// - "auto-approve": call executes immediately without user interaction.
-// - "never-approve": call is automatically rejected.
-export type ApprovalPolicy = "always-ask" | "auto-approve" | "never-approve";
+/** User-visible Agent permission mode captured when each backend session is created. */
+export type AgentPermissionMode = "always-ask" | "assist" | "allow-all";
 
-// ToolApprovalConfig maps a tool kind to its approval policy.
-export type ToolApprovalConfig = Record<string, ApprovalPolicy>;
+export interface NativeToolCallContext {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface NativeToolResultContext {
+  toolCallId: string;
+  content: string;
+  isError?: boolean;
+}
 
 export interface ChatMessage {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   /** C-6: 稳定 id，替代数组索引作 v-for key，避免 FIFO drop 时 DOM 错位。 */
   id?: string;
@@ -331,11 +339,18 @@ export interface ChatMessage {
    * (fail-closed), so the UI selection actually reaches the provider request.
    */
   images?: string[];
+  /** Provider-native assistant calls retained for the exact follow-up turn. */
+  toolCalls?: NativeToolCallContext[];
+  /** Terminal results associated with provider call IDs. */
+  toolResults?: NativeToolResultContext[];
 }
 
 export interface GitFileChange {
   path: string;
   status: string;
+  staged?: boolean;
+  /** Set only on proven staged renames: `path` is the new name. */
+  oldPath?: string;
 }
 
 export interface BranchInfo {
@@ -358,6 +373,8 @@ export interface SearchResult {
 export interface ConversationMessage {
   role: string;
   content: string;
+  toolCalls?: NativeToolCallContext[];
+  toolResults?: NativeToolResultContext[];
 }
 
 export interface Conversation {
@@ -527,6 +544,13 @@ export interface ContextChip {
   imageUrl?: string; // for image (data URL)
   url?: string; // for web/url
   query?: string; // for web/docs search query
+  // P1-03-E: MCP context provenance. Resource/prompt injections are explicit
+  // user actions and must stay traceable to their server and generation so
+  // they can be swept when that server disconnects or the workspace switches.
+  mcpServer?: string;
+  mcpUri?: string;
+  mcpPrompt?: string;
+  mcpGeneration?: number;
 }
 
 /** Request payload for AI inline code completion. */
@@ -698,6 +722,10 @@ export interface WorkflowStep {
    * Supported: "command" (default), "ai", "git", "file", "mcp", "skill".
    */
   type?: WorkflowStepType;
+  /** Typed adapter name. Currently file steps support only "read". */
+  tool?: string;
+  /** Typed adapter input owned by the persisted workflow definition. */
+  input?: Record<string, unknown>;
   /**
    * Plan 11 Task 11 Step 1: OnFailure controls behavior when the step fails.
    * Supported: "abort" (default), "continue", "skip", "retry".
@@ -1399,8 +1427,9 @@ export interface WailsEvent<T> {
  * - `ai:chunk`     — { streamId, data } token from the streaming response
  * - `ai:done`      — { streamId, data } finish-reason (data may be empty)
  * - `ai:error`     — { streamId, data } error message
- * - `ai:stream-busy` — { streamId, busy }
+ * - `ai:stream-busy` — { busy } (process-wide status; owner streamId is intentionally omitted)
  * - `ai:tool_calls`  — { streamId, data } JSON array string
+ * - `ai:reasoning`   — { streamId, data } provider-declared reasoning summary
  * - `settings:changed` / `conversation:saved` / `agent:pending-updated` — dual-window SSOT
  * - `file:saved`   — the absolute path of the saved file
  * - `terminal:output` — { sessionId, data } for a single PTY write

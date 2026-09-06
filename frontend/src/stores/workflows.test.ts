@@ -10,18 +10,22 @@ vi.mock("@/api/services", () => ({
     loadWorkflow: vi.fn(),
     validateDependencies: vi.fn(),
   },
+  taskService: {
+    requestExecutionApproval: vi.fn().mockResolvedValue("approval-1"),
+    executeApproved: vi.fn().mockResolvedValue({
+      command: "", cwd: "", stdout: "", stderr: "", exitCode: 0,
+      durationMs: 1, riskLevel: "safe", blocked: false,
+    }),
+    stop: vi.fn().mockResolvedValue(undefined),
+		beginWorkflowExecution: vi.fn().mockResolvedValue("workflow:wf:run"),
+		completeWorkflowExecution: vi.fn().mockResolvedValue(undefined),
+		failWorkflowExecution: vi.fn().mockResolvedValue(undefined),
+		resumeWorkflowExecution: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 vi.mock("@/stores/app", () => ({
   appState: { terminalVisible: false, currentProject: null },
-}));
-
-vi.mock("@/stores/terminal", () => ({
-  createSession: vi.fn().mockResolvedValue("session-1"),
-  writeToSession: vi.fn().mockResolvedValue(undefined),
-  runCommandInSession: vi.fn().mockResolvedValue(0),
-  runCommandInSessionCapturing: vi.fn().mockResolvedValue({ exitCode: 0, output: "" }),
-  killSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/stores/output", () => ({
@@ -52,11 +56,10 @@ import {
   substituteOutputRefs,
   cleanupWorkflowRuntime,
 } from "./workflows";
-import { workflowService } from "@/api/services";
-import { createSession, runCommandInSession, runCommandInSessionCapturing, killSession } from "@/stores/terminal";
+import { taskService, workflowService } from "@/api/services";
 import { pushOutput } from "@/stores/output";
 import { notifyError } from "@/lib/notifications";
-import type { WorkflowDef, WorkflowStep } from "@/types";
+import type { ExecResult, WorkflowDef, WorkflowStep } from "@/types";
 
 function makeStep(name: string, command = "echo", extra: Partial<WorkflowStep> = {}): WorkflowStep {
   return { name, command, ...extra };
@@ -64,6 +67,14 @@ function makeStep(name: string, command = "echo", extra: Partial<WorkflowStep> =
 
 function makeWorkflow(name: string, steps: WorkflowStep[]): WorkflowDef {
   return { name, steps, source: `${name}.yml` };
+}
+
+function taskResult(overrides: Partial<ExecResult> = {}): ExecResult {
+  return {
+    command: "", cwd: "", stdout: "", stderr: "", exitCode: 0,
+    durationMs: 1, riskLevel: "safe", blocked: false,
+    ...overrides,
+  };
 }
 
 describe("workflows store", () => {
@@ -116,6 +127,24 @@ describe("workflows store", () => {
       (workflowService.loadWorkflows as any).mockRejectedValue("string err");
       await loadWorkflows("/proj");
       expect(workflowState.errorMessage).toBe("string err");
+    });
+
+    it("does not let an older workspace response overwrite a newer load", async () => {
+      let resolveFirst!: (value: WorkflowDef[]) => void;
+      let resolveSecond!: (value: WorkflowDef[]) => void;
+      vi.mocked(workflowService.loadWorkflows)
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+
+      const first = loadWorkflows("/first");
+      const second = loadWorkflows("/second");
+      resolveSecond([makeWorkflow("second", [])]);
+      await second;
+      resolveFirst([makeWorkflow("first", [])]);
+      await first;
+
+      expect(workflowState.workflows.map((workflow) => workflow.name)).toEqual(["second"]);
+      expect(workflowState.loading).toBe(false);
     });
   });
 
@@ -343,46 +372,401 @@ describe("workflows store", () => {
       workflowState.running["wf"] = true;
       const wf = makeWorkflow("wf", [makeStep("s")]);
       await runWorkflow(wf, "/proj");
-      expect(createSession).not.toHaveBeenCalled();
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
     });
 
-    it("settles the shell delay and does not execute after runtime cleanup", async () => {
-      vi.useFakeTimers();
+    it.each(["mcp", "ai", "git"] as const)(
+      "fails closed for unsupported %s steps without requesting command authority",
+      async (type) => {
+        const wf = makeWorkflow("wf", [
+          makeStep("unsafe", "payload-that-must-not-run", { type }),
+        ]);
+
+        await runWorkflow(wf, "/proj");
+
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+        expect(notifyError).toHaveBeenCalledWith(
+          expect.stringContaining(`unsupported step definition "${type}"`),
+        );
+        expect(workflowState.running.wf).toBeFalsy();
+      },
+    );
+
+    it("fails closed for a file step that carries command authority", async () => {
+      const wf = makeWorkflow("wf", [makeStep("unsafe", "payload", {
+        type: "file", tool: "read", input: { path: "notes.txt" },
+      })]);
+
+      await runWorkflow(wf, "/proj");
+
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+      expect(taskService.executeApproved).not.toHaveBeenCalled();
+      expect(notifyError).toHaveBeenCalledWith(
+        expect.stringContaining('unsupported step definition "file"'),
+      );
+    });
+
+    it("fails closed for a Skill step that carries command authority", async () => {
+      const wf = makeWorkflow("wf", [makeStep("unsafe", "payload", {
+        type: "skill", tool: "activate", input: { id: "review" },
+      })]);
+
+      await runWorkflow(wf, "/proj");
+
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+      expect(taskService.executeApproved).not.toHaveBeenCalled();
+      expect(notifyError).toHaveBeenCalledWith(
+        expect.stringContaining('unsupported step definition "skill"'),
+      );
+    });
+
+    it.each([
+      { tool: "review", input: { id: "review" } },
+      { tool: "activate", input: {} },
+      { tool: "activate", input: { id: " review " } },
+      { tool: "activate", input: { id: "review", scope: "user" } },
+    ])("fails closed for a malformed typed Skill shape %#", async ({ tool, input }) => {
+      const wf = makeWorkflow("wf", [makeStep("unsafe", "", {
+        type: "skill", tool, input,
+      })]);
+
+      await runWorkflow(wf, "/proj");
+
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+      expect(taskService.executeApproved).not.toHaveBeenCalled();
+      expect(notifyError).toHaveBeenCalledWith(
+        expect.stringContaining('unsupported step definition "skill"'),
+      );
+    });
+
+    it("stops and does not redeem after runtime cleanup while approval is pending", async () => {
+      let resolveApproval: ((token: string) => void) | undefined;
+      vi.mocked(taskService.requestExecutionApproval).mockImplementationOnce(
+        () => new Promise<string>((resolve) => {
+          resolveApproval = resolve;
+        }),
+      );
       const wf = makeWorkflow("wf", [makeStep("first", "echo")]);
 
       const run = runWorkflow(wf, "/proj");
       await Promise.resolve();
       await Promise.resolve();
-
-      expect(createSession).toHaveBeenCalledWith("/proj");
-      expect(vi.getTimerCount()).toBe(1);
-
+      const [executionId] = vi.mocked(taskService.requestExecutionApproval).mock.calls[0];
       cleanupWorkflowRuntime();
+      resolveApproval?.("approval-after-cleanup");
       await run;
 
-      expect(vi.getTimerCount()).toBe(0);
-      expect(runCommandInSession).not.toHaveBeenCalled();
-      expect(killSession).toHaveBeenCalledWith("session-1");
+      expect(taskService.stop).toHaveBeenCalledWith(executionId);
+      expect(taskService.executeApproved).not.toHaveBeenCalled();
       expect(workflowState.running.wf).toBe(false);
     });
 
-    it("creates a session and runs each step command", async () => {
+    it("runs each step through backend approval and tracked execution", async () => {
       const wf = makeWorkflow("wf", [
         makeStep("first", "echo", { args: ["1"] }),
         makeStep("second", "echo", { args: ["2"] }),
       ]);
       await runWorkflow(wf, "/proj");
-      expect(createSession).toHaveBeenCalledWith("/proj");
-      await new Promise((r) => setTimeout(r, 50));
-      expect(runCommandInSession).toHaveBeenCalledWith("session-1", "echo '1'");
-      expect(runCommandInSession).toHaveBeenCalledWith("session-1", "echo '2'");
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+		"workflow:wf:run", "echo '1'", "/proj",
+      );
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+		"workflow:wf:run", "echo '2'", "/proj",
+      );
+      expect(taskService.executeApproved).toHaveBeenCalledTimes(2);
       expect(workflowState.running["wf"]).toBe(false);
-      // All steps should be marked success (runCommandInSession returns 0 by default).
       const states = workflowState.stepStates["wf"];
       expect(states.length).toBe(2);
       expect(states[0].status).toBe("success");
       expect(states[1].status).toBe("success");
     });
+
+    it("uses the authoritative workflow catalog API when available", async () => {
+      const requestWorkflowStepApproval = vi.fn().mockResolvedValue("catalog-approval");
+      const executeApprovedWorkflowStep = vi.fn().mockResolvedValue(taskResult({
+        stdout: "catalog output",
+      }));
+      Object.assign(taskService, {
+        requestWorkflowStepApproval,
+        executeApprovedWorkflowStep,
+      });
+
+      try {
+        const wf = makeWorkflow("catalog-wf", [makeStep("catalog-step", "echo", {
+          args: ["renderer-command-must-not-authorize"],
+          cwd: "renderer-cwd-must-not-authorize",
+        })]);
+        await runWorkflow(wf, "/proj");
+
+        expect(requestWorkflowStepApproval).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "catalog-wf",
+          "catalog-step",
+        );
+        expect(executeApprovedWorkflowStep).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "catalog-wf",
+          "catalog-step",
+          "catalog-approval",
+        );
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+      } finally {
+        Reflect.deleteProperty(taskService, "requestWorkflowStepApproval");
+        Reflect.deleteProperty(taskService, "executeApprovedWorkflowStep");
+      }
+    });
+
+    it("runs a typed file read only through the authoritative catalog API", async () => {
+      const requestWorkflowStepApproval = vi.fn().mockResolvedValue("file-approval");
+      const executeApprovedWorkflowStep = vi.fn().mockResolvedValue(taskResult({
+        command: "workflow-file.read",
+        stdout: "catalog file content",
+      }));
+      Object.assign(taskService, {
+        requestWorkflowStepApproval,
+        executeApprovedWorkflowStep,
+      });
+
+      try {
+        const wf = makeWorkflow("file-wf", [makeStep("read-notes", "", {
+          type: "file",
+          tool: "read",
+          input: { path: "notes.txt" },
+        })]);
+        await runWorkflow(wf, "/proj");
+
+        expect(requestWorkflowStepApproval).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "file-wf",
+          "read-notes",
+        );
+        expect(executeApprovedWorkflowStep).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "file-wf",
+          "read-notes",
+          "file-approval",
+        );
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+        expect(workflowState.stepStates["file-wf"][0].status).toBe("success");
+      } finally {
+        Reflect.deleteProperty(taskService, "requestWorkflowStepApproval");
+        Reflect.deleteProperty(taskService, "executeApprovedWorkflowStep");
+      }
+    });
+
+    it("runs a typed file write only through the authoritative catalog API", async () => {
+      const requestWorkflowStepApproval = vi.fn().mockResolvedValue("write-approval");
+      const executeApprovedWorkflowStep = vi.fn().mockResolvedValue(taskResult({
+        command: "workflow-file.write",
+        stdout: "Wrote notes.txt",
+      }));
+      Object.assign(taskService, {
+        requestWorkflowStepApproval,
+        executeApprovedWorkflowStep,
+      });
+
+      try {
+        const wf = makeWorkflow("write-wf", [makeStep("write-notes", "", {
+          type: "file",
+          tool: "write",
+          input: { path: "notes.txt", content: "backend-owned content" },
+        })]);
+        await runWorkflow(wf, "/proj");
+
+        expect(requestWorkflowStepApproval).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "write-wf",
+          "write-notes",
+        );
+        expect(executeApprovedWorkflowStep).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "write-wf",
+          "write-notes",
+          "write-approval",
+        );
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+        expect(workflowState.stepStates["write-wf"][0].status).toBe("success");
+        expect(pushOutput).toHaveBeenCalledWith(
+          "workflow", "info", 'Step "write-notes": file.write',
+        );
+      } finally {
+        Reflect.deleteProperty(taskService, "requestWorkflowStepApproval");
+        Reflect.deleteProperty(taskService, "executeApprovedWorkflowStep");
+      }
+    });
+
+    it("runs a typed Git status only through the authoritative catalog API", async () => {
+      const requestWorkflowStepApproval = vi.fn().mockResolvedValue("git-approval");
+      const executeApprovedWorkflowStep = vi.fn().mockResolvedValue(taskResult({
+        command: "workflow-git.status",
+        stdout: '[{"path":"notes.txt","status":"Modified"}]',
+      }));
+      Object.assign(taskService, {
+        requestWorkflowStepApproval,
+        executeApprovedWorkflowStep,
+      });
+
+      try {
+        const wf = makeWorkflow("git-wf", [makeStep("status", "", {
+          type: "git",
+          tool: "status",
+          input: {},
+        })]);
+        await runWorkflow(wf, "/proj");
+
+        expect(requestWorkflowStepApproval).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "git-wf",
+          "status",
+        );
+        expect(executeApprovedWorkflowStep).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "git-wf",
+          "status",
+          "git-approval",
+        );
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+        expect(workflowState.stepStates["git-wf"][0].status).toBe("success");
+      } finally {
+        Reflect.deleteProperty(taskService, "requestWorkflowStepApproval");
+        Reflect.deleteProperty(taskService, "executeApprovedWorkflowStep");
+      }
+    });
+
+    it("runs a typed AI step only through the authoritative catalog API", async () => {
+      const requestWorkflowStepApproval = vi.fn().mockResolvedValue("ai-approval");
+      const executeApprovedWorkflowStep = vi.fn().mockResolvedValue(taskResult({
+        command: "workflow-ai", stdout: "generated answer",
+      }));
+      Object.assign(taskService, { requestWorkflowStepApproval, executeApprovedWorkflowStep });
+
+      try {
+        const wf = makeWorkflow("ai-wf", [makeStep("generate", "", {
+          type: "ai",
+          tool: "generate",
+          input: { prompt: "backend-owned prompt" },
+        })]);
+        await runWorkflow(wf, "/proj");
+
+        expect(requestWorkflowStepApproval).toHaveBeenCalledWith(
+          "workflow:wf:run", "ai-wf", "generate",
+        );
+        expect(executeApprovedWorkflowStep).toHaveBeenCalledWith(
+          "workflow:wf:run", "ai-wf", "generate", "ai-approval",
+        );
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+        expect(workflowState.stepStates["ai-wf"][0].status).toBe("success");
+        expect(pushOutput).toHaveBeenCalledWith(
+          "workflow", "info", 'Step "generate": ai.generate',
+        );
+      } finally {
+        Reflect.deleteProperty(taskService, "requestWorkflowStepApproval");
+        Reflect.deleteProperty(taskService, "executeApprovedWorkflowStep");
+      }
+    });
+
+    it("runs a typed MCP step only through the authoritative catalog API", async () => {
+      const requestWorkflowStepApproval = vi.fn().mockResolvedValue("mcp-approval");
+      const executeApprovedWorkflowStep = vi.fn().mockResolvedValue(taskResult({
+        command: "workflow-mcp.call",
+        stdout: '{"content":[{"type":"text","text":"ok"}]}',
+      }));
+      Object.assign(taskService, {
+        requestWorkflowStepApproval,
+        executeApprovedWorkflowStep,
+      });
+
+      try {
+        const wf = makeWorkflow("mcp-wf", [makeStep("lookup", "", {
+          type: "mcp",
+          tool: "mcp.docs.lookup",
+          input: { query: "catalog-owned" },
+        })]);
+        await runWorkflow(wf, "/proj");
+
+        expect(requestWorkflowStepApproval).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "mcp-wf",
+          "lookup",
+        );
+        expect(executeApprovedWorkflowStep).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "mcp-wf",
+          "lookup",
+          "mcp-approval",
+        );
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+        expect(workflowState.stepStates["mcp-wf"][0].status).toBe("success");
+      } finally {
+        Reflect.deleteProperty(taskService, "requestWorkflowStepApproval");
+        Reflect.deleteProperty(taskService, "executeApprovedWorkflowStep");
+      }
+    });
+
+    it("runs a typed Skill step only through the authoritative catalog API", async () => {
+      const requestWorkflowStepApproval = vi.fn().mockResolvedValue("skill-approval");
+      const executeApprovedWorkflowStep = vi.fn().mockResolvedValue(taskResult({
+        command: "workflow-skill.activate",
+        stdout: "Activated skill review.",
+      }));
+      Object.assign(taskService, {
+        requestWorkflowStepApproval,
+        executeApprovedWorkflowStep,
+      });
+
+      try {
+        const wf = makeWorkflow("skill-wf", [makeStep("review", "", {
+          type: "skill",
+          tool: "activate",
+          input: { id: "review" },
+        })]);
+        await runWorkflow(wf, "/proj");
+
+        expect(requestWorkflowStepApproval).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "skill-wf",
+          "review",
+        );
+        expect(executeApprovedWorkflowStep).toHaveBeenCalledWith(
+          "workflow:wf:run",
+          "skill-wf",
+          "review",
+          "skill-approval",
+        );
+        expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
+        expect(taskService.executeApproved).not.toHaveBeenCalled();
+        expect(workflowState.stepStates["skill-wf"][0].status).toBe("success");
+        expect(pushOutput).toHaveBeenCalledWith(
+          "workflow",
+          "info",
+          'Step "review": skill.activate:review',
+        );
+      } finally {
+        Reflect.deleteProperty(taskService, "requestWorkflowStepApproval");
+        Reflect.deleteProperty(taskService, "executeApprovedWorkflowStep");
+      }
+    });
+
+		it("owns one backend lifecycle session for all steps", async () => {
+			const wf = makeWorkflow("wf", [makeStep("first"), makeStep("second")]);
+			await runWorkflow(wf, "/proj");
+			expect(taskService.beginWorkflowExecution).toHaveBeenCalledWith("wf");
+			expect(taskService.requestExecutionApproval).toHaveBeenNthCalledWith(
+				1, "workflow:wf:run", "echo", "/proj",
+			);
+			expect(taskService.requestExecutionApproval).toHaveBeenNthCalledWith(
+				2, "workflow:wf:run", "echo", "/proj",
+			);
+			expect(taskService.completeWorkflowExecution).toHaveBeenCalledWith("workflow:wf:run");
+			expect(taskService.failWorkflowExecution).not.toHaveBeenCalled();
+		});
 
     it("runs steps in dependency order", async () => {
       const wf = makeWorkflow("wf", [
@@ -390,19 +774,12 @@ describe("workflows store", () => {
         makeStep("lint", "golangci-lint", { args: ["run"] }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
-      // Lint should be run before build.
-      const lintCall = (runCommandInSession as any).mock.calls.find((c: any[]) => c[1] === "golangci-lint 'run'");
-      const buildCall = (runCommandInSession as any).mock.calls.find((c: any[]) => c[1] === "go 'build'");
+      const calls = vi.mocked(taskService.requestExecutionApproval).mock.calls;
+      const lintCall = calls.find((call) => call[1] === "golangci-lint 'run'");
+      const buildCall = calls.find((call) => call[1] === "go 'build'");
       expect(lintCall).toBeTruthy();
       expect(buildCall).toBeTruthy();
-      expect((runCommandInSession as any).mock.invocationCallOrder[
-        (runCommandInSession as any).mock.calls.indexOf(lintCall)
-      ]).toBeLessThan(
-        (runCommandInSession as any).mock.invocationCallOrder[
-          (runCommandInSession as any).mock.calls.indexOf(buildCall)
-        ],
-      );
+      expect(calls.indexOf(lintCall!)).toBeLessThan(calls.indexOf(buildCall!));
     });
 
     it("skips steps with falsy condition", async () => {
@@ -411,70 +788,76 @@ describe("workflows store", () => {
         makeStep("skipped", "echo", { args: ["no"], condition: "false" }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
-      expect(runCommandInSession).toHaveBeenCalledWith("session-1", "echo 'yes'");
-      // The skipped step should not be run.
-      expect(runCommandInSession).not.toHaveBeenCalledWith("session-1", "echo 'no'");
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "echo 'yes'", "/proj",
+      );
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalledWith(
+        expect.any(String), "echo 'no'", "/proj",
+      );
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("success");
       expect(states[1].status).toBe("skipped");
     });
 
-    it("surfaces error when session creation fails", async () => {
-      (createSession as any).mockResolvedValueOnce("");
+    it("surfaces error when backend approval fails", async () => {
+      vi.mocked(taskService.requestExecutionApproval).mockRejectedValueOnce(new Error("denied"));
       const wf = makeWorkflow("wf", [makeStep("s")]);
       await runWorkflow(wf, "/proj");
       expect(notifyError).toHaveBeenCalled();
-      expect(runCommandInSession).not.toHaveBeenCalled();
+      expect(taskService.executeApproved).not.toHaveBeenCalled();
       expect(workflowState.running["wf"]).toBe(false);
     });
 
     it("marks step as failed on non-zero exit code", async () => {
-      (runCommandInSession as any).mockResolvedValueOnce(1);
+      vi.mocked(taskService.executeApproved).mockResolvedValueOnce(taskResult({ exitCode: 1 }));
       const wf = makeWorkflow("wf", [
         makeStep("fail", "false"),
         makeStep("after", "echo", { args: ["after"] }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("failed");
       expect(states[0].error).toBe("Exit code: 1");
       // Second step should be skipped (failed = true aborts).
       expect(states[1].status).toBe("skipped");
       // Should not have run the second step.
-      expect(runCommandInSession).toHaveBeenCalledTimes(1);
-      expect(runCommandInSession).not.toHaveBeenCalledWith("session-1", "echo 'after'");
+      expect(taskService.executeApproved).toHaveBeenCalledTimes(1);
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalledWith(
+        expect.any(String), "echo 'after'", "/proj",
+      );
       // Workflow failure notification.
       expect(notifyError).toHaveBeenCalledWith(expect.stringContaining("failed"));
+			expect(taskService.failWorkflowExecution).toHaveBeenCalledWith(
+				"workflow:wf:run", "one or more workflow steps failed",
+			);
     });
 
     it("continues after failed step when expectSuccess is false", async () => {
-      (runCommandInSession as any)
-        .mockResolvedValueOnce(1) // first step fails
-        .mockResolvedValueOnce(0); // second step succeeds
+      vi.mocked(taskService.executeApproved)
+        .mockResolvedValueOnce(taskResult({ exitCode: 1 }))
+        .mockResolvedValueOnce(taskResult());
       const wf = makeWorkflow("wf", [
         makeStep("maybe-fail", "false", { expectSuccess: false }),
         makeStep("after", "echo", { args: ["after"] }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("failed");
       expect(states[0].error).toBe("Exit code: 1");
       // Second step should still run (expectSuccess: false = non-fatal).
       expect(states[1].status).toBe("success");
-      expect(runCommandInSession).toHaveBeenCalledTimes(2);
-      expect(runCommandInSession).toHaveBeenCalledWith("session-1", "echo 'after'");
+      expect(taskService.executeApproved).toHaveBeenCalledTimes(2);
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "echo 'after'", "/proj",
+      );
       // Workflow is still marked as failed (a step failed).
       expect(notifyError).toHaveBeenCalledWith(expect.stringContaining("failed"));
     });
 
     it("marks step as failed on timeout (-1)", async () => {
-      (runCommandInSession as any).mockResolvedValueOnce(-1);
+      vi.mocked(taskService.executeApproved).mockResolvedValueOnce(taskResult({ exitCode: -1 }));
       const wf = makeWorkflow("wf", [makeStep("hang", "sleep", { args: ["9999"] })]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("failed");
       expect(states[0].error).toBe("Timed out or session ended");
@@ -487,7 +870,7 @@ describe("workflows store", () => {
       ]);
       await runWorkflow(wf, "/proj");
       expect(notifyError).toHaveBeenCalledWith(expect.stringContaining("invalid"));
-      expect(createSession).not.toHaveBeenCalled();
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
       // The early-return path never sets running[wf] to true, so it stays
       // undefined — which is falsy and correctly indicates "not running".
       expect(workflowState.running["wf"]).toBeFalsy();
@@ -496,7 +879,6 @@ describe("workflows store", () => {
     it("emits workflow lifecycle output entries", async () => {
       const wf = makeWorkflow("wf", [makeStep("s", "echo")]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 200));
       // Should have at least: "Starting workflow", step info, "completed".
       const sources = (pushOutput as any).mock.calls.map((c: any[]) => c[0]);
       expect(sources.every((s: string) => s === "workflow")).toBe(true);
@@ -505,27 +887,27 @@ describe("workflows store", () => {
       expect(messages.some((m: string) => m.includes("completed"))).toBe(true);
     });
 
-    it("N-46: kills the terminal session after workflow completes", async () => {
+    it("removes completed executions from the cleanup stop set", async () => {
       const wf = makeWorkflow("wf", [makeStep("s", "echo")]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 200));
-      expect(killSession).toHaveBeenCalledWith("session-1");
+      cleanupWorkflowRuntime();
+      expect(taskService.stop).not.toHaveBeenCalled();
     });
 
-    it("N-46: kills the terminal session even when workflow fails", async () => {
-      (runCommandInSession as any).mockResolvedValueOnce(1);
+    it("removes failed executions from the cleanup stop set", async () => {
+      vi.mocked(taskService.executeApproved).mockResolvedValueOnce(taskResult({ exitCode: 1 }));
       const wf = makeWorkflow("wf", [makeStep("fail", "false")]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 200));
-      expect(killSession).toHaveBeenCalledWith("session-1");
+      cleanupWorkflowRuntime();
+      expect(taskService.stop).not.toHaveBeenCalled();
     });
 
-    it("N-46: does not kill session when session creation fails", async () => {
-      (createSession as any).mockResolvedValueOnce("");
+    it("does not leave an active execution when approval fails", async () => {
+      vi.mocked(taskService.requestExecutionApproval).mockRejectedValueOnce(new Error("denied"));
       const wf = makeWorkflow("wf", [makeStep("s")]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
-      expect(killSession).not.toHaveBeenCalled();
+      cleanupWorkflowRuntime();
+      expect(taskService.stop).not.toHaveBeenCalled();
     });
   });
 
@@ -595,6 +977,16 @@ describe("workflows store", () => {
   });
 
   describe("findTriggeredWorkflows", () => {
+    it("does not auto-run workflows that require confirmation", () => {
+      const wf: WorkflowDef = {
+        ...makeWorkflow("guarded", [makeStep("run")]),
+        requiresConfirmation: true,
+        runOn: { event: "file-saved", glob: "**/*.go" },
+      };
+
+      expect(findTriggeredWorkflows([wf], "src/main.go", {})).toEqual([]);
+    });
+
     it("returns workflow with matching glob", () => {
       const wf: WorkflowDef = {
         name: "auto-test",
@@ -773,13 +1165,23 @@ describe("workflows store", () => {
       };
       const result = findStartupWorkflows([wf], {});
       expect(result.length).toBe(1);
-      expect(runCommandInSession).not.toHaveBeenCalled();
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalled();
     });
   });
 
   // --- N-58 (Proposal R): workflow chain triggers ---
 
   describe("findChainTriggeredWorkflows", () => {
+    it("does not chain workflows that require confirmation", () => {
+      const wf: WorkflowDef = {
+        ...makeWorkflow("guarded", [makeStep("run")]),
+        requiresConfirmation: true,
+        runOn: { event: "workflow-completed", workflowName: "build" },
+      };
+
+      expect(findChainTriggeredWorkflows([wf], "build", {})).toEqual([]);
+    });
+
     it("returns workflows with workflow-completed trigger", () => {
       const wf: WorkflowDef = {
         name: "deploy",
@@ -1142,10 +1544,9 @@ describe("workflows store", () => {
   describe("runWorkflow with outputs (Proposal F integration)", () => {
     beforeEach(async () => {
       vi.clearAllMocks();
-      // Reset default mock implementations (clearAllMocks clears history but
-      // not implementations set via mockResolvedValueOnce; reset to defaults).
-      (runCommandInSession as any).mockResolvedValue(0);
-      (runCommandInSessionCapturing as any).mockResolvedValue({ exitCode: 0, output: "" });
+      vi.mocked(taskService.requestExecutionApproval).mockResolvedValue("approval-1");
+      vi.mocked(taskService.executeApproved).mockResolvedValue(taskResult());
+      vi.mocked(taskService.stop).mockResolvedValue(undefined);
       workflowState.workflows = [];
       workflowState.running = {};
       workflowState.stepStates = {};
@@ -1155,48 +1556,35 @@ describe("workflows store", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    it("uses runCommandInSessionCapturing when step declares outputs", async () => {
-      (runCommandInSessionCapturing as any).mockResolvedValue({
-        exitCode: 0,
-        output: "v1.2.3",
-      });
+    it("uses tracked command stdout when a step declares outputs", async () => {
+      vi.mocked(taskService.executeApproved).mockResolvedValue(taskResult({ stdout: "v1.2.3" }));
       const wf = makeWorkflow("wf", [
         makeStep("version", "git describe --tags", {
           outputs: { tag: "{{stdout}}" },
         }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
-      expect(runCommandInSessionCapturing).toHaveBeenCalledWith(
-        "session-1",
-        "git describe --tags",
-      );
-      // The non-capturing variant should NOT be used for the outputs step.
-      // (We check the specific command rather than "not called at all"
-      // because background workflows from previous tests may still be
-      // settling and call runCommandInSession with their own commands.)
-      expect(runCommandInSession).not.toHaveBeenCalledWith(
-        "session-1",
-        "git describe --tags",
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "git describe --tags", "/proj",
       );
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("success");
       expect(states[0].outputs).toEqual({ tag: "v1.2.3" });
     });
 
-    it("uses runCommandInSession when step has no outputs", async () => {
+    it("uses the same tracked executor when a step has no outputs", async () => {
       const wf = makeWorkflow("wf", [makeStep("build", "go build")]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
-      expect(runCommandInSession).toHaveBeenCalledWith("session-1", "go build");
-      expect(runCommandInSessionCapturing).not.toHaveBeenCalled();
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "go build", "/proj",
+      );
+      expect(taskService.executeApproved).toHaveBeenCalledTimes(1);
     });
 
     it("substitutes {{steps.x.outputs.y}} in later step commands", async () => {
-      (runCommandInSessionCapturing as any).mockResolvedValue({
-        exitCode: 0,
-        output: "v2.0.0",
-      });
+      vi.mocked(taskService.executeApproved)
+        .mockResolvedValueOnce(taskResult({ stdout: "v2.0.0" }))
+        .mockResolvedValueOnce(taskResult());
       const wf = makeWorkflow("wf", [
         makeStep("version", "git describe --tags", {
           outputs: { tag: "{{stdout}}" },
@@ -1204,42 +1592,33 @@ describe("workflows store", () => {
         makeStep("tag", "docker build -t app:{{steps.version.outputs.tag}} ."),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
-      // First step uses capturing variant.
-      expect(runCommandInSessionCapturing).toHaveBeenCalledWith(
-        "session-1",
-        "git describe --tags",
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "git describe --tags", "/proj",
       );
-      // Second step has no outputs template, uses non-capturing variant,
-      // AND its command should have the placeholder substituted.
-      expect(runCommandInSession).toHaveBeenCalledWith(
-        "session-1",
-        "docker build -t app:v2.0.0 .",
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "docker build -t app:v2.0.0 .", "/proj",
       );
     });
 
     it("does not extract outputs when step fails", async () => {
-      (runCommandInSessionCapturing as any).mockResolvedValue({
-        exitCode: 1,
-        output: "error output",
-      });
+      vi.mocked(taskService.executeApproved).mockResolvedValue(
+        taskResult({ exitCode: 1, stdout: "error output" }),
+      );
       const wf = makeWorkflow("wf", [
         makeStep("version", "git describe", {
           outputs: { tag: "{{stdout}}" },
         }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("failed");
       expect(states[0].outputs).toBeUndefined();
     });
 
     it("extracts outputs via regex template", async () => {
-      (runCommandInSessionCapturing as any).mockResolvedValue({
-        exitCode: 0,
-        output: "BUILD v3.1.0 RELEASE",
-      });
+      vi.mocked(taskService.executeApproved).mockResolvedValue(
+        taskResult({ stdout: "BUILD v3.1.0 RELEASE" }),
+      );
       const wf = makeWorkflow("wf", [
         makeStep("build", "make version", {
           outputs: {
@@ -1249,7 +1628,6 @@ describe("workflows store", () => {
         }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("success");
       expect(states[0].outputs?.full).toBe("BUILD v3.1.0 RELEASE");
@@ -1257,29 +1635,23 @@ describe("workflows store", () => {
     });
 
     it("leaves placeholder when referenced output is missing", async () => {
-      (runCommandInSessionCapturing as any).mockResolvedValue({
-        exitCode: 0,
-        output: "",
-      });
+      vi.mocked(taskService.executeApproved).mockResolvedValue(taskResult());
       const wf = makeWorkflow("wf", [
         makeStep("empty", "echo", { outputs: { tag: "{{stdout}}" } }),
         makeStep("next", "echo {{steps.empty.outputs.nonexistent}}"),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       // Placeholder should be left as-is (empty output → empty value, but
       // the key 'nonexistent' was never declared, so it stays as placeholder).
-      expect(runCommandInSession).toHaveBeenCalledWith(
-        "session-1",
-        "echo {{steps.empty.outputs.nonexistent}}",
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "echo {{steps.empty.outputs.nonexistent}}", "/proj",
       );
     });
 
     it("skips step whose condition references a missing output", async () => {
-      (runCommandInSessionCapturing as any).mockResolvedValue({
-        exitCode: 0,
-        output: "v1.0.0",
-      });
+      vi.mocked(taskService.executeApproved).mockResolvedValue(
+        taskResult({ stdout: "v1.0.0" }),
+      );
       const wf = makeWorkflow("wf", [
         makeStep("version", "git describe", {
           outputs: { tag: "{{stdout}}" },
@@ -1289,18 +1661,19 @@ describe("workflows store", () => {
         }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("success");
       expect(states[1].status).toBe("skipped");
-      expect(runCommandInSession).not.toHaveBeenCalled();
+      expect(taskService.executeApproved).toHaveBeenCalledTimes(1);
+      expect(taskService.requestExecutionApproval).not.toHaveBeenCalledWith(
+        expect.any(String), "deploy", "/proj",
+      );
     });
 
     it("runs step when condition output is non-empty", async () => {
-      (runCommandInSessionCapturing as any).mockResolvedValue({
-        exitCode: 0,
-        output: "v1.0.0",
-      });
+      vi.mocked(taskService.executeApproved)
+        .mockResolvedValueOnce(taskResult({ stdout: "v1.0.0" }))
+        .mockResolvedValueOnce(taskResult());
       const wf = makeWorkflow("wf", [
         makeStep("version", "git describe", {
           outputs: { tag: "{{stdout}}" },
@@ -1310,11 +1683,12 @@ describe("workflows store", () => {
         }),
       ]);
       await runWorkflow(wf, "/proj");
-      await new Promise((r) => setTimeout(r, 50));
       const states = workflowState.stepStates["wf"];
       expect(states[0].status).toBe("success");
       expect(states[1].status).toBe("success");
-      expect(runCommandInSession).toHaveBeenCalledWith("session-1", "deploy");
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "deploy", "/proj",
+      );
     });
   });
 });

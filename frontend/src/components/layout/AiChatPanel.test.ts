@@ -32,6 +32,7 @@ const {
   approveAndFeedMock,
   rejectAndFeedMock,
   clearPendingToolCallsMock,
+  switchAssistantModeMock,
   // @/stores/editor
   updateContentMock,
   // @/stores/rules
@@ -65,8 +66,13 @@ const {
   },
   // aiState：消息列表、流式状态、错误等
   aiStateInit: {
-    messages: [] as Array<{ role: string; content: string }>,
+    messages: [] as Array<{
+      role: string;
+      content: string;
+      toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+    }>,
     streaming: false,
+    globalStreamBusy: false,
     error: null as string | null,
     context: null as unknown,
     currentConversationId: null as string | null,
@@ -94,7 +100,7 @@ const {
   toggleAiChatMock: vi.fn(),
   saveSettingsMock: vi.fn(),
   activateAIConfigMock: vi.fn(),
-  sendMessageMock: vi.fn().mockResolvedValue(undefined),
+  sendMessageMock: vi.fn().mockResolvedValue(true),
   clearMessagesMock: vi.fn(),
   stopGenerationMock: vi.fn(),
   clearContextMock: vi.fn(),
@@ -107,6 +113,7 @@ const {
   approveAndFeedMock: vi.fn(),
   rejectAndFeedMock: vi.fn(),
   clearPendingToolCallsMock: vi.fn(),
+  switchAssistantModeMock: vi.fn(),
   updateContentMock: vi.fn(),
   loadRulesMock: vi.fn().mockResolvedValue(undefined),
   saveRulesMock: vi.fn().mockResolvedValue(true),
@@ -157,14 +164,22 @@ vi.mock("@/stores/agent", async () => {
     agentState,
     isAgentMode: computed(() => agentState.mode === "agent"),
     toggleMode: toggleModeMock,
-    // extractToolCallBlocks 透传内容，不解析工具调用块
-    extractToolCallBlocks: (content: string) => ({ cleanedMessage: content, toolCalls: [] }),
+    extractToolCallBlocks: (content: string) => ({
+      cleanedMessage: content.replace(/```\nread: [^\n]+\n```/g, ""),
+      toolCalls: [],
+    }),
     approveAndFeed: approveAndFeedMock,
     rejectAndFeed: rejectAndFeedMock,
     clearPendingToolCalls: clearPendingToolCallsMock,
     getRegisteredTools: () => [],
   };
 });
+
+vi.mock("@/stores/aiAssistant", () => ({
+  openStandalonePage: vi.fn(),
+  openAIDesktopWindow: vi.fn(),
+  switchMode: switchAssistantModeMock,
+}));
 
 // ── mock @/stores/editor ──
 vi.mock("@/stores/editor", async () => {
@@ -278,9 +293,12 @@ const aiState = aiStore.aiState;
 const appState = appStore.appState;
 const agentState = agentStore.agentState;
 const connectivityState = connectivityMod.connectivityState;
+const { agentTimelineState } = await import("@/stores/agentTimeline");
 
 const AiChatPanelModule = await import("./AiChatPanel.vue");
 const AiChatPanel = AiChatPanelModule.default;
+const AgentExecutionTimelineModule = await import("@/components/ai-assistant/AgentExecutionTimeline.vue");
+const AgentExecutionTimeline = AgentExecutionTimelineModule.default;
 
 const mountedWrappers: Array<ReturnType<typeof mount>> = [];
 
@@ -305,6 +323,7 @@ async function flush() {
 function resetState() {
   aiState.messages = [];
   aiState.streaming = false;
+  aiState.globalStreamBusy = false;
   aiState.error = null;
   aiState.context = null;
   aiState.currentConversationId = null;
@@ -314,6 +333,7 @@ function resetState() {
   appState.aiChatVisible = false;
   agentState.mode = "chat";
   agentState.pendingToolCalls = [];
+  agentTimelineState.entries.splice(0);
   connectivityState.online = true;
 }
 
@@ -322,7 +342,7 @@ describe("AiChatPanel", () => {
     vi.clearAllMocks();
     resetState();
     // 重新设定默认的异步返回值（clearAllMocks 不清除实现，这里仅做保险）
-    sendMessageMock.mockResolvedValue(undefined);
+    sendMessageMock.mockResolvedValue(true);
     loadConversationMock.mockResolvedValue(undefined);
     renameConversationMock.mockResolvedValue(true);
     saveRulesMock.mockResolvedValue(true);
@@ -346,6 +366,80 @@ describe("AiChatPanel", () => {
     expect(wrapper.find(".ai-chat-panel").exists()).toBe(true);
     expect(wrapper.find(".ai-chat-panel__title").text()).toBe("aiChat.title");
     expect(wrapper.find(".ai-chat-panel__input").exists()).toBe(true);
+  });
+
+  it("每个嵌入式窗口只挂载一个 agent execution timeline", () => {
+    aiState.messages = [{ role: "assistant", content: "" }];
+    const wrapper = mountPanel();
+    expect(wrapper.findAllComponents(AgentExecutionTimeline)).toHaveLength(1);
+  });
+
+  it("即使尚无对话消息，嵌入面板也显示 reasoning/tool timeline", async () => {
+    agentTimelineState.entries.push({
+      id: "reasoning-1",
+      kind: "reasoning",
+      stage: "reasoning",
+      explicit: true,
+      detail: "provider summary",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const wrapper = mountPanel();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".ai-chat-panel__empty").exists()).toBe(true);
+    expect(wrapper.find(".agent-timeline").exists()).toBe(true);
+    expect(wrapper.find(".agent-timeline").text()).toContain("provider summary");
+  });
+
+  it("follows newly appended agent activity when the message body is at the bottom", async () => {
+    aiState.messages = [{ role: "assistant", content: "working" }];
+    const wrapper = mountPanel();
+    const body = wrapper.find(".ai-chat-panel__body").element as HTMLElement;
+    Object.defineProperties(body, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, writable: true, value: 200 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    });
+    agentTimelineState.entries.push({
+      id: "tool-1",
+      kind: "tool",
+      stage: "executing",
+      status: "executing",
+      tool: "read",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    Object.defineProperty(body, "scrollHeight", { configurable: true, writable: true, value: 280 });
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    expect(body.scrollTop).toBe(280);
+  });
+
+  it("首个 ai:chunk 到达后当前嵌入窗口立即更新 assistant 内容", async () => {
+    aiState.messages = [{ role: "assistant", content: "" }];
+    const wrapper = mountPanel();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".ai-chat-panel__message-content").text()).toBe("");
+
+    aiState.messages[0].content = "首个 chunk 已显示";
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".ai-chat-panel__message-content").text()).toContain("首个 chunk 已显示");
+  });
+
+  it("等长流式内容替换也在当前嵌入窗口立即更新", async () => {
+    aiState.messages = [{ role: "assistant", content: "旧答案" }];
+    const wrapper = mountPanel();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".ai-chat-panel__message-content").text()).toContain("旧答案");
+
+    // Equal-length replacements are the case a length-only v-memo key misses.
+    aiState.messages[0].content = "新答案";
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".ai-chat-panel__message-content").text()).toContain("新答案");
+    expect(wrapper.find(".ai-chat-panel__message-content").text()).not.toContain("旧答案");
+    wrapper.unmount();
   });
 
   it("非 embedded 且 aiChatVisible 为 false 时不渲染面板", () => {
@@ -379,6 +473,24 @@ describe("AiChatPanel", () => {
     // 消息内容（renderMarkdown mock 透传原文）
     expect(wrapper.text()).toContain("帮我重构这段代码");
     expect(wrapper.text()).toContain("好的，我来看一下。");
+  });
+
+  it("纯 fence fallback 隐藏工具块，native 混用则保留原文", () => {
+    agentState.mode = "agent";
+    aiState.messages = [
+      { role: "assistant", content: "fallback\n```\nread: fallback.ts\n```" },
+      {
+        role: "assistant",
+        content: "native plus fence\n```\nread: duplicate.ts\n```",
+        toolCalls: [{ id: "native-read", name: "read", arguments: '{"path":"a.ts"}' }],
+      },
+    ];
+
+    const wrapper = mountPanel();
+    const messages = wrapper.findAll(".ai-chat-panel__message-content");
+    expect(messages[0].text()).not.toContain("read: fallback.ts");
+    expect(messages[1].text()).toContain("read: duplicate.ts");
+    expect(wrapper.get('[data-testid="chat-message-tool-calls"]').text()).toContain("read");
   });
 
   it("输入文本后点击发送按钮调用 sendMessage 并清空输入", async () => {
@@ -416,6 +528,18 @@ describe("AiChatPanel", () => {
     expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
+  it("后端未接纳发送时保留用户输入", async () => {
+    sendMessageMock.mockResolvedValueOnce(false);
+    const wrapper = mountPanel();
+    const input = wrapper.get(".ai-chat-panel__input");
+    await input.setValue("keep my draft");
+    await input.trigger("keydown", { key: "Enter" });
+    await flush();
+
+    expect(sendMessageMock).toHaveBeenCalledWith("keep my draft");
+    expect((input.element as HTMLInputElement).value).toBe("keep my draft");
+  });
+
   it("点击清除对话按钮调用 clearMessages", async () => {
     // clear 按钮仅在 hasMessages 时渲染
     aiState.messages = [{ role: "user", content: "hi" }];
@@ -426,10 +550,45 @@ describe("AiChatPanel", () => {
     expect(clearMessagesMock).toHaveBeenCalledTimes(1);
   });
 
-  it("点击模式切换按钮调用 toggleMode", async () => {
+  it("嵌入模式切换通过 aiAssistant 同步 visible/backend Agent mode", async () => {
     const wrapper = mountPanel();
     await wrapper.find(".ai-chat-panel__mode-toggle").trigger("click");
-    expect(toggleModeMock).toHaveBeenCalledTimes(1);
+    expect(switchAssistantModeMock).toHaveBeenLastCalledWith("agent");
+    expect(toggleModeMock).not.toHaveBeenCalled();
+
+    agentState.mode = "agent";
+    await wrapper.vm.$nextTick();
+    await wrapper.find(".ai-chat-panel__mode-toggle").trigger("click");
+    expect(switchAssistantModeMock).toHaveBeenLastCalledWith("chat");
+  });
+
+  it("backend stream busy 尾窗内禁用并拒绝 approve/reject/clear", async () => {
+    aiState.messages = [{ role: "assistant", content: "tool requested" }];
+    aiState.globalStreamBusy = true;
+    agentState.mode = "agent";
+    agentState.pendingToolCalls = [{
+      id: "read-busy",
+      kind: "read",
+      target: "src/main.ts",
+      status: "pending",
+    }];
+    const wrapper = mountPanel();
+
+    const approve = wrapper.get(".tool-call-card__btn--approve");
+    const reject = wrapper.get(".tool-call-card__btn--reject");
+    const clear = wrapper.get(".agent-approvals__clear");
+    expect(approve.attributes("disabled")).toBeDefined();
+    expect(reject.attributes("disabled")).toBeDefined();
+    expect(clear.attributes("disabled")).toBeDefined();
+    (approve.element as HTMLButtonElement).disabled = false;
+    (reject.element as HTMLButtonElement).disabled = false;
+    (clear.element as HTMLButtonElement).disabled = false;
+    await approve.trigger("click");
+    await reject.trigger("click");
+    await clear.trigger("click");
+    expect(approveAndFeedMock).not.toHaveBeenCalled();
+    expect(rejectAndFeedMock).not.toHaveBeenCalled();
+    expect(clearPendingToolCallsMock).not.toHaveBeenCalled();
   });
 
   it("点击建议项调用 sendMessage 并传入对应建议文本", async () => {

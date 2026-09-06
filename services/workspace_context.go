@@ -27,6 +27,7 @@ type WorkspaceContext struct {
 	mu         sync.RWMutex
 	root       string
 	roots      []string
+	inputRoots []string
 	generation uint64
 }
 
@@ -82,6 +83,21 @@ func (c *WorkspaceContext) Snapshot() (string, uint64) {
 	return c.root, c.generation
 }
 
+// InputRoots 返回最近一次成功 Set/SetRoots 时调用方传入的原始词法拼写
+// （Abs+Clean，未解析符号链接与 8.3 短名），仅供审计脱敏覆盖同一目录的
+// 多种字符串形态使用；容器判断一律使用 Root/Snapshot 的规范形态。
+func (c *WorkspaceContext) InputRoots() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.inputRoots) == 0 {
+		return nil
+	}
+	return append([]string(nil), c.inputRoots...)
+}
+
 // State returns root, roots, and generation under one lock. The returned roots
 // slice is detached from the context and may be retained by callers.
 func (c *WorkspaceContext) State() WorkspaceSnapshot {
@@ -121,6 +137,19 @@ func (c *WorkspaceContext) SetRoots(roots []string) error {
 	if err != nil {
 		return err
 	}
+	// P19 CI 修复：保留调用方传入的原始词法拼写（仅 Abs+Clean，不解析符号
+	// 链接/8.3 短名）。审计脱敏除了规范形态外也要覆盖这些拼写：在 Windows
+	// 短名 TEMP 或 macOS /var 前缀环境下，二者是同一目录的不同字符串，
+	// 只按规范形态替换会把原始拼写泄漏进审计日志。
+	inputs := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		if abs, absErr := filepath.Abs(root); absErr == nil {
+			inputs = append(inputs, filepath.Clean(abs))
+		}
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -131,6 +160,7 @@ func (c *WorkspaceContext) SetRoots(roots []string) error {
 	}
 	c.root = cleaned[0]
 	c.roots = append([]string(nil), cleaned...)
+	c.inputRoots = inputs
 	c.generation++
 	return nil
 }

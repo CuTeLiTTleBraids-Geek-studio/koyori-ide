@@ -37,7 +37,7 @@
 ### 1.2 验证纪律（继承 prompt-7 §25，实测有效）
 - 仓库在 WSL 挂载的 NTFS（`/mnt/c/...`），Go/npm 验证**必须**在 `/tmp/koyori-ide-audit` 原生 fs 副本跑：
   ```bash
-  rsync -a --delete --exclude node_modules --exclude .git "/mnt/c/Users/Cute_/Downloads/Koyori IDE-main/" "/tmp/koyori-ide-audit/"
+  rsync -a --delete --exclude node_modules --exclude .git "/mnt/c/Users/<用户名>/Downloads/Koyori IDE-main/" "/tmp/koyori-ide-audit/"
   ```
   改动写回 `/mnt/c` 原仓库后重新同步再验证。`node_modules` 在 Linux 下需重新 `npm ci`（副本已有则跳过）。
 - 退出码：`cmd; echo "EXIT=$?"`；**禁止** `cmd | tail; echo $?`（取到的是 tail 的退出码）。管道场景用 `${PIPESTATUS[0]}`。
@@ -518,7 +518,7 @@ bash -n build/scripts/build-macos.sh && bash -n build/scripts/build-linux.sh
 # 版本一致性（G-09）
 PATH="/usr/local/go/bin:$PATH" go test -run 'Version|Release' . -count=1
 # 仓库卫生（G-17）
-ls -la /mnt/c/Users/Cute_/Downloads/Koyori IDE-main | grep -Ei 'koyori-ide\.exe|NUL|\$profile|\.claude' || echo "clean"
+ls -la /mnt/c/Users/<用户名>/Downloads/Koyori IDE-main | grep -Ei 'koyori-ide\.exe|NUL|\$profile|\.claude' || echo "clean"
 ```
 
 ---

@@ -33,6 +33,14 @@ import (
 type PProfService struct {
 	mu sync.Mutex
 
+	// rootMu 保护 workspaceRoot。与 mu 分离：输出路径的沙箱解析在
+	// 各输出方法已持有 mu 时也要进行。
+	rootMu sync.RWMutex
+	// workspaceRoot 是 profile 输出的沙箱根（P19 P1-02）。Profile 文件
+	// 包含源码路径与栈数据，写出必须约束在当前工作区内；未设置根时
+	// 一切输出 fail-closed。
+	workspaceRoot string
+
 	// CPU 采样状态
 	cpuProfiling  bool
 	cpuFile       *os.File
@@ -47,11 +55,44 @@ func NewPProfService() *PProfService {
 	return &PProfService{}
 }
 
+// setWorkspaceRoot 更新 profile 输出的沙箱根。签名对齐 ProjectService
+// workspace-root fan-out 的非错误 setter（同 AIService/LSPService）。
+func (s *PProfService) setWorkspaceRoot(root string) {
+	s.rootMu.Lock()
+	defer s.rootMu.Unlock()
+	s.workspaceRoot = root
+}
+
+// currentWorkspaceRoot 返回当前沙箱根（fan-out 契约的 getter）。
+func (s *PProfService) currentWorkspaceRoot() string {
+	s.rootMu.RLock()
+	defer s.rootMu.RUnlock()
+	return s.workspaceRoot
+}
+
+// resolveProfileOutputPath 把 renderer 传入的输出路径约束到工作区沙箱内
+// （P19 P1-02）。空根或越界（含符号链接逃逸与 ".." 回溯）一律 fail-closed。
+func (s *PProfService) resolveProfileOutputPath(outputPath string) (string, error) {
+	s.rootMu.RLock()
+	root := s.workspaceRoot
+	s.rootMu.RUnlock()
+	resolved, err := ValidateMutatingPathWithinRoot(root, outputPath)
+	if err != nil {
+		return "", fmt.Errorf("profile output %q rejected by workspace sandbox: %w", outputPath, err)
+	}
+	return resolved, nil
+}
+
 // StartCPUProfile 开始 runtime/pprof CPU 采样，输出写入 outputPath。
-// 若已在采样则返回错误。outputPath 的父目录需已存在。
+// 若已在采样则返回错误。outputPath 必须位于工作区沙箱内（P19 P1-02），
+// 其父目录需已存在。
 func (s *PProfService) StartCPUProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,19 +150,20 @@ func (s *PProfService) ActiveProfile() string {
 }
 
 // CaptureHeapProfile 使用 pprof.WriteHeapProfile 将当前堆 profile 写入 outputPath。
-func (s *PProfService) CaptureHeapProfile(outputPath string) (err error) {
+// outputPath 必须位于工作区沙箱内（P19 P1-02）。
+func (s *PProfService) CaptureHeapProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	f, err := createProfileFile(outputPath)
 	if err != nil {
 		return fmt.Errorf("create heap profile file: %w", err)
 	}
-	defer func() {
-		if closeErr := f.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close heap profile file: %w", closeErr))
-		}
-	}()
+	defer f.Close()
 	if err := pprof.WriteHeapProfile(f); err != nil {
 		return fmt.Errorf("write heap profile: %w", err)
 	}
@@ -131,9 +173,14 @@ func (s *PProfService) CaptureHeapProfile(outputPath string) (err error) {
 // CaptureGoroutineProfile 将 goroutine profile 写入 outputPath。
 // 使用 pprof.Lookup("goroutine").WriteTo。
 // debug 为 0 时输出二进制格式，>0 时输出可读文本（1=单行/栈，2=同 1 且带运行时元信息）。
-func (s *PProfService) CaptureGoroutineProfile(outputPath string, debug int) (err error) {
+// outputPath 必须位于工作区沙箱内（P19 P1-02）。
+func (s *PProfService) CaptureGoroutineProfile(outputPath string, debug int) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	p := pprof.Lookup("goroutine")
 	if p == nil {
@@ -143,11 +190,7 @@ func (s *PProfService) CaptureGoroutineProfile(outputPath string, debug int) (er
 	if err != nil {
 		return fmt.Errorf("create goroutine profile file: %w", err)
 	}
-	defer func() {
-		if closeErr := f.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close goroutine profile file: %w", closeErr))
-		}
-	}()
+	defer f.Close()
 	if err := p.WriteTo(f, debug); err != nil {
 		return fmt.Errorf("write goroutine profile: %w", err)
 	}
@@ -178,6 +221,10 @@ func (s *PProfService) StopBlockProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty; block profiling was stopped without saving")
 	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
+	}
 	return writeRuntimeProfile(outputPath, "block")
 }
 
@@ -206,13 +253,22 @@ func (s *PProfService) StopMutexProfile(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty; mutex profiling was stopped without saving")
 	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
+	}
 	return writeRuntimeProfile(outputPath, "mutex")
 }
 
 // StartTrace starts a runtime trace session writing directly to outputPath.
+// outputPath 必须位于工作区沙箱内（P19 P1-02）。
 func (s *PProfService) StartTrace(outputPath string) error {
 	if outputPath == "" {
 		return fmt.Errorf("output path is empty")
+	}
+	outputPath, err := s.resolveProfileOutputPath(outputPath)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -290,7 +346,7 @@ func createProfileFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 }
 
-func writeRuntimeProfile(outputPath, name string) (err error) {
+func writeRuntimeProfile(outputPath, name string) error {
 	profile := pprof.Lookup(name)
 	if profile == nil {
 		return fmt.Errorf("%s profile not available", name)
@@ -299,11 +355,7 @@ func writeRuntimeProfile(outputPath, name string) (err error) {
 	if err != nil {
 		return fmt.Errorf("create %s profile file: %w", name, err)
 	}
-	defer func() {
-		if closeErr := f.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close %s profile file: %w", name, closeErr))
-		}
-	}()
+	defer f.Close()
 	if err := profile.WriteTo(f, 0); err != nil {
 		return fmt.Errorf("write %s profile: %w", name, err)
 	}
@@ -358,9 +410,7 @@ func (s *PProfService) AnalyzeProfile(profilePath string) (*ProfileAnalysis, err
 	if err != nil {
 		return nil, fmt.Errorf("open profile file: %w", err)
 	}
-	defer func() {
-		_ = f.Close()
-	}()
+	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat profile file: %w", err)
@@ -375,7 +425,7 @@ func (s *PProfService) AnalyzeProfile(profilePath string) (*ProfileAnalysis, err
 	if headerErr != nil && !errors.Is(headerErr, io.EOF) && !errors.Is(headerErr, io.ErrUnexpectedEOF) {
 		return nil, fmt.Errorf("read profile header: %w", headerErr)
 	}
-	profileReader := io.MultiReader(bytes.NewReader(header[:n]), fileReader)
+	var profileReader io.Reader = io.MultiReader(bytes.NewReader(header[:n]), fileReader)
 	var gr *gzip.Reader
 	// runtime/pprof 写出的 profile 为 gzip 压缩的 protobuf（.pb.gz）。
 	// 检测 gzip 魔数 0x1f 0x8b 并解压，兼容未压缩的裸 protobuf。
@@ -415,9 +465,7 @@ func (s *PProfService) AnalyzeTrace(tracePath, view string) (*ProfileAnalysis, e
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		_ = os.Remove(traceInput)
-	}()
+	defer os.Remove(traceInput)
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		return nil, fmt.Errorf("go toolchain is required to analyze traces")
@@ -427,9 +475,7 @@ func (s *PProfService) AnalyzeTrace(tracePath, view string) (*ProfileAnalysis, e
 		return nil, fmt.Errorf("create trace profile temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
+	defer os.Remove(tmpPath)
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return nil, fmt.Errorf("secure trace profile temp file: %w", err)
@@ -479,9 +525,7 @@ func copyTraceInput(tracePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open trace file: %w", err)
 	}
-	defer func() {
-		_ = source.Close()
-	}()
+	defer source.Close()
 	openedInfo, err := source.Stat()
 	if err != nil {
 		return "", fmt.Errorf("stat opened trace file: %w", err)
@@ -994,19 +1038,17 @@ func parseSample(b []byte) (rawSample, error) {
 	err := iterFields(b, func(num, wire int, v uint64, sub []byte) error {
 		switch num {
 		case 1: // location_id (repeated uint64, packed)
-			switch wire {
-			case 2:
+			if wire == 2 {
 				sm.locationIDs = append(sm.locationIDs, readPackedUints(sub)...)
-			case 0:
+			} else if wire == 0 {
 				sm.locationIDs = append(sm.locationIDs, v)
 			}
 		case 2: // value (repeated int64, packed)
-			switch wire {
-			case 2:
+			if wire == 2 {
 				for _, u := range readPackedUints(sub) {
 					sm.values = append(sm.values, int64(u))
 				}
-			case 0:
+			} else if wire == 0 {
 				sm.values = append(sm.values, int64(v))
 			}
 		}

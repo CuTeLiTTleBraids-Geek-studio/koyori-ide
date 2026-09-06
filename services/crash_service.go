@@ -209,7 +209,7 @@ func (s *CrashService) DeleteCrashReport(filename string) error {
 	}
 	path := filepath.Join(dir, filename)
 	// 二次校验：解析后的路径必须在崩溃目录内。
-	if _, err := ValidatePathWithinRoot(dir, path); err != nil {
+	if _, err := ValidateMutatingPathWithinRoot(dir, path); err != nil {
 		return fmt.Errorf("crash path validation failed: %w", err)
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

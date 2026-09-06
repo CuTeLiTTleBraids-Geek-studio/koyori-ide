@@ -29,10 +29,10 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 - 🧰 **本地工具链**：`go build/test/vet`、`gofmt`、`golangci-lint`、`tsc`、`eslint`、`prettier`、`vitest` 一键调用，无需联网。
 - 🔌 **离线 LSP**：自动发现 `gopls` / `typescript-language-server` / `vtsls`；能力取决于本机真实安装的语言服务器，缺失时明确降级，**绝不把 mock 当可用服务**（诚实喵！）。
 - 🤖 **AI 增强**：OpenAI Chat Completions 风格 + Anthropic Messages 双协议 SSE 流式对话，支持 Ollama / LM Studio 等本地端点。
-- 🐾 **自治 Agent**：读文件、写文件、运行命令、Git 操作——**所有命令强制人工审批**，没有 Safe 自动批准旁路，安全喵！
+- 🐾 **自治 Agent**：读文件、写文件、运行命令、搜索、只读 Git status/diff——**所有命令强制人工审批**，没有 Safe 自动批准旁路，安全喵！
 - 🧩 **可扩展**：原生插件（Web Worker 沙箱）+ Open VSX 插件市场（SHA-256 校验、权限分级）。
 
-> ⚠️ **诚实声明**：Koyori IDE 当前为 **0.x 实验版本**，构建在 Wails v3 **alpha** 之上。它不是 VS Code、Cursor 或 IntelliJ 的替代品，**不宣称生产级或企业就绪**。部分能力（远程开发、VSIX 兼容层、调试适配器、发布供应链）只有源码/单元/契约证据，未经真实外部系统端到端验证。详见下方[验证边界](#当前能力与验证边界vsu)。
+> ⚠️ **诚实声明**：Koyori IDE 当前为 **0.x 实验版本**，构建在 Wails v3 **alpha** 之上。它不是 VS Code、Cursor 或 IntelliJ 的替代品，**不宣称生产级或企业就绪**。固定 SHA 第三方 VSIX 已在一条 production installer -> installed files -> real Worker 链路中验证三类宿主可见贡献：Catppuccin 安装主题实际定义并切换、Material Icon Theme 命令可见、Rainbow CSV 打开真实宿主 InputBox 并完成编辑器 reveal/selection；YAML 对未知 API 精确 fail-closed。这些证据不等于 packaged Windows 或完整 VS Code API 兼容。远程开发、调试适配器和发布供应链仍有明确的未验证边界。详见下方[验证边界](#当前能力与验证边界vsu)。
 
 ---
 
@@ -46,7 +46,7 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 | 多标签页 | 脏状态指示、未保存提示、Ctrl+S 全局保存 |
 | Diff 视图 | Myers diff 逐行对比，Git 冲突解决 |
 | Markdown 预览 | 分栏渲染 + 语法高亮（highlight.js，DOMPurify 消毒） |
-| 内联 AI 补全 | 幽灵文本补全，debounce + AbortSignal 取消 |
+| 内联 AI 补全 | 幽灵文本补全，debounce + AbortSignal 取消；离线/失败不留空幽灵，状态栏显示离线补全 |
 | 快速打开 | Ctrl+P 模糊搜索工作区文件 |
 
 ### 🤖 AI 助手
@@ -54,13 +54,13 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 - 多 Provider 配置，无限保存、一键切换
 - OpenAI（`/v1/chat/completions`）与 Anthropic（`/v1/messages`）双协议原生支持
 - SSE 流式响应，`ai:chunk` / `ai:done` / `ai:error` 事件驱动
-- 9 个右键代码动作：解释、重构、修 Bug、生成文档/测试、优化、审查、安全审计、提交信息
+- 8 个右键代码动作：解释、重构、修 Bug、生成文档、生成测试、优化、审查、安全审计（不含提交信息 / implement 入口）
 - 对话历史持久化（原子写 + 路径沙箱）；自动加载 `.cursorrules` / `AGENTS.md` / `.koyori-ide/rules.md` 项目规则
 - 瞬时错误自动重试 + 指数退避；温度 / maxTokens 可配置
 
 ### 🐾 自治 Agent
 
-- 工具调用：读/写文件、运行命令、搜索代码、Git 操作
+- 工具调用：读/写文件、运行命令、搜索代码、`@codebase` 文本检索（**不是向量数据库**）、只读 Git status/diff（不自动 commit）
 - **命令强制人工审批**，风险分级 Safe / Elevated / Dangerous 逐工具审批
 - 审计日志全程记录；单轮上限 **20 次工具** 调用（`MAX_TOOL_CALLS`），防无限循环
 
@@ -76,8 +76,10 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 | 语言 | 工具 |
 |---|---|
 | Go | go build/test/vet/mod tidy · gofmt · goimports · golangci-lint |
-| TS/JS | tsc --noEmit · eslint --fix · prettier · vitest · npm/pnpm/yarn scripts 树 |
+| TS/JS | tsc --noEmit · eslint --fix · prettier · vitest · npm/pnpm/yarn scripts |
 | 通用 | Makefile target 视图 · `.vscode/tasks.json` 兼容 · package.json scripts |
+
+Go/TS 的开箱工作流依赖本机安装并在 PATH 中可见的 Go、Node、`gopls` 与 `tsserver`（或等价 TypeScript language server）；缺少工具时状态栏和操作结果明确降级，不显示假绿状态。Python/Rust 等其他语言不写成开箱完整支持。
 
 ### 🖥️ 内置终端
 
@@ -95,8 +97,12 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 
 - 原生插件（用户全局 + 项目级），manifest 校验，命令注册
 - Web Worker 沙箱：无 DOM/window/localStorage 访问，postMessage RPC，权限 fail-closed
-- Open VSX Registry 客户端：搜索 / 下载 / 安装 VSIX / SHA-256 校验
-- 安全分级 Trusted / Reviewed / Restricted，黑名单拦截，受限 API 弹窗审批
+- Open VSX Registry 客户端：搜索 / 下载 / 安装 VSIX / SHA-256 校验；固定 SHA 语料已验证生产安装后 real Worker 激活及三类宿主可见贡献
+- 安全分级 Trusted / Reviewed / Restricted，黑名单拦截，受限 API 弹窗审批；未知 API fail-closed
+
+### 🧭 默认活动栏（5 项）
+
+默认只显示：资源管理器 / 搜索 / Git / 扩展 / AI（AI 打开伴侣窗）。Debug、Test Explorer、Build、Database、HTTP Client、Inspections、Call Hierarchy 从**命令面板**打开（命令 id：`koyoriIde.view.debug` / `koyoriIde.view.testExplorer` 等），服务与路由保留。Goal 与 Computer Use 仍在 AI 设置 / AI 窗。
 
 ### 🛠️ 其他工具窗与能力
 
@@ -132,10 +138,10 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 | Recovery | **V / U** | [恢复测试](services/recovery_service_test.go)通过；真实 SIGKILL/restart 证据以 [E2E 状态](docs/E2E.md#platform-status)为准 |
 | 最小 Remote | **S / U** | [RemoteService 测试](services/remote_service_test.go)覆盖；无真实 SSH 服务器，无远端 PTY/Agent/端口转发 |
 | Debug / Test | **V / S / U** | [Debug/Test 测试](services/debug_service_test.go)与 [真实会话边界](docs/RELEASING.md#lsp-and-debugger-release-claims)；无真实 Delve/Node 会话 |
-| 插件 / VSIX | **V / S / U** | [扩展安全测试](services/extension_security_service_test.go)与 [兼容矩阵](docs/EXTENSION-COMPATIBILITY.md)通过；未做真实 Open VSX 大规模兼容运行 |
+| 插件 / VSIX | **T / I / U** | 四个固定 SHA 第三方 VSIX 经过生产 installer 落盘；Catppuccin、Material Icon Theme、Rainbow CSV 从 installed files 进入 real Worker active，YAML 以 `KOYORI_IDE_EXT_API_UNSUPPORTED: vscode.CompletionItem` 精确失败且不 active。同一生产测试实际定义/切换 Catppuccin Mocha editor theme、暴露 Material 命令、执行 Rainbow `GoToColumn` 并驱动真实 Element Plus InputBox 与 reveal/selection；packaged 激活仍 U |
 | 发布供应链 | **V / S / U** | [RELEASING](docs/RELEASING.md)、[依赖清单](docs/THIRD_PARTY_LICENSES.md)与 [资产清单](docs/RELEASE_ASSET_LICENSES.md)源码契约通过；真实四平台产物、签名、公证、packaged E2E 均 U |
 
-**能力边界**：Computer Use 默认关闭（三平台均为 unsupported stub）；IM 仅出站通知；VSIX 是受限兼容子集而非完整 VS Code Extension API；远程开发不是 Remote-SSH。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 与 [.github/SECURITY.md](.github/SECURITY.md)。
+**能力边界**：Computer Use 默认关闭（Windows 实现与 Unix stub 的状态以设置页和验证表为准）；IM 仅出站通知；VSIX 是受限兼容子集而非完整 VS Code Extension API。这里的 T/I 建立的是固定 SHA production installer、installed files、real Worker 与宿主贡献单链路，不等于 packaged Windows、完整 Marketplace 或完整 VS Code API 证据。远程开发不是 Remote-SSH。工作区检索是受路径与大小限制的本地文本搜索，不是向量数据库。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/EXTENSION-COMPATIBILITY.md](docs/EXTENSION-COMPATIBILITY.md) 与 [.github/SECURITY.md](.github/SECURITY.md)。
 
 ---
 
@@ -149,7 +155,7 @@ flowchart LR
         API["Wails 生成绑定（TS）"]
     end
     subgraph BE["Backend · Go 1.25 + Wails v3"]
-        SVC["46 个后端服务<br/>AI · Agent · LSP · Terminal · Git · Plugin …"]
+        SVC["47 个后端服务<br/>AI · Agent · LSP · Terminal · Git · Plugin …"]
         EV["Wails 事件总线<br/>ai:chunk · terminal:output · file:saved …"]
         SEC["安全核心<br/>pathsec · atomic_write · ai_urlsec · secrets"]
     end
@@ -250,7 +256,7 @@ node scripts/check-bindings.mjs
 ```
 koyori-ide/
 ├── main.go                       # Go 入口：服务注册、事件绑定、CSP nonce、资源嵌入
-├── bootstrap_services.go         # 46 个后端服务的装配（appBundle）
+├── bootstrap_services.go         # 47 个后端服务的装配（appBundle）
 ├── main_test.go / g13_wiring_test.go # 根包测试：入口生命周期与装配接线（package main 约束）
 ├── go.mod / go.sum               # 模块 github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide（Go 1.25）
 ├── Taskfile.yml                  # 开发/构建/门禁任务（含 bindings:check、docs:check）
@@ -260,7 +266,7 @@ koyori-ide/
 ├── internal/
 │   ├── e2e/                      # 打包级 E2E 端点（-tags e2e 编译，默认空 stub，KOYORI_IDE_E2E=1 启用）
 │   └── repo/                     # 仓库治理测试：release 一致性 / README 诚实声明 / 仓库卫生
-├── services/                     # Go 后端（46 服务 + 单元测试 + templates/ 脚手架模板）
+├── services/                     # Go 后端（47 服务 + 单元测试 + templates/ 脚手架模板）
 ├── frontend/                     # Vue 3 前端
 │   ├── src/
 │   │   ├── api/                  # Wails 绑定包装

@@ -133,6 +133,15 @@ if (__KOYORI_IDE_E2E_MONACO__ === "1") {
   });
 }
 
+// P12-BUG-02: real main WebView -> persistent conversation -> already-open AI
+// WebView handoff probe. The packaged driver verifies two targets without an
+// AI renderer remount.
+if (__KOYORI_IDE_E2E_MONACO__ === "1") {
+  void import("@/e2e/conversationHandoffProbe").then(({ installConversationHandoffProbe }) => {
+    installConversationHandoffProbe();
+  });
+}
+
 // Monaco editor: configure the @guolao/vue-monaco-editor loader to use the
 // locally bundled monaco-editor package instead of loading from CDN.
 // Without this, the loader tries to fetch the AMD bundle from
@@ -310,7 +319,8 @@ export async function bootstrapFrontendRuntime(
     }
 
     // Stage 4: Enable plugin sandbox based on the loaded setting.
-    // N-29: sandbox is on by default; users can disable it in Settings.
+    // Production builds enforce sandbox mode inside pluginRegistry, so this
+    // renderer setting can only disable it during development and tests.
     setSandboxMode(appState.enablePluginSandbox);
     recordBootstrapStage("plugin-sandbox");
 
@@ -345,11 +355,12 @@ export async function bootstrapFrontendRuntime(
     // so the UI can present them as "Pending Confirmation" and require the
     // user to explicitly click "Run". This prevents malicious startup
     // workflows in cloned repositories from auto-running shell commands.
-    if (appState.currentProject) {
-      await loadWorkflows(appState.currentProject, () => !isStale());
+    const primaryWorkspaceRoot = appState.workspaceRoot || appState.currentProject;
+    if (primaryWorkspaceRoot) {
+      await loadWorkflows(primaryWorkspaceRoot, () => !isStale());
       if (isStale()) return;
       // prompt-4 Task 10: 项目打开后激活快照工作区根
-      setSnapshotWorkspaceRoot(appState.currentProject);
+      setSnapshotWorkspaceRoot(primaryWorkspaceRoot);
     }
     recordBootstrapStage("workflows");
 

@@ -70,6 +70,7 @@ import {
   handleAIErrorEvent,
   handleAIStreamBusyEvent,
   handleAIToolCallsEvent,
+  handleAIReasoningEvent,
   handleConversationSavedEvent,
 } from "@/stores/ai";
 import {
@@ -77,6 +78,7 @@ import {
   handleAgentPendingUpdatedEvent,
   initAgentPendingSyncListener,
 } from "@/stores/agent";
+import { handleAIConversationTargetAckEvent } from "@/stores/aiAssistant";
 
 const eventCancellers: Array<() => void> = [];
 let initialised = false;
@@ -85,6 +87,8 @@ let listenerGeneration = 0;
 type LocalEventName =
   | "conversation:saved"
   | "ai:selection"
+  | "ai:open-conversation"
+  | "ai:open-conversation-ack"
   | "ai-window:maximised"
   | "ai:open-settings";
 type LocalEventHandler = (event: unknown) => void;
@@ -378,12 +382,26 @@ export function initCrossWindowSync(): void {
     registerEvent("ai:error", handleAIErrorEvent, generation);
     registerEvent("ai:stream-busy", handleAIStreamBusyEvent, generation);
     registerEvent("ai:tool_calls", handleAIToolCallsEvent, generation);
+    registerEvent("ai:reasoning", handleAIReasoningEvent, generation);
     registerEvent("conversation:saved", (event) => {
       handleConversationSavedEvent(event);
       dispatchLocalEvent("conversation:saved", event);
     }, generation);
     registerEvent("agent:pending-updated", handleAgentPendingUpdatedEvent, generation);
     registerEvent("ai:selection", (event) => dispatchLocalEvent("ai:selection", event), generation);
+    registerEvent(
+      "ai:open-conversation",
+      (event) => dispatchLocalEvent("ai:open-conversation", event),
+      generation,
+    );
+    registerEvent(
+      "ai:open-conversation-ack",
+      (event) => {
+        handleAIConversationTargetAckEvent(event);
+        dispatchLocalEvent("ai:open-conversation-ack", event);
+      },
+      generation,
+    );
     registerEvent(
       "ai:open-settings",
       (event) => dispatchLocalEvent("ai:open-settings", event),

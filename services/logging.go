@@ -110,9 +110,7 @@ func ReadLog(maxBytes int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func() {
-		_ = f.Close()
-	}()
+	defer f.Close()
 
 	// If the file is larger than maxBytes, seek to (size - maxBytes) and
 	// read only the tail. This keeps the "View Log" panel responsive

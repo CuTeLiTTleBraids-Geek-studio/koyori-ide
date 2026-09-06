@@ -1,9 +1,10 @@
 // Koyori IDE 模块 · Inline Completion；交互服务：AI 对话（AIService）。
 // 喵，这是 Koyori IDE 的 Inline Completion 模块（前端实现）~
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { appState, saveSettings } from "@/stores/app";
 import { aiService } from "@/api/services";
 import { aiState } from "@/stores/ai";
+import { connectivityState } from "@/lib/connectivity";
 
 /**
  * Minimum milliseconds between completion requests per file (N-43).
@@ -25,6 +26,13 @@ const MIN_PREFIX_LENGTH = 10;
  * persisted (N-7). Use this in templates/computed for reactivity.
  */
 export const inlineCompletionEnabled = computed(() => appState.inlineCompletionEnabled);
+
+/** Visible degradation: offline / unreachable provider must not leave ghost text. */
+export const inlineCompletionUnavailable = computed(
+  () => !connectivityState.online || !connectivityState.aiReachable || inlineCompletionFailed.value,
+);
+
+const inlineCompletionFailed = ref(false);
 
 /**
  * N-43: Per-file last-request timestamps for debounce. Keys are filePaths,
@@ -140,6 +148,10 @@ export async function requestCompletion(
   if (prefix.length < MIN_PREFIX_LENGTH) return "";
   // prompt-6 Task 8 / BUG-M9: do not compete with main chat stream for quota.
   if (aiState.streaming || aiState.globalStreamBusy) return "";
+  if (!connectivityState.online || !connectivityState.aiReachable) {
+    inlineCompletionFailed.value = false;
+    return "";
+  }
 
   // N-43: Dedup — check BEFORE debounce. If a concurrent caller already
   // started the same request, reuse its promise regardless of the debounce
@@ -185,10 +197,16 @@ export async function requestCompletion(
   const promise = (async () => {
     try {
       const response = await completionRequest;
-      return response?.text ?? "";
-    } catch {
-      // Silently fail — inline completion is best-effort. This includes
-      // AbortError when the request was cancelled by a newer request.
+      const text = response?.text ?? "";
+      if (!text.trim()) {
+        inlineCompletionFailed.value = true;
+        return "";
+      }
+      inlineCompletionFailed.value = false;
+      return text;
+    } catch (error: unknown) {
+      const aborted = error instanceof DOMException && error.name === "AbortError";
+      if (!aborted) inlineCompletionFailed.value = true;
       return "";
     } finally {
       const current = inFlightBySignature.get(signature);
@@ -235,6 +253,7 @@ export function cancelInlineCompletion(owner?: InlineCompletionOwner): void {
 export function cleanupInlineCompletion(): void {
   lastRequestByFile.clear();
   abortAllInFlight();
+  inlineCompletionFailed.value = false;
 }
 
 import.meta.hot?.dispose(cleanupInlineCompletion);

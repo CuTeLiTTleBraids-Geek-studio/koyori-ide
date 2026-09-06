@@ -19,7 +19,13 @@ import { PackagedE2EClient } from "./packaged-e2e-driver.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const evidenceDir = path.join(root, "build", "e2e-evidence", "p9-g05");
-const pinnedCLIRelative = path.join("build", "e2e-evidence", "p9-g05", "wails-cli", process.platform === "win32" ? "wails3.exe" : "wails3");
+const pinnedCLIRelative = path.join(
+  "build",
+  "e2e-evidence",
+  "p9-g05",
+  "wails-cli",
+  process.platform === "win32" ? "wails3.exe" : "wails3",
+);
 const startupTimeout = 600_000;
 const processStopTimeout = 8_000;
 const dryRun = process.argv.includes("--dry-run");
@@ -45,7 +51,8 @@ async function pinnedVersion() {
 
 function hostEnvironment(overrides = {}) {
   const environment = { ...process.env, ...overrides };
-  for (const name of ["GOOS", "GOARCH", "GOFLAGS", "CGO_ENABLED"]) delete environment[name];
+  for (const name of ["GOOS", "GOARCH", "GOFLAGS", "CGO_ENABLED"])
+    delete environment[name];
   return environment;
 }
 
@@ -57,9 +64,15 @@ function spawnCaptured(command, args, options = {}) {
     windowsHide: false,
     ...options,
   });
-  child.on("error", (error) => { child.spawnError = error; });
-  child.stdout.on("data", (chunk) => { output += chunk.toString(); });
-  child.stderr.on("data", (chunk) => { output += chunk.toString(); });
+  child.on("error", (error) => {
+    child.spawnError = error;
+  });
+  child.stdout.on("data", (chunk) => {
+    output += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    output += chunk.toString();
+  });
   return { child, output: () => output };
 }
 
@@ -72,26 +85,39 @@ async function runCommand(command, args, environment, logPath, cwd = root) {
   const output = launch.output();
   await writeFile(logPath, output, "utf8");
   if (result.code !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed (code=${result.code}, signal=${result.signal})`);
+    throw new Error(
+      `${command} ${args.join(" ")} failed (code=${result.code}, signal=${result.signal})`,
+    );
   }
   return { ...result, output };
 }
 
 async function verifiedCLI(workDirectory, pin) {
   const supplied = process.env.KOYORI_IDE_G05_E2E_WAILS3?.trim();
-  const candidate = supplied ? path.resolve(supplied) : path.resolve(root, pinnedCLIRelative);
+  const candidate = supplied
+    ? path.resolve(supplied)
+    : path.resolve(root, pinnedCLIRelative);
   try {
     const info = await stat(candidate);
     assert(info.isFile(), `Wails CLI is not a file: ${candidate}`);
-    const version = spawnSync(candidate, ["version"], { encoding: "utf8", windowsHide: true });
+    const version = spawnSync(candidate, ["version"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
     const reported = `${version.stdout}${version.stderr}`.trim();
-    assert.equal(version.status, 0, `Wails CLI version command failed: ${reported}`);
+    assert.equal(
+      version.status,
+      0,
+      `Wails CLI version command failed: ${reported}`,
+    );
     assert.equal(reported, pin, `Wails CLI is ${reported}, want ${pin}`);
     return {
       executable: candidate,
       directory: path.dirname(candidate),
       version: pin,
-      source: supplied ? "provided-verified-path" : "existing-pinned-evidence-cli",
+      source: supplied
+        ? "provided-verified-path"
+        : "existing-pinned-evidence-cli",
       sha256: await sha256File(candidate),
       installLog: null,
     };
@@ -101,7 +127,10 @@ async function verifiedCLI(workDirectory, pin) {
 
   const directory = path.join(workDirectory, "wails-cli");
   await mkdir(directory, { recursive: true });
-  const executable = path.join(directory, process.platform === "win32" ? "wails3.exe" : "wails3");
+  const executable = path.join(
+    directory,
+    process.platform === "win32" ? "wails3.exe" : "wails3",
+  );
   const logPath = path.join(evidenceDir, "g05-wails-cli-install.log");
   await runCommand(
     "go",
@@ -109,9 +138,16 @@ async function verifiedCLI(workDirectory, pin) {
     hostEnvironment({ GOBIN: directory }),
     logPath,
   );
-  const version = spawnSync(executable, ["version"], { encoding: "utf8", windowsHide: true });
+  const version = spawnSync(executable, ["version"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
   const reported = `${version.stdout}${version.stderr}`.trim();
-  assert.equal(reported, pin, `temporary Wails CLI is ${reported}, want ${pin}`);
+  assert.equal(
+    reported,
+    pin,
+    `temporary Wails CLI is ${reported}, want ${pin}`,
+  );
   return {
     executable,
     directory,
@@ -129,14 +165,18 @@ async function wait(milliseconds) {
 async function waitForHandshake(filePath, child) {
   const deadline = Date.now() + startupTimeout;
   while (Date.now() < deadline) {
-    if (child.spawnError) throw new Error(`artifact spawn failed: ${child.spawnError.message}`);
+    if (child.spawnError)
+      throw new Error(`artifact spawn failed: ${child.spawnError.message}`);
     if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(`artifact exited before handshake (code=${child.exitCode}, signal=${child.signalCode})`);
+      throw new Error(
+        `artifact exited before handshake (code=${child.exitCode}, signal=${child.signalCode})`,
+      );
     }
     try {
       return JSON.parse(await readFile(filePath, "utf8"));
     } catch (error) {
-      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError))
+        throw error;
     }
     await wait(100);
   }
@@ -151,20 +191,29 @@ async function stopProcess(launch) {
       windowsHide: true,
     });
   } else {
-    try { process.kill(-launch.child.pid, "SIGTERM"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+    try {
+      process.kill(-launch.child.pid, "SIGTERM");
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
   }
   await Promise.race([
     new Promise((resolve) => launch.child.once("exit", resolve)),
     wait(processStopTimeout),
   ]);
   if (launch.child.exitCode === null && process.platform !== "win32") {
-    try { process.kill(-launch.child.pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+    try {
+      process.kill(-launch.child.pid, "SIGKILL");
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
   }
   await launch.flushLog();
 }
 
 async function launchArtifact(artifact, configDirectory, workDirectory, index) {
   const token = randomBytes(32).toString("hex");
+  const runId = randomBytes(32).toString("hex");
   const launchDirectory = path.join(workDirectory, `launch-${index}`);
   const handshakePath = path.join(launchDirectory, "handshake.json");
   const logPath = path.join(evidenceDir, `g05-packaged-launch-${index}.log`);
@@ -175,6 +224,7 @@ async function launchArtifact(artifact, configDirectory, workDirectory, index) {
       KOYORI_IDE_E2E: "1",
       KOYORI_IDE_E2E_TOKEN: token,
       KOYORI_IDE_E2E_HANDSHAKE: handshakePath,
+      KOYORI_IDE_E2E_RUN_ID: runId,
       XDG_CONFIG_HOME: configDirectory,
       APPDATA: configDirectory,
       LOCALAPPDATA: configDirectory,
@@ -184,9 +234,17 @@ async function launchArtifact(artifact, configDirectory, workDirectory, index) {
   launch.flushLog = () => writeFile(logPath, launch.output(), "utf8");
   try {
     const handshake = await waitForHandshake(handshakePath, launch.child);
-    assert.equal(handshake.pid, launch.child.pid, "handshake PID does not match launched process");
+    assert.equal(
+      handshake.pid,
+      launch.child.pid,
+      "handshake PID does not match launched process",
+    );
     await wait(1_500);
-    assert.equal(launch.child.exitCode, null, "artifact exited during startup settle");
+    assert.equal(
+      launch.child.exitCode,
+      null,
+      "artifact exited during startup settle",
+    );
     log("launch", `pid=${launch.child.pid} endpoint=${handshake.url}`);
     return {
       ...launch,
@@ -204,28 +262,52 @@ async function productionHookAbsence() {
   const environment = hostEnvironment();
   delete environment.VITE_KOYORI_IDE_E2E_WORKSPACE;
   const command = process.platform === "win32" ? "cmd.exe" : "npm";
-  const args = process.platform === "win32" ? ["/d", "/s", "/c", "npm.cmd run build"] : ["run", "build"];
-  await runCommand(command, args, environment, logPath, path.join(root, "frontend"));
+  const args =
+    process.platform === "win32"
+      ? ["/d", "/s", "/c", "npm.cmd run build"]
+      : ["run", "build"];
+  await runCommand(
+    command,
+    args,
+    environment,
+    logPath,
+    path.join(root, "frontend"),
+  );
   const dist = path.join(root, "frontend", "dist");
   const files = [];
   const scan = async (directory) => {
     let entries;
-    try { entries = await (await import("node:fs/promises")).readdir(directory, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = await (
+        await import("node:fs/promises")
+      ).readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
       const full = path.join(directory, entry.name);
       if (entry.isDirectory()) await scan(full);
-      else if (entry.isFile() && /\.(js|html)$/.test(entry.name)) files.push(full);
+      else if (entry.isFile() && /\.(js|html)$/.test(entry.name))
+        files.push(full);
     }
   };
   await scan(dist);
-  const forbiddenMarkers = ["__koyoriIdeRunG05WorkspaceProbe", "e2e:g05-workspace-result"];
+  const forbiddenMarkers = [
+    "__koyoriIdeRunG05WorkspaceProbe",
+    "e2e:g05-workspace-result",
+  ];
   const violations = [];
   for (const file of files) {
     const content = await readFile(file, "utf8");
-    for (const marker of forbiddenMarkers) if (content.includes(marker)) violations.push(path.relative(root, file));
+    for (const marker of forbiddenMarkers)
+      if (content.includes(marker)) violations.push(path.relative(root, file));
   }
   await rm(dist, { recursive: true, force: true });
-  assert.deepEqual(violations, [], `production frontend contains G05 probe markers: ${violations.join(", ")}`);
+  assert.deepEqual(
+    violations,
+    [],
+    `production frontend contains G05 probe markers: ${violations.join(", ")}`,
+  );
   return {
     checkedFiles: files.length,
     forbiddenMarkers,
@@ -235,7 +317,8 @@ async function productionHookAbsence() {
 }
 
 async function captureWindow(pid, role, outputPath) {
-  if (process.platform !== "win32") throw new Error("G05 packaged window capture currently requires Windows");
+  if (process.platform !== "win32")
+    throw new Error("G05 packaged window capture currently requires Windows");
   const script = String.raw`
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 Add-Type -AssemblyName System.Drawing
@@ -293,17 +376,37 @@ try {
   [pscustomobject]@{ width=$width; height=$height; sampledUniqueColours=$colours.Count } | ConvertTo-Json -Compress
 } finally { $graphics.Dispose(); $bitmap.Dispose() }
 `;
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8",
-    windowsHide: true,
-    env: hostEnvironment({ KOYORI_IDE_CAPTURE_PID: String(pid), KOYORI_IDE_CAPTURE_ROLE: role, KOYORI_IDE_CAPTURE_PATH: outputPath }),
-  });
-  if (result.status !== 0) throw new Error(`capture ${role} failed: ${result.stderr || result.stdout}`);
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      env: hostEnvironment({
+        KOYORI_IDE_CAPTURE_PID: String(pid),
+        KOYORI_IDE_CAPTURE_ROLE: role,
+        KOYORI_IDE_CAPTURE_PATH: outputPath,
+      }),
+    },
+  );
+  if (result.status !== 0)
+    throw new Error(
+      `capture ${role} failed: ${result.stderr || result.stdout}`,
+    );
   const metadata = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
   const info = await stat(outputPath);
   assert(info.size > 10_000, `${role} screenshot is unexpectedly small`);
-  assert(metadata.sampledUniqueColours > 20, `${role} screenshot appears blank`);
-  return { file: path.basename(outputPath), sha256: await sha256File(outputPath), bytes: info.size, captureMethod: "EnumWindows/GetWindowRect/CopyFromScreen", ...metadata };
+  assert(
+    metadata.sampledUniqueColours > 20,
+    `${role} screenshot appears blank`,
+  );
+  return {
+    file: path.basename(outputPath),
+    sha256: await sha256File(outputPath),
+    bytes: info.size,
+    captureMethod: "EnumWindows/GetWindowRect/CopyFromScreen",
+    ...metadata,
+  };
 }
 
 async function sourceFingerprint() {
@@ -329,27 +432,42 @@ async function sourceFingerprint() {
     const content = await readFile(path.join(root, relativePath));
     const digest = sha256Bytes(content);
     files.push({ path: relativePath, sha256: digest, bytes: content.length });
-    hash.update(relativePath); hash.update("\0"); hash.update(digest); hash.update("\n");
+    hash.update(relativePath);
+    hash.update("\0");
+    hash.update(digest);
+    hash.update("\n");
   }
   return { sha256: hash.digest("hex"), files };
 }
 
 function gitCommit() {
-  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", windowsHide: true });
+  const result = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true,
+  });
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
 if (dryRun) {
   assert.equal(await pinnedVersion(), "v3.0.0-alpha2.111");
-  log("dry-run", "source plan validated; no packaged process was launched and evidence remains U");
+  log(
+    "dry-run",
+    "source plan validated; no packaged process was launched and evidence remains U",
+  );
   process.exit(0);
 }
 
 await mkdir(evidenceDir, { recursive: true });
 const evidencePath = path.join(evidenceDir, "g05-packaged-runtime.json");
 const failurePath = path.join(evidenceDir, "g05-packaged-runtime.failure.json");
-await Promise.all([rm(evidencePath, { force: true }), rm(failurePath, { force: true })]);
-const workDirectory = await mkdtemp(path.join(os.tmpdir(), "koyori-ide-g05-e2e-"));
+await Promise.all([
+  rm(evidencePath, { force: true }),
+  rm(failurePath, { force: true }),
+]);
+const workDirectory = await mkdtemp(
+  path.join(os.tmpdir(), "koyori-ide-g05-e2e-"),
+);
 let launch;
 let succeeded = false;
 const startedAt = new Date().toISOString();
@@ -360,17 +478,33 @@ try {
   const workspaceB = path.join(workDirectory, "workspace-b");
   const marker = "KOYORI_IDE_G05_SHARED_WORKSPACE_OK";
   const presetName = "g05-workspace";
-  await mkdir(path.join(workspaceA, ".koyori-ide", "presets"), { recursive: true });
-  await mkdir(path.join(workspaceB, ".koyori-ide", "presets"), { recursive: true });
+  await mkdir(path.join(workspaceA, ".koyori-ide", "presets"), {
+    recursive: true,
+  });
+  await mkdir(path.join(workspaceB, ".koyori-ide", "presets"), {
+    recursive: true,
+  });
   await mkdir(configDirectory, { recursive: true });
   for (const workspace of [workspaceA, workspaceB]) {
-    await writeFile(path.join(workspace, "workspace-marker.txt"), `${marker}\n`, "utf8");
-    await writeFile(path.join(workspace, ".koyori-ide", "presets", `${presetName}.json`), JSON.stringify({
-      name: presetName,
-      label: "G05 workspace probe",
-      description: "packaged workspace context probe",
-      prompt: `Use ${marker} from this workspace`,
-    }, null, 2), "utf8");
+    await writeFile(
+      path.join(workspace, "workspace-marker.txt"),
+      `${marker}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(workspace, ".koyori-ide", "presets", `${presetName}.json`),
+      JSON.stringify(
+        {
+          name: presetName,
+          label: "G05 workspace probe",
+          description: "packaged workspace context probe",
+          prompt: `Use ${marker} from this workspace`,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
   }
 
   const pin = await pinnedVersion();
@@ -378,15 +512,27 @@ try {
   const production = await productionHookAbsence();
   const source = await sourceFingerprint();
   const commit = gitCommit();
-  const artifact = path.join(root, "bin", process.platform === "win32" ? "koyori-ide.exe" : "koyori-ide");
+  const artifact = path.join(
+    root,
+    "bin",
+    process.platform === "win32" ? "koyori-ide.exe" : "koyori-ide",
+  );
   const buildLog = path.join(evidenceDir, "g05-packaged-build.log");
   const buildEnvironment = hostEnvironment({
     PATH: `${cli.directory}${path.delimiter}${process.env.PATH ?? ""}`,
     VITE_KOYORI_IDE_E2E_WORKSPACE: "1",
   });
-  await runCommand(cli.executable, ["build", "-tags", "e2e"], buildEnvironment, buildLog);
+  await runCommand(
+    cli.executable,
+    ["build", "-tags", "e2e"],
+    buildEnvironment,
+    buildLog,
+  );
   const artifactInfo = await stat(artifact);
-  assert(artifactInfo.size > 1024 * 1024, "packaged artifact is unexpectedly small");
+  assert(
+    artifactInfo.size > 1024 * 1024,
+    "packaged artifact is unexpectedly small",
+  );
   const artifactSha256 = await sha256File(artifact);
 
   launch = await launchArtifact(artifact, configDirectory, workDirectory, 1);
@@ -396,18 +542,48 @@ try {
     marker,
     presetName,
   });
-  assert.equal(probe.aiWindowOpen, true, "AI window was not open after the workspace switch");
-  assert.equal(probe.aiWindowVisible, true, "AI window was not visible after the workspace switch");
-  assert.equal(probe.mainRenderer.ok, true, probe.mainRenderer.error ?? "main renderer probe failed");
-  assert.equal(probe.aiRenderer.ok, true, probe.aiRenderer.error ?? "AI renderer probe failed");
+  assert.equal(
+    probe.aiWindowOpen,
+    true,
+    "AI window was not open after the workspace switch",
+  );
+  assert.equal(
+    probe.aiWindowVisible,
+    true,
+    "AI window was not visible after the workspace switch",
+  );
+  assert.equal(
+    probe.mainRenderer.ok,
+    true,
+    probe.mainRenderer.error ?? "main renderer probe failed",
+  );
+  assert.equal(
+    probe.aiRenderer.ok,
+    true,
+    probe.aiRenderer.error ?? "AI renderer probe failed",
+  );
   assert.equal(probe.mainRenderer.role, "main");
   assert.equal(probe.aiRenderer.role, "ai");
-  assert.equal(probe.mainRenderer.snapshot.root.toLowerCase(), workspaceB.toLowerCase());
-  assert.equal(probe.aiRenderer.snapshot.root.toLowerCase(), workspaceB.toLowerCase());
+  assert.equal(
+    probe.mainRenderer.snapshot.root.toLowerCase(),
+    workspaceB.toLowerCase(),
+  );
+  assert.equal(
+    probe.aiRenderer.snapshot.root.toLowerCase(),
+    workspaceB.toLowerCase(),
+  );
 
   const screenshots = [
-    await captureWindow(launch.child.pid, "main", path.join(evidenceDir, "g05-packaged-main.png")),
-    await captureWindow(launch.child.pid, "ai", path.join(evidenceDir, "g05-packaged-ai.png")),
+    await captureWindow(
+      launch.child.pid,
+      "main",
+      path.join(evidenceDir, "g05-packaged-main.png"),
+    ),
+    await captureWindow(
+      launch.child.pid,
+      "ai",
+      path.join(evidenceDir, "g05-packaged-ai.png"),
+    ),
   ];
   await launch.flushLog();
   const evidence = {
@@ -421,7 +597,11 @@ try {
     osRelease: os.release(),
     nodeVersion: process.version,
     wailsVersion: cli.version,
-    wailsCLI: { source: cli.source, sha256: cli.sha256, installLog: cli.installLog },
+    wailsCLI: {
+      source: cli.source,
+      sha256: cli.sha256,
+      installLog: cli.installLog,
+    },
     gitCommit: commit,
     gitMetadataAvailable: commit !== null,
     sourceFingerprintSha256: source.sha256,
@@ -430,7 +610,10 @@ try {
     artifactSha256,
     artifactBytes: artifactInfo.size,
     buildTags: ["desktop", "production", "e2e"],
-    buildLog: { file: path.basename(buildLog), sha256: await sha256File(buildLog) },
+    buildLog: {
+      file: path.basename(buildLog),
+      sha256: await sha256File(buildLog),
+    },
     productionHookAbsence: production,
     fixture: {
       primaryWorkspace: workspaceA,
@@ -447,26 +630,50 @@ try {
       aiRenderer: probe.aiRenderer,
     },
     screenshots,
-    applicationLog: { file: "g05-packaged-launch-1.log", sha256: await sha256File(path.join(evidenceDir, "g05-packaged-launch-1.log")) },
-    limitations: commit === null
-      ? ["The workspace has an empty .git directory; this evidence records source and artifact fingerprints and does not claim a commit."]
-      : [],
+    applicationLog: {
+      file: "g05-packaged-launch-1.log",
+      sha256: await sha256File(
+        path.join(evidenceDir, "g05-packaged-launch-1.log"),
+      ),
+    },
+    limitations:
+      commit === null
+        ? [
+            "The workspace has an empty .git directory; this evidence records source and artifact fingerprints and does not claim a commit.",
+          ]
+        : [],
   };
-  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  await writeFile(
+    evidencePath,
+    `${JSON.stringify(evidence, null, 2)}\n`,
+    "utf8",
+  );
   succeeded = true;
-  log("pass", `artifact=${artifactSha256} evidence=${path.relative(root, evidencePath)}`);
+  log(
+    "pass",
+    `artifact=${artifactSha256} evidence=${path.relative(root, evidencePath)}`,
+  );
 } catch (error) {
-  const detail = error instanceof Error ? error.stack ?? error.message : String(error);
-  await writeFile(failurePath, `${JSON.stringify({
-    schemaVersion: 1,
-    goal: "P9-G05",
-    status: "failed",
-    evidenceLevel: "U",
-    startedAt,
-    failedAt: new Date().toISOString(),
-    error: detail,
-    retainedWorkDirectory: workDirectory,
-  }, null, 2)}\n`, "utf8");
+  const detail =
+    error instanceof Error ? (error.stack ?? error.message) : String(error);
+  await writeFile(
+    failurePath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        goal: "P9-G05",
+        status: "failed",
+        evidenceLevel: "U",
+        startedAt,
+        failedAt: new Date().toISOString(),
+        error: detail,
+        retainedWorkDirectory: workDirectory,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
   console.error(`[g05-packaged-e2e] FAIL ${detail}`);
   process.exitCode = 1;
 } finally {

@@ -83,7 +83,7 @@ const { t } = useI18n();
 .ai-context {
   width: 320px;
   border-left: 1px solid var(--color-border-subtle, #2a2a2a);
-  background: var(--color-bg-surface, #1e1e1e);
+  background: var(--color-bg-surface, #fafafc);
   flex-shrink: 0;
   overflow: hidden;
   transition: width 0.15s ease;
@@ -125,7 +125,7 @@ const { t } = useI18n();
   padding: 4px 8px;
   margin-bottom: 4px;
   font-size: 11px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   border-radius: 4px;
 }
 .ai-context__chip-img {

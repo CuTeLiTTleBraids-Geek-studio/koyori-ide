@@ -176,7 +176,7 @@ func TestAIService_N93_StartStream_UsesSnapshotNotLiveConfig(t *testing.T) {
 	}
 
 	// Start the stream (uses snapshot with snapshot-key).
-	if _, err := svc.StartStream([]ChatMessage{{Role: "user", Content: "hello"}}); err != nil {
+	if _, err := svc.StartStream(testAIStreamCallerContext(), []ChatMessage{{Role: "user", Content: "hello"}}); err != nil {
 		t.Fatalf("StartStream failed: %v", err)
 	}
 
@@ -232,13 +232,14 @@ func TestAIService_N93_StopStream_ConcurrentStartStop_NoRace(t *testing.T) {
 
 	var stop int32
 	var wg sync.WaitGroup
+	callerCtx := testAIStreamCallerContext()
 
 	// Starter: repeatedly starts streams.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&stop) == 0 {
-			_, _ = svc.StartStream([]ChatMessage{{Role: "user", Content: "x"}})
+			_, _ = svc.StartStream(callerCtx, []ChatMessage{{Role: "user", Content: "x"}})
 			time.Sleep(2 * time.Millisecond)
 		}
 	}()
@@ -248,7 +249,7 @@ func TestAIService_N93_StopStream_ConcurrentStartStop_NoRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&stop) == 0 {
-			_ = svc.StopStream()
+			_ = svc.StopStream(callerCtx)
 			time.Sleep(2 * time.Millisecond)
 		}
 	}()
@@ -258,7 +259,7 @@ func TestAIService_N93_StopStream_ConcurrentStartStop_NoRace(t *testing.T) {
 	wg.Wait()
 
 	// Final cleanup: stop any lingering stream.
-	_ = svc.StopStream()
+	_ = svc.StopStream(callerCtx)
 	// Give goroutines time to finish.
 	time.Sleep(50 * time.Millisecond)
 }

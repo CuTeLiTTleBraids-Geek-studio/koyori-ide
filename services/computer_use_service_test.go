@@ -19,6 +19,7 @@ import (
 	"go/parser"
 	"go/token"
 	"image"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -34,7 +35,15 @@ func newTestComputerUseService(t *testing.T) *ComputerUseService {
 	dir := t.TempDir()
 	svc := NewComputerUseService(dir)
 	svc.approveOperation = func(string, string) bool { return true }
+	svc.platform = &recordingComputerUsePlatform{}
 	return svc
+}
+
+func expectComputerUsePlatformReachable(t *testing.T, err error) {
+	t.Helper()
+	if err != nil && !errors.Is(err, ErrPlatformUnsupported) {
+		t.Fatalf("operation should pass safety; got %v", err)
+	}
 }
 
 type recordingComputerUsePlatform struct {
@@ -812,9 +821,7 @@ func TestComputerUseService_KeyboardHotkey_ForbiddenRejected(t *testing.T) {
 	}
 	// 非禁止快捷键应通过安全检查（平台 stub 返回 ErrPlatformUnsupported）。
 	_, err = executeApprovedComputerUseOperation(t, svc, "keyboard_hotkey", `{"keys":"ctrl+c"}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("ctrl+c should pass safety but fail on platform stub, got %v", err)
-	}
+	expectComputerUsePlatformReachable(t, err)
 }
 
 // --- Step 5/6: 安全边界 — 禁止区域 ---
@@ -857,9 +864,7 @@ func TestComputerUseService_MouseMove_ForbiddenZoneRejected(t *testing.T) {
 	}
 	// 坐标在禁止区域外应通过安全检查。
 	_, err = executeApprovedComputerUseOperation(t, svc, "mouse_move", `{"x":500,"y":500}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("move to safe zone should pass safety but fail on platform stub, got %v", err)
-	}
+	expectComputerUsePlatformReachable(t, err)
 }
 
 // --- Step 8: G-SEC-12 默认禁用 ---
@@ -897,9 +902,7 @@ func TestComputerUseService_ConfirmationRequired(t *testing.T) {
 	// 确认后应通过安全检查（平台 stub 失败）。
 	svc.approveOperation = func(string, string) bool { return true }
 	_, err = executeApprovedComputerUseOperation(t, svc, "mouse_move", `{"x":10,"y":10}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("mouse_move with backend approval should pass safety, got %v", err)
-	}
+	expectComputerUsePlatformReachable(t, err)
 }
 
 func TestComputerUseService_ConfirmationDisabledStillRequiresNativeApprovalAndToken(t *testing.T) {
@@ -1055,25 +1058,15 @@ func TestComputerUseService_FiveToolsExist(t *testing.T) {
 		ConfirmationRequired: false,
 	})
 	// 所有 5 个工具都只能通过 token 到达平台 stub。
-	_, err := executeApprovedComputerUseOperation(t, svc, "screenshot", `{"region":null}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("Screenshot should return ErrPlatformUnsupported, got %v", err)
-	}
-	_, err = executeApprovedComputerUseOperation(t, svc, "mouse_move", `{"x":10,"y":10}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("MouseMove should return ErrPlatformUnsupported, got %v", err)
-	}
-	_, err = executeApprovedComputerUseOperation(t, svc, "mouse_click", `{"button":"left"}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("MouseClick should return ErrPlatformUnsupported, got %v", err)
-	}
-	_, err = executeApprovedComputerUseOperation(t, svc, "keyboard_type", `{"text":"test"}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("KeyboardType should return ErrPlatformUnsupported, got %v", err)
-	}
-	_, err = executeApprovedComputerUseOperation(t, svc, "keyboard_hotkey", `{"keys":"ctrl+c"}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("KeyboardHotkey should return ErrPlatformUnsupported, got %v", err)
+	for _, item := range []struct{ action, details string }{
+		{"screenshot", `{"region":null}`},
+		{"mouse_move", `{"x":10,"y":10}`},
+		{"mouse_click", `{"button":"left"}`},
+		{"keyboard_type", `{"text":"test"}`},
+		{"keyboard_hotkey", `{"keys":"ctrl+c"}`},
+	} {
+		_, err := executeApprovedComputerUseOperation(t, svc, item.action, item.details)
+		expectComputerUsePlatformReachable(t, err)
 	}
 }
 
@@ -1087,9 +1080,7 @@ func TestComputerUseService_Screenshot_WithRegion(t *testing.T) {
 	})
 	// 指定区域截图。
 	_, err := executeApprovedComputerUseOperation(t, svc, "screenshot", `{"region":{"Min":{"X":0,"Y":0},"Max":{"X":100,"Y":100}}}`)
-	if !errors.Is(err, ErrPlatformUnsupported) {
-		t.Errorf("Screenshot with region should reach platform stub, got %v", err)
-	}
+	expectComputerUsePlatformReachable(t, err)
 	// 验证审计日志记录了 region 参数。
 	log := svc.GetAuditLog(1)
 	if len(log) != 1 {
@@ -1185,6 +1176,9 @@ func TestComputerUseService_H10_AuditLogMultiInstanceNotShared(t *testing.T) {
 // 修复后：checkSafety 在锁内深拷贝 cfg（slice 字段独立底层数组），返回的快照
 // 与 s.config 完全解耦，Screenshot 基于快照判断 ConfirmationRequired。
 func TestCheckSafetyTOCTOU(t *testing.T) {
+	previousForegroundProcess := computerUseForegroundProcess
+	computerUseForegroundProcess = func() (string, error) { return "app1", nil }
+	t.Cleanup(func() { computerUseForegroundProcess = previousForegroundProcess })
 	svc := newTestComputerUseService(t)
 	_ = svc.UpdateConfig(ComputerUseConfig{
 		Enabled:              true,
@@ -1301,4 +1295,24 @@ func TestCheckSafetyTOCTOU_Concurrent(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+func TestComputerUseServiceHeaderDescribesWindowsNativeAndUnixStub(t *testing.T) {
+	src, err := os.ReadFile("computer_use_service.go")
+	if err != nil {
+		t.Fatalf("read computer_use_service.go: %v", err)
+	}
+	header := string(src)
+	if idx := strings.Index(header, "import ("); idx >= 0 {
+		header = header[:idx]
+	}
+	if !strings.Contains(header, "gdi32/user32") {
+		t.Fatal("computer_use_service.go header must mention Windows gdi32/user32")
+	}
+	if !strings.Contains(header, "Unix 保持 stub") && !strings.Contains(strings.ToLower(header), "unix") {
+		t.Fatal("computer_use_service.go header must keep Unix stub honesty")
+	}
+	if strings.Contains(header, "三平台均为 stub") {
+		t.Fatal("computer_use_service.go header still claims every platform is a stub")
+	}
 }

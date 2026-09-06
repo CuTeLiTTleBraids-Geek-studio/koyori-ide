@@ -13,15 +13,18 @@ import (
 	"time"
 )
 
-// newTestPProfService 构造一个隔离的 PProfService 实例。
-func newTestPProfService() *PProfService {
-	return NewPProfService()
+// newTestPProfService 构造一个隔离的 PProfService 实例，输出沙箱根指向
+// 独立临时目录（P19 P1-02：profile 输出必须落在工作区内）。
+func newTestPProfService(t *testing.T) *PProfService {
+	t.Helper()
+	s := NewPProfService()
+	s.setWorkspaceRoot(t.TempDir())
+	return s
 }
 
-// profilePath 在临时目录下生成一个 profile 文件路径。
-func profilePath(t *testing.T, name string) string {
-	t.Helper()
-	return filepath.Join(t.TempDir(), name)
+// profilePath 返回服务沙箱根下的 profile 输出路径。
+func profilePath(s *PProfService, name string) string {
+	return filepath.Join(s.currentWorkspaceRoot(), name)
 }
 
 // cpuBurn 占用 CPU 约 d 时长，确保 CPU 采样能采集到样本。
@@ -49,8 +52,8 @@ func blockGoroutine() func() {
 }
 
 func TestProfileService_P7_StartStopCPUProfile(t *testing.T) {
-	s := newTestPProfService()
-	out := profilePath(t, "cpu.prof")
+	s := newTestPProfService(t)
+	out := profilePath(s, "cpu.prof")
 
 	if s.IsProfiling() {
 		t.Fatal("new service should not be profiling")
@@ -75,8 +78,8 @@ func TestProfileService_P7_StartStopCPUProfile(t *testing.T) {
 }
 
 func TestProfileService_P7_CaptureHeapProfile(t *testing.T) {
-	s := newTestPProfService()
-	out := profilePath(t, "heap.prof")
+	s := newTestPProfService(t)
+	out := profilePath(s, "heap.prof")
 
 	// 分配一些对象以产生堆数据。
 	_ = make([][]byte, 8)
@@ -99,8 +102,8 @@ func TestProfileService_P7_CaptureHeapProfile(t *testing.T) {
 }
 
 func TestProfileService_P7_CaptureGoroutineProfile(t *testing.T) {
-	s := newTestPProfService()
-	out := profilePath(t, "goroutine.prof")
+	s := newTestPProfService(t)
+	out := profilePath(s, "goroutine.prof")
 
 	stop := blockGoroutine()
 	defer stop()
@@ -115,8 +118,8 @@ func TestProfileService_P7_CaptureGoroutineProfile(t *testing.T) {
 }
 
 func TestProfileService_P7_AnalyzeProfile(t *testing.T) {
-	s := newTestPProfService()
-	out := profilePath(t, "analyze.prof")
+	s := newTestPProfService(t)
+	out := profilePath(s, "analyze.prof")
 
 	// 用 goroutine 快照作为分析样本：进程内总有 goroutine，
 	// 解析后 TopFunctions 必然非空（避免短时 CPU 采样无样本的偶发性）。
@@ -158,7 +161,8 @@ func TestProfileService_P7_AnalyzeProfile(t *testing.T) {
 }
 
 func TestProfileService_AnalyzeProfileRejectsInputOver256MiB(t *testing.T) {
-	out := profilePath(t, "oversized.prof")
+	s := newTestPProfService(t)
+	out := profilePath(s, "oversized.prof")
 	f, err := os.Create(out)
 	if err != nil {
 		t.Fatal(err)
@@ -175,15 +179,15 @@ func TestProfileService_AnalyzeProfileRejectsInputOver256MiB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = newTestPProfService().AnalyzeProfile(out)
+	_, err = s.AnalyzeProfile(out)
 	if err == nil || !strings.Contains(err.Error(), "256 MiB") {
 		t.Fatalf("AnalyzeProfile error = %v, want explicit 256 MiB limit error", err)
 	}
 }
 
 func TestProfileService_P7_StartTwiceError(t *testing.T) {
-	s := newTestPProfService()
-	out := profilePath(t, "twice.prof")
+	s := newTestPProfService(t)
+	out := profilePath(s, "twice.prof")
 
 	if err := s.StartCPUProfile(out); err != nil {
 		t.Fatalf("first StartCPUProfile: %v", err)
@@ -198,5 +202,48 @@ func TestProfileService_P7_StartTwiceError(t *testing.T) {
 	err := s.StartCPUProfile(out)
 	if err == nil {
 		t.Fatal("expected error when starting CPU profile twice, got nil")
+	}
+}
+
+// TestProfileService_OutputFailsClosedWithoutWorkspaceRoot 验证未链接工作区
+// 根时（应用启动后、未打开项目前）一切 profile 输出 fail-closed。
+func TestProfileService_OutputFailsClosedWithoutWorkspaceRoot(t *testing.T) {
+	s := NewPProfService()
+	out := filepath.Join(t.TempDir(), "heap.prof")
+
+	if err := s.CaptureHeapProfile(out); err == nil || !strings.Contains(err.Error(), "rejected by workspace sandbox") {
+		t.Fatalf("CaptureHeapProfile without workspace root: err=%v, want sandbox rejection", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("profile file must not be created when the sandbox root is unset")
+	}
+}
+
+// TestProfileService_RejectsOutputOutsideWorkspaceRoot 验证沙箱根之外的
+// 绝对路径被拒绝且未落盘。
+func TestProfileService_RejectsOutputOutsideWorkspaceRoot(t *testing.T) {
+	s := newTestPProfService(t)
+	outside := filepath.Join(t.TempDir(), "escape.prof")
+
+	if err := s.CaptureHeapProfile(outside); err == nil || !strings.Contains(err.Error(), "rejected by workspace sandbox") {
+		t.Fatalf("CaptureHeapProfile outside root: err=%v, want sandbox rejection", err)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatal("profile file must not be created outside the workspace root")
+	}
+}
+
+// TestProfileService_RejectsDotDotTraversalOutput 验证以 ".." 回溯逃逸
+// 沙箱根的路径被拒绝且未落盘。
+func TestProfileService_RejectsDotDotTraversalOutput(t *testing.T) {
+	s := newTestPProfService(t)
+	escape := filepath.Join(s.currentWorkspaceRoot(), "..", "escape.prof")
+
+	if err := s.CaptureHeapProfile(escape); err == nil || !strings.Contains(err.Error(), "rejected by workspace sandbox") {
+		t.Fatalf("CaptureHeapProfile with dot-dot traversal: err=%v, want sandbox rejection", err)
+	}
+	escaped := filepath.Join(filepath.Dir(s.currentWorkspaceRoot()), "escape.prof")
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Fatal("profile file must not be created outside the workspace root")
 	}
 }

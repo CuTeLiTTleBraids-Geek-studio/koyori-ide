@@ -15,6 +15,7 @@ import {
   initRepo,
   stageFile,
   unstageFile,
+  loadMoreGitChanges,
   commitChanges,
   pushChanges,
   pullChanges,
@@ -56,6 +57,7 @@ import {
   bisectGood,
   bisectBad,
   bisectReset,
+  joinWorkspacePath,
 } from "@/stores/git";
 import { openFileFromPath } from "@/stores/editor";
 import { ArrowDown, Plus, Minus, Check, Top, Bottom, Aim, Close, Refresh } from "@element-plus/icons-vue";
@@ -130,6 +132,7 @@ const worktreeBranches = computed(() => branchState.branches.map((branch) => ({
 
 const diffVisible = ref(false);
 const diffFilePath = ref("");
+const diffFileStaged = ref(true);
 
 type OperationDomain = "refresh" | "review";
 
@@ -164,15 +167,31 @@ function isAbortError(error: unknown): boolean {
     : typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
 
-function viewDiff(filePath: string) {
+function viewDiff(filePath: string, staged: boolean) {
   if (disposed) return;
   diffFilePath.value = filePath;
+  diffFileStaged.value = staged;
   diffVisible.value = true;
 }
 
 const hasChanges = computed(() => gitState.changes.length > 0);
+const stagedChanges = computed(() => gitState.changes.filter((change) => change.staged === true));
+const unstagedChanges = computed(() => gitState.changes.filter((change) => change.staged !== true));
 const hasConflicts = computed(() => conflictState.conflicts.length > 0);
 const isRebaseInProgress = computed(() => rebaseState.inProgress);
+/** P1-04: rows still hidden behind the truncation window. */
+const hiddenChangeCount = computed(() => Math.max(0, gitState.totalChanges - gitState.changes.length));
+
+/** P1-04: a staged rename row owns both names — unstaging it must reset the
+ * index for the added path and the deleted path, or the rename reappears as a
+ * dangling deletion after refresh. */
+async function handleUnstageChange(path: string, oldPath?: string) {
+  if (!repoPath.value) return;
+  await unstageFile(repoPath.value, path);
+  if (oldPath) {
+    await unstageFile(repoPath.value, oldPath);
+  }
+}
 
 /** BUG2: Detect when the project directory is not a git repository.
  * Backend `errNotARepo` sentinel text is "not a git repository" (git_service.go).
@@ -225,11 +244,6 @@ async function handleRefresh() {
 async function handleStage(path: string) {
   if (!repoPath.value) return;
   await stageFile(repoPath.value, path);
-}
-
-async function handleUnstage(path: string) {
-  if (!repoPath.value) return;
-  await unstageFile(repoPath.value, path);
 }
 
 async function handleCommit() {
@@ -372,7 +386,9 @@ async function handleAcceptTheirs(conflict: MergeConflict) {
 
 async function handleOpenEditor(conflict: MergeConflict) {
   if (!repoPath.value) return;
-  const fullPath = repoPath.value + "/" + conflict.file;
+  // P19 P2: reuse the store's separator-normalizing join (M-29) instead of
+  // bare "/" concatenation, which produces mixed separators on Windows roots.
+  const fullPath = joinWorkspacePath(repoPath.value, conflict.file);
   await openFileFromPath(fullPath);
 }
 
@@ -390,6 +406,16 @@ async function handleMarkResolved(file: string) {
 }
 
 // --- G-FEAT-04: .gitignore generation ---
+
+function handleOverflowCommand(command: string) {
+  if (command === "review") {
+    openReviewModal();
+    return;
+  }
+  if (command.startsWith("gitignore:")) {
+    void handleGitignoreCommand(command.slice("gitignore:".length));
+  }
+}
 
 async function handleGitignoreCommand(projectType: string) {
   try {
@@ -597,6 +623,8 @@ function statusClass(status: string): string {
       return "git-panel__status--deleted";
     case "Untracked":
       return "git-panel__status--untracked";
+    case "Renamed":
+      return "git-panel__status--renamed";
     default:
       return "git-panel__status--default";
   }
@@ -873,35 +901,27 @@ async function handleBisectReset(): Promise<void> {
           <el-icon :size="13"><Check /></el-icon>
         </button>
       </template>
-      <!-- G-FEAT-04: .gitignore generation -->
-      <el-dropdown trigger="click" @command="handleGitignoreCommand">
+      <el-dropdown class="git-panel__overflow" trigger="click" @command="handleOverflowCommand">
         <button
           type="button"
-          class="git-panel__action-btn"
-          :title="t('git.gitignoreTitle')"
+          class="git-panel__action-btn git-panel__overflow-btn"
+          :aria-label="t('git.moreActions')"
+          :title="t('git.moreActions')"
           @click.stop
         >
-          .gitignore
+          ···
         </button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item command="go">{{ t('git.gitignoreTypeGo') }}</el-dropdown-item>
-            <el-dropdown-item command="typescript">{{ t('git.gitignoreTypeTypeScript') }}</el-dropdown-item>
-            <el-dropdown-item command="javascript">{{ t('git.gitignoreTypeJavaScript') }}</el-dropdown-item>
-            <el-dropdown-item command="general">{{ t('git.gitignoreTypeGeneral') }}</el-dropdown-item>
+            <el-dropdown-item command="review">{{ t('git.review') }}</el-dropdown-item>
+            <el-dropdown-item divided disabled>{{ t('git.gitignoreTitle') }}</el-dropdown-item>
+            <el-dropdown-item command="gitignore:go">{{ t('git.gitignoreTypeGo') }}</el-dropdown-item>
+            <el-dropdown-item command="gitignore:typescript">{{ t('git.gitignoreTypeTypeScript') }}</el-dropdown-item>
+            <el-dropdown-item command="gitignore:javascript">{{ t('git.gitignoreTypeJavaScript') }}</el-dropdown-item>
+            <el-dropdown-item command="gitignore:general">{{ t('git.gitignoreTypeGeneral') }}</el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <button
-        type="button"
-        class="git-panel__review-btn"
-        :aria-label="t('git.reviewAria')"
-        :title="t('git.reviewTitle')"
-        @click="openReviewModal"
-      >
-        <el-icon :size="13"><Aim /></el-icon>
-        <span>{{ t('git.review') }}</span>
-      </button>
     </div>
 
     <!-- G-FEAT-04: Rebase in progress banner -->
@@ -1011,47 +1031,95 @@ async function handleBisectReset(): Promise<void> {
       </button>
     </div>
 
-    <!-- Changes list -->
-    <div v-if="!gitState.loading && hasChanges" class="git-panel__changes">
-      <div class="git-panel__section-header">{{ t('git.changesCount', { count: gitState.changes.length }) }}</div>
-      <div
-        v-for="change in gitState.changes"
-        :key="change.path"
-        class="git-panel__row"
+    <div
+      v-if="gitState.truncated"
+      class="git-panel__truncated"
+      role="status"
+    >
+      <span>{{ t('git.truncated', { shown: gitState.changes.length, max: 1000 }) }}</span>
+      <button
+        type="button"
+        class="git-panel__load-more"
+        data-testid="git-load-more"
+        @click="loadMoreGitChanges()"
       >
-        <span class="git-panel__path" :title="change.path">{{ change.path }}</span>
-        <span class="git-panel__actions">
-          <button
-            type="button"
-            class="git-panel__action"
-            :aria-label="t('git.stage')"
-            :title="t('git.stage')"
-            @click="handleStage(change.path)"
-          >
-            <el-icon :size="12"><Plus /></el-icon>
-          </button>
-          <button
-            type="button"
-            class="git-panel__action"
-            :aria-label="t('git.unstage')"
-            :title="t('git.unstage')"
-            @click="handleUnstage(change.path)"
-          >
-            <el-icon :size="12"><Minus /></el-icon>
-          </button>
-          <button
-            type="button"
-            class="git-panel__action"
-            :aria-label="t('git.viewDiffAria')"
-            :title="t('git.diff')"
-            @click="viewDiff(change.path)"
-          >
-            {{ t('git.diff') }}
-          </button>
-        </span>
-        <span class="git-panel__status" :class="statusClass(change.status)">
-          {{ statusLabel(change.status) }}
-        </span>
+        {{ t('git.loadMoreChanges', { count: hiddenChangeCount }) }}
+      </button>
+    </div>
+
+    <!-- Changes list: staged vs unstaged -->
+    <div v-if="!gitState.loading && hasChanges" class="git-panel__changes">
+      <div v-if="stagedChanges.length > 0" class="git-panel__change-group" data-testid="git-staged">
+        <div class="git-panel__section-header">{{ t('git.stagedCount', { count: stagedChanges.length }) }}</div>
+        <div
+          v-for="change in stagedChanges"
+          :key="'staged:' + change.path"
+          class="git-panel__row"
+        >
+          <span
+            class="git-panel__path"
+            :title="change.oldPath ? `${change.oldPath} → ${change.path}` : change.path"
+          >{{ change.oldPath ? `${change.oldPath} → ${change.path}` : change.path }}</span>
+          <span class="git-panel__actions">
+            <button
+              type="button"
+              class="git-panel__action"
+              :aria-label="t('git.unstage')"
+              :title="t('git.unstage')"
+              @click="handleUnstageChange(change.path, change.oldPath)"
+            >
+              <el-icon :size="12"><Minus /></el-icon>
+            </button>
+            <button
+              type="button"
+              class="git-panel__action"
+              :aria-label="t('git.viewDiffAria')"
+              :title="t('git.diff')"
+              @click="viewDiff(change.path, true)"
+            >
+              {{ t('git.diff') }}
+            </button>
+          </span>
+          <span class="git-panel__status" :class="statusClass(change.status)">
+            {{ statusLabel(change.status) }}
+          </span>
+        </div>
+      </div>
+      <div v-if="unstagedChanges.length > 0" class="git-panel__change-group" data-testid="git-unstaged">
+        <div class="git-panel__section-header">{{ t('git.changesCount', { count: unstagedChanges.length }) }}</div>
+        <div
+          v-for="change in unstagedChanges"
+          :key="'unstaged:' + change.path"
+          class="git-panel__row"
+        >
+          <span
+            class="git-panel__path"
+            :title="change.oldPath ? `${change.oldPath} → ${change.path}` : change.path"
+          >{{ change.oldPath ? `${change.oldPath} → ${change.path}` : change.path }}</span>
+          <span class="git-panel__actions">
+            <button
+              type="button"
+              class="git-panel__action"
+              :aria-label="t('git.stage')"
+              :title="t('git.stage')"
+              @click="handleStage(change.path)"
+            >
+              <el-icon :size="12"><Plus /></el-icon>
+            </button>
+            <button
+              type="button"
+              class="git-panel__action"
+              :aria-label="t('git.viewDiffAria')"
+              :title="t('git.diff')"
+              @click="viewDiff(change.path, false)"
+            >
+              {{ t('git.diff') }}
+            </button>
+          </span>
+          <span class="git-panel__status" :class="statusClass(change.status)">
+            {{ statusLabel(change.status) }}
+          </span>
+        </div>
       </div>
     </div>
 
@@ -1060,7 +1128,7 @@ async function handleBisectReset(): Promise<void> {
       {{ t('git.noChanges') }}
     </div>
 
-    <details v-if="repoPath && !noRepo" open class="git-panel__commit-graph">
+    <details v-if="repoPath && !noRepo" class="git-panel__commit-graph">
       <summary>Commit graph</summary>
       <CommitGraph
         :repo-path="repoPath"
@@ -1068,7 +1136,7 @@ async function handleBisectReset(): Promise<void> {
       />
     </details>
 
-    <details v-if="repoPath && !noRepo" open class="git-panel__advanced-git">
+    <details v-if="repoPath && !noRepo" class="git-panel__advanced-git">
       <summary>{{ t('worktree.title') }}</summary>
       <WorktreePanel :repo-path="repoPath" :branches="worktreeBranches" />
     </details>
@@ -1337,6 +1405,7 @@ async function handleBisectReset(): Promise<void> {
     <DiffView
       :repo-path="repoPath"
       :file-path="diffFilePath"
+      :staged="diffFileStaged"
       :visible="diffVisible"
       @close="diffVisible = false"
     />
@@ -1446,10 +1515,12 @@ async function handleBisectReset(): Promise<void> {
 
 .git-panel__branch-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-subtle);
+  min-width: 0;
 }
 
 .git-panel__branch-label {
@@ -1462,6 +1533,11 @@ async function handleBisectReset(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -1484,7 +1560,8 @@ async function handleBisectReset(): Promise<void> {
 }
 
 .git-panel__action-btn {
-  margin-left: auto;
+  margin-left: 0;
+  flex-shrink: 0;
   border: none;
   background: transparent;
   color: var(--color-text-tertiary);
@@ -1493,6 +1570,10 @@ async function handleBisectReset(): Promise<void> {
   padding: 2px 4px;
   border-radius: var(--radius-sm);
   transition: background-color var(--transition-fast);
+}
+
+.git-panel__overflow {
+  margin-left: auto;
 }
 
 .git-panel__action-btn + .git-panel__action-btn,
@@ -1906,8 +1987,37 @@ async function handleBisectReset(): Promise<void> {
   transition: opacity var(--transition-fast);
 }
 
-.git-panel__row:hover .git-panel__actions {
+.git-panel__row:hover .git-panel__actions,
+.git-panel__row:focus-within .git-panel__actions {
   opacity: 1;
+}
+
+.git-panel__truncated {
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface-container-low);
+}
+
+/* P1-04: proven staged renames get their own accent so "R" rows are
+ * distinguishable from add/delete pairs at a glance. */
+.git-panel__status--renamed {
+  color: var(--color-accent, #7aa2f7);
+}
+
+.git-panel__load-more {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.git-panel__load-more:hover {
+  background: var(--color-bg-surface-container);
 }
 
 .git-panel__action {
@@ -2000,6 +2110,7 @@ async function handleBisectReset(): Promise<void> {
 }
 
 .git-panel__conflict-row {
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2024,8 +2135,9 @@ async function handleBisectReset(): Promise<void> {
 
 .git-panel__conflict-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
-  flex-shrink: 0;
+  flex-shrink: 1;
 }
 
 .git-panel__conflict-btn {

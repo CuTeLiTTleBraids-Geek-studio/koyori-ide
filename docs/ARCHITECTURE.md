@@ -20,7 +20,7 @@
 
 ## Backend service layer
 
-46 Go services are registered with Wails via `application.NewService`. Binding
+47 Go services are registered with Wails via `application.NewService`. Binding
 IDs and fully-qualified names are owned exclusively by the Wails generator;
 application code must not calculate or copy them. If a service method changes,
 regenerate with `node scripts/generate-bindings.mjs` and review the complete
@@ -103,6 +103,13 @@ The host uses a permission-deny-by-default model: any method not in the allow
 list returns an error immediately. Extensions cannot obtain a direct reference
 to `appState`, the Wails runtime, or any Go service binding.
 
+
+## Verified release boundaries
+
+- The VSIX north star is a constrained VS Code-compatible subset, not a complete VS Code extension host. Fixed-SHA third-party VSIX fixtures are installed through the production MarketplaceService extraction, permission inference, lifecycle, and default-disabled path before their installed files are loaded by a real Worker. One production integration test proves three distinct host-visible contributions: Catppuccin Mocha is read from the installed tree, converted, defined, and selected as a Monaco theme; Material Icon Theme exposes a command; Rainbow CSV executes `GoToColumn`, opens the real Element Plus InputBox, and applies editor reveal/selection. An unsupported YAML package fails closed with `KOYORI_IDE_EXT_API_UNSUPPORTED: vscode.CompletionItem` and never becomes active.
+- The default activity bar contains Explorer, Search, Git, Extensions, and AI. Debug, Test Explorer, Build, Database, HTTP Client, Inspections, and Call Hierarchy remain services/routes reachable from the command palette.
+- This production-installer/installed-files/real-Worker/host-UI chain is `T/I`. It does not establish a packaged Windows (`P`) workflow, a GitHub Release (`R`), complete theme semantics, or full VS Code API compatibility. Unknown extension APIs remain fail-closed.
+- Go and TypeScript workflows depend on local `go`, Node, `gopls`, and `tsserver` (or an equivalent TypeScript language server). Missing tools are reported as unavailable; they are not represented as healthy or silently substituted.
 ## Security architecture summary
 
 | Area | Mechanism |

@@ -168,7 +168,7 @@ watch(editingRemoteProject, (val) => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--color-bg-base, #1e1e1e);
+  background: var(--color-bg-base, #ffffff);
   color: var(--color-text-primary, #eee);
 }
 
@@ -176,7 +176,7 @@ watch(editingRemoteProject, (val) => {
   flex-shrink: 0;
   padding: 12px 16px;
   border-bottom: 1px solid var(--color-border, #333);
-  background: var(--color-bg-elevated, #252526);
+  background: var(--color-bg-elevated, #f5f5f7);
 }
 
 .remote-view__title {
@@ -198,7 +198,7 @@ watch(editingRemoteProject, (val) => {
   gap: 6px;
   padding: 6px 16px;
   border-bottom: 1px solid var(--color-border, #333);
-  background: var(--color-bg-elevated, #252526);
+  background: var(--color-bg-elevated, #f5f5f7);
 }
 
 .remote-view__btn {
@@ -312,7 +312,7 @@ watch(editingRemoteProject, (val) => {
   padding: 10px 12px;
   border: 1px solid var(--color-border, #333);
   border-radius: 6px;
-  background: var(--color-bg-elevated, #252526);
+  background: var(--color-bg-elevated, #f5f5f7);
   transition: border-color 0.15s ease;
 }
 

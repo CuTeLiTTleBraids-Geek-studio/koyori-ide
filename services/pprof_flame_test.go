@@ -129,9 +129,9 @@ func TestSummarizeDeduplicatesRecursiveAndInlineFrames(t *testing.T) {
 }
 
 func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
-	svc := NewPProfService()
+	svc := newTestPProfService(t)
 
-	blockPath := profilePath(t, "block.prof")
+	blockPath := profilePath(svc, "block.prof")
 	if err := svc.StartBlockProfile(); err != nil {
 		t.Fatalf("StartBlockProfile: %v", err)
 	}
@@ -150,19 +150,18 @@ func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
 	}
 	assertNonEmptyFile(t, blockPath)
 
-	mutexPath := profilePath(t, "mutex.prof")
+	mutexPath := profilePath(svc, "mutex.prof")
 	if err := svc.StartMutexProfile(); err != nil {
 		t.Fatalf("StartMutexProfile: %v", err)
 	}
 	var mu sync.Mutex
-	acquired := false
 	mu.Lock()
 	locked := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
 		close(locked)
 		mu.Lock()
-		acquired = true
+		runtime.Gosched()
 		mu.Unlock()
 		close(finished)
 	}()
@@ -170,9 +169,6 @@ func TestPProfServiceBlockAndMutexProfiles(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	mu.Unlock()
 	<-finished
-	if !acquired {
-		t.Fatal("contending goroutine did not acquire the mutex")
-	}
 	if err := svc.StopMutexProfile(mutexPath); err != nil {
 		t.Fatalf("StopMutexProfile: %v", err)
 	}
@@ -262,8 +258,8 @@ func TestAnalyzeTraceRejectsNonRegularInput(t *testing.T) {
 }
 
 func TestPProfServiceTraceCaptureAndSchedAnalysis(t *testing.T) {
-	svc := NewPProfService()
-	tracePath := profilePath(t, "runtime.trace")
+	svc := newTestPProfService(t)
+	tracePath := profilePath(svc, "runtime.trace")
 	if err := svc.StartTrace(tracePath); err != nil {
 		t.Fatalf("StartTrace: %v", err)
 	}

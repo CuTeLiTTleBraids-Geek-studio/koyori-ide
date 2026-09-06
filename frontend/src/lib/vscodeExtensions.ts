@@ -26,6 +26,7 @@ import type {
   ExtensionViewContribution,
   ExtensionGrammarContribution,
   ExtensionSnippetContribution,
+  ExtensionThemeContribution,
   VscodeExtensionCommand,
   VscodeExtensionInfo,
   VscodeExtensionSecurityLevel,
@@ -48,6 +49,10 @@ const grammars = new Map<string, RegisteredGrammar[]>();
 // key = language ID，value = 该语言的 snippet contribution 列表。
 // 条目附带 extensionId，Monaco 集成层用此读取 snippet 文件。
 const snippets = new Map<string, RegisteredSnippet[]>();
+// contributes.themes registry. Entries remain metadata until the user selects
+// one and its installed JSON file is parsed by monaco-themes.ts.
+const themes = new Map<string, RegisteredTheme>();
+let activeThemeKey: string | undefined;
 
 // G-VSC-04: Reactive version counters bumped on every mutation so Vue
 // computeds that consume the registry re-evaluate (same pattern as
@@ -59,6 +64,7 @@ const viewsVersion = ref(0);
 // F-3: grammar/snippet 版本计数器，Monaco 集成层用此建立响应式依赖。
 const grammarsVersion = ref(0);
 const snippetsVersion = ref(0);
+const themesVersion = ref(0);
 
 // ---------------------------------------------------------------------------
 // Extension metadata
@@ -444,6 +450,66 @@ export function listAllVscodeExtensionSnippets(): Record<string, RegisteredSnipp
 }
 
 // ---------------------------------------------------------------------------
+// Themes — contributes.themes -> selectable installed Monaco themes
+// ---------------------------------------------------------------------------
+
+export interface RegisteredTheme extends ExtensionThemeContribution {
+  key: string;
+  extensionId: string;
+}
+
+function themeKey(extensionId: string, path: string): string {
+  return `${extensionId}:${path}`;
+}
+
+export function registerVscodeExtensionThemes(
+  extensionId: string,
+  themeList: ExtensionThemeContribution[],
+): void {
+  if (!themeList || themeList.length === 0) return;
+  let changed = false;
+  for (const theme of themeList) {
+    if (!theme.label || !theme.path) continue;
+    const key = themeKey(extensionId, theme.path);
+    themes.set(key, { ...theme, key, extensionId });
+    changed = true;
+  }
+  if (changed) themesVersion.value++;
+}
+
+export function unregisterVscodeExtensionThemes(
+  extensionId: string,
+  paths: string[],
+): void {
+  let changed = false;
+  for (const path of paths) {
+    const key = themeKey(extensionId, path);
+    changed = themes.delete(key) || changed;
+    if (activeThemeKey === key) activeThemeKey = undefined;
+  }
+  if (changed) themesVersion.value++;
+}
+
+export function listVscodeExtensionThemes(): RegisteredTheme[] {
+  void themesVersion.value;
+  return Array.from(themes.values());
+}
+
+export function getActiveVscodeExtensionTheme(): RegisteredTheme | undefined {
+  void themesVersion.value;
+  return activeThemeKey ? themes.get(activeThemeKey) : undefined;
+}
+
+export function setActiveVscodeExtensionTheme(key: string | undefined): void {
+  if (key !== undefined && !themes.has(key)) {
+    throw new Error(`VS Code extension theme "${key}" is not registered`);
+  }
+  if (activeThemeKey === key) return;
+  activeThemeKey = key;
+  themesVersion.value++;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers / test utilities
 // ---------------------------------------------------------------------------
 
@@ -465,9 +531,12 @@ export function clearVscodeExtensions(): void {
   views.clear();
   grammars.clear();
   snippets.clear();
+  themes.clear();
+  activeThemeKey = undefined;
   extensionsVersion.value++;
   commandsVersion.value++;
   viewsVersion.value++;
   grammarsVersion.value++;
   snippetsVersion.value++;
+  themesVersion.value++;
 }

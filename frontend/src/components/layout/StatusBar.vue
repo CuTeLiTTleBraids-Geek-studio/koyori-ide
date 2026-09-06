@@ -3,7 +3,7 @@
 // 喵，这是 Status Bar，负责 Koyori IDE 的界面呈现喵~
 import { appState, toggleTerminal } from "@/stores/app";
 import { editorState, activeFile } from "@/stores/editor";
-import { toggleInlineCompletion } from "@/stores/inlineCompletion";
+import { toggleInlineCompletion, inlineCompletionUnavailable } from "@/stores/inlineCompletion";
 import { connectivityState } from "@/lib/connectivity";
 import {
   lspState,
@@ -19,6 +19,7 @@ import { goTargetState, refreshGoTarget, restoreHostGoTarget, selectGoTarget } f
 import { workspaceModulesState } from "@/stores/workspaceModules";
 import { computed, onMounted, watch } from "vue";
 import { ArrowDown, Connection, Monitor, Refresh, SwitchButton } from "@element-plus/icons-vue";
+import { extensionStatusBarEntries, extensionProgress } from "@/stores/extensionHostUi";
 import { useI18n } from "@/lib/i18n";
 
 const { t } = useI18n();
@@ -38,7 +39,7 @@ const inlineCompletionLabel = computed(() =>
 // G-FEAT-02: when the network is offline, AI completion is unavailable but
 // LSP-based offline completion keeps working. Show a badge to make this
 // state visible so the user understands why AI is disabled.
-const isOffline = computed(() => !connectivityState.online);
+const isOffline = computed(() => !connectivityState.online || inlineCompletionUnavailable.value);
 // prompt-8 Task 8-D: LSP status for gopls / typescript-language-server.
 const lspLabel = computed(() => lspStatusLabel.value);
 const lspDetail = computed(() => lspStatusDetail.value);
@@ -125,6 +126,25 @@ watch(activeWorkspaceRoot, (root, previous) => {
       <!-- G-FEAT-02: offline badge — shown when the network is offline.
            LSP-based offline completion still works in this state, but AI
            completion is unavailable, so we surface the state explicitly. -->
+      <span
+        v-for="entry in extensionStatusBarEntries"
+        :key="entry.id"
+        v-show="entry.visible"
+        class="statusbar__item statusbar__item--extension"
+        role="status"
+        :title="entry.tooltip"
+      >
+        {{ entry.text }}
+      </span>
+      <span
+        v-if="extensionProgress"
+        class="statusbar__item statusbar__item--extension-progress"
+        role="progressbar"
+        :aria-valuenow="extensionProgress.increment"
+        :title="extensionProgress.message"
+      >
+        {{ extensionProgress.title || "Extension" }}<span v-if="extensionProgress.message">: {{ extensionProgress.message }}</span>
+      </span>
       <span
         v-if="isOffline"
         class="statusbar__item statusbar__item--offline"

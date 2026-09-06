@@ -1,9 +1,7 @@
 package services
 
 import (
-	"bytes"
 	"context"
-	crypto_rand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -17,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/internal/agentcore"
 	"github.com/adrg/xdg"
 	"github.com/google/shlex"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -53,7 +52,7 @@ var dangerousPatterns = []denyPattern{
 	{"rm -rf (recursive force delete)", regexp.MustCompile(`(?i)\brm\s+(-\S*r\S*f\S*|-\S*f\S*r\S*)`)},
 	{"rm targeting root, home, or wildcard", regexp.MustCompile(`(?i)\brm\s+(-\S+\s+)*[/~*](\s|$)`)},
 	{"del /s /f /q (Windows destructive delete)", regexp.MustCompile(`(?i)\bdel\s+/(s|f|q)`)},
-	{"format (disk format)", regexp.MustCompile(`(?i)\bformat\b`)},
+	{"format (disk format)", regexp.MustCompile(`(?i)(^|[\n;&|]\s*|\bsudo\s+)format\s+\S`)},
 	{"mkfs (filesystem creation)", regexp.MustCompile(`(?i)\bmkfs\b`)},
 	{"fork bomb", regexp.MustCompile(`:\s*\(\)\s*\{`)},
 	{"shutdown / reboot / halt", regexp.MustCompile(`(?i)\b(shutdown|reboot|halt)\b`)},
@@ -85,8 +84,14 @@ type AgentService struct {
 	rootDir                     string
 	workspaceContext            *WorkspaceContext
 	beforeWorkspaceCommandStart func()
+	commandTimeout              time.Duration
+	auditMu                     sync.Mutex
 	auditLog                    *os.File
 	auditLogger                 *slog.Logger
+	auditRoot                   *os.Root
+	auditRootOwned              bool
+	auditName                   string
+	auditIdentity               os.FileInfo
 	// Plan 11 Task 4 Step 6: MCP service for mcp.<server>.<tool> tool calls.
 	// When set, CheckCommand recognizes the mcp.* namespace and applies
 	// ClassifyMCPToolRisk instead of the shell-command patterns. CallMCPTool
@@ -108,33 +113,29 @@ type AgentService struct {
 	// mcpLister overrides mcpService for tool listing when non-nil
 	// (test injection). In production this is nil and mcpService is used.
 	mcpLister      mcpToolLister
-	approvalMu     sync.Mutex
-	approvals      map[string]commandApproval
 	rootGeneration uint64
 	approveCommand func(command, cwd string, risk RiskLevel) bool
-	// G-02: write-file approval (mirrors the command approval flow).
-	writeApprovalMu sync.Mutex
-	writeApprovals  map[string]writeApproval
-	approveWrite    func(targetPath string, size int64) bool
+	// approveAI is a trusted host callback for workflow AI operations. It is
+	// intentionally separate from command approval so a prompt can never be
+	// reinterpreted as shell input at the approval boundary.
+	approveAI    func(operation string) bool
+	approveWrite func(targetPath string, size int64) bool
 	// GOAL-P1-02: backend-enforced tool-call budget. See agent_budget.go.
 	//
 	// Lazily initialized via ensureBudget because AgentService is constructed
 	// as a bare struct literal in several tests; a nil budget must not panic.
 	budgetInit sync.Once
 	budget     *toolBudget
-}
-
-type commandApproval struct {
-	argv           []string
-	cwd            string
-	rootGeneration uint64
-	expiresAt      time.Time
-	// budgetEpoch binds this capability to the tool-budget epoch that issued it
-	// (GOAL-P1-02). Redemption re-checks it so a token minted before the user
-	// opened a new epoch cannot be spent afterwards, and vice versa. Without
-	// this, a caller could mint tokens up to the ceiling, ask the user to
-	// "continue", and then spend the old batch on top of the fresh allowance.
-	budgetEpoch uint64
+	// P12-G33: the renderer/headless shared execution core. Trusted bootstrap
+	// wires handlers; public methods below expose only catalog and capability
+	// issue/redeem operations.
+	executionMu      sync.RWMutex
+	executionRuntime *agentcore.Runtime
+	executionInitErr error
+	// catalogRefreshMu serializes complete dynamic catalog rebuilds. Without a
+	// single publication order, an older workflow/MCP/Skill snapshot can finish
+	// after a newer refresh and overwrite the authoritative ToolDef source.
+	catalogRefreshMu sync.Mutex
 }
 
 // mcpToolLister abstracts MCP tool listing for caching (M-7) and test
@@ -162,14 +163,97 @@ func NewAgentServiceWithWorkspaceContext(workspaceContext *WorkspaceContext) *Ag
 }
 
 func newAgentService(workspaceContext *WorkspaceContext) *AgentService {
-	svc := &AgentService{workspaceContext: workspaceContext}
-	svc.approveCommand = nativeCommandApproval
-	logPath := filepath.Join(xdg.CacheHome, "koyori-ide", "agent-audit.log")
+	return newAgentServiceWithAuditPath(workspaceContext, filepath.Join(xdg.CacheHome, "koyori-ide", "agent-audit.log"))
+}
+
+// newAgentServiceWithAuditPath retains the desktop's best-effort audit setup.
+// Trusted headless wiring opens and validates its state-bound handle before it
+// reaches the service constructor.
+func newAgentServiceWithAuditPath(workspaceContext *WorkspaceContext, auditPath string) *AgentService {
+	var auditRoot *os.Root
+	var auditFile *os.File
+	var auditName string
 	// P1-a: audit log contains sensitive command/agent activity - restrict
 	// to owner-only (0600) instead of world-readable 0644.
-	if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil {
-		svc.auditLog = f
-		svc.auditLogger = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if strings.TrimSpace(auditPath) != "" {
+		if root, f, name, err := openAgentAuditLogPath(auditPath); err == nil {
+			auditRoot = root
+			auditFile = f
+			auditName = name
+		}
+	}
+	return newAgentServiceWithAuditDestination(workspaceContext, auditFile, auditRoot, auditName, true)
+}
+
+func openAgentAuditLogPath(auditPath string) (*os.Root, *os.File, string, error) {
+	directory := filepath.Dir(auditPath)
+	name := filepath.Base(auditPath)
+	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+		return nil, nil, "", fmt.Errorf("audit file name is invalid")
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	file, err := root.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, "", err
+	}
+	valid := false
+	defer func() {
+		if !valid {
+			_ = file.Close()
+			_ = root.Close()
+		}
+	}()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() {
+		return nil, nil, "", fmt.Errorf("audit log is not a regular file")
+	}
+	named, err := root.Lstat(name)
+	if err != nil || named.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, named) {
+		return nil, nil, "", fmt.Errorf("audit log identity changed")
+	}
+	multipleLinks, err := agentFileHasMultipleLinks(file)
+	if err != nil || multipleLinks {
+		return nil, nil, "", fmt.Errorf("audit log has an unsafe link identity")
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return nil, nil, "", err
+	}
+	valid = true
+	return root, file, name, nil
+}
+
+func newAgentServiceWithAuditRoot(workspaceContext *WorkspaceContext, auditFile *os.File, auditRoot *os.Root, auditName string) *AgentService {
+	return newAgentServiceWithAuditDestination(workspaceContext, auditFile, auditRoot, auditName, false)
+}
+
+func newAgentServiceWithAuditDestination(workspaceContext *WorkspaceContext, auditFile *os.File, auditRoot *os.Root, auditName string, auditRootOwned bool) *AgentService {
+	svc := &AgentService{workspaceContext: workspaceContext}
+	svc.approveCommand = nativeCommandApproval
+	svc.approveAI = nativeAIOperationApproval
+	svc.approveWrite = nativeWriteApproval
+	if auditFile != nil {
+		identity, err := auditFile.Stat()
+		if err == nil && identity.Mode().IsRegular() {
+			svc.auditLog = auditFile
+			svc.auditLogger = slog.New(slog.NewTextHandler(auditFile, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			svc.auditRoot = auditRoot
+			svc.auditRootOwned = auditRootOwned
+			svc.auditName = auditName
+			svc.auditIdentity = identity
+		} else {
+			_ = auditFile.Close()
+			if auditRootOwned && auditRoot != nil {
+				_ = auditRoot.Close()
+			}
+		}
+	}
+	if err := svc.initializeExecutionCore(); err != nil {
+		svc.executionInitErr = err
+		slog.Error("initialize agent execution core", "error", err)
 	}
 	return svc
 }
@@ -194,19 +278,87 @@ func nativeCommandApproval(command, cwd string, risk RiskLevel) bool {
 	}
 }
 
+// nativeWriteApproval shows a native OS dialog asking the user to approve an
+// agent file write. It is the production value of AgentService.approveWrite
+// and the only surviving piece of the former write-approval pipeline (P19
+// P1-03: token minting/redeeming lives solely in the agentcore Runtime now).
+func nativeWriteApproval(targetPath string, size int64) bool {
+	app := application.Get()
+	if app == nil {
+		return false
+	}
+	result := make(chan bool, 1)
+	dialog := app.Dialog.Question().SetTitle("Approve file write").SetMessage(
+		fmt.Sprintf("Agent wants to write:\n%s\n(%d bytes)", targetPath, size),
+	)
+	dialog.AddButton("Yes").SetAsDefault().OnClick(func() { result <- true })
+	dialog.AddButton("No").SetAsCancel().OnClick(func() { result <- false })
+	dialog.Show()
+	select {
+	case approved := <-result:
+		return approved
+	case <-time.After(5 * time.Minute):
+		return false
+	}
+}
+
+func nativeAIOperationApproval(operation string) bool {
+	app := application.Get()
+	if app == nil {
+		return false
+	}
+	result := make(chan bool, 1)
+	dialog := app.Dialog.Question().SetTitle("Approve workflow AI operation").SetMessage(
+		fmt.Sprintf("Allow the workflow AI operation %q?", operation),
+	)
+	dialog.AddButton("Yes").SetAsDefault().OnClick(func() { result <- true })
+	dialog.AddButton("No").SetAsCancel().OnClick(func() { result <- false })
+	dialog.Show()
+	select {
+	case approved := <-result:
+		return approved
+	case <-time.After(5 * time.Minute):
+		return false
+	}
+}
+
 // Close releases resources held by the service. N-103: the audit log file
 // opened in NewAgentService was never closed, leaking a file descriptor
 // for the lifetime of the process. This is called from main on shutdown.
 // Safe to call multiple times; subsequent calls are no-ops.
+//
+//wails:ignore
 func (s *AgentService) Close() error {
+	var errs []error
+	if s != nil {
+		deps := executionDependenciesFor(s)
+		deps.mu.RLock()
+		ai := deps.ai
+		deps.mu.RUnlock()
+		if ai != nil {
+			// The provider worker must publish its terminal usage/lifecycle state
+			// before Agent resources are released. A timeout is returned to the
+			// caller and is never silently converted into a clean close.
+			errs = append(errs, ai.cancelAllStreamsAndWait())
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 	if s.auditLog != nil {
-		err := s.auditLog.Close()
+		errs = append(errs, s.auditLog.Sync(), s.auditLog.Close())
 		s.auditLog = nil
-		return err
 	}
-	return nil
+	if s.auditRootOwned && s.auditRoot != nil {
+		errs = append(errs, s.auditRoot.Close())
+	}
+	s.auditLogger = nil
+	s.auditRoot = nil
+	s.auditRootOwned = false
+	s.auditName = ""
+	s.auditIdentity = nil
+	return errors.Join(errs...)
 }
 
 // agentServiceRootSetter is the narrow, package-sealed capability used by
@@ -215,6 +367,95 @@ type agentServiceRootSetter interface {
 	setWorkspaceRoot(string) error
 	currentWorkspaceRoot() string
 	restoreWorkspaceRoot(string) error
+	beginProjectWorkspaceAuthority() *agentWorkspaceAuthorityGuard
+	beginWorkspaceRootTransitionWithinAuthority(string, *agentWorkspaceAuthorityGuard) (workspaceRootChange, error)
+	beginWorkspaceRootClearTransitionWithinAuthority(*agentWorkspaceAuthorityGuard) (workspaceRootChange, error)
+	poisonWorkspaceAuthorityAfterRollback(error) error
+}
+
+// workspaceRootChange is the private two-phase hook shared by AgentService
+// and ProjectService. It is never a Wails binding.
+type workspaceRootChange interface {
+	commit()
+	rollback() error
+}
+
+// agentWorkspaceRootTransition is a trusted, package-private two-phase
+// workspace change. ProjectService keeps it open while all other services and
+// the project ledger are updated; a failure restores the prior session and
+// policy authority while deliberately leaving one-time capabilities burned.
+type agentWorkspaceRootTransition struct {
+	mu              sync.Mutex
+	agent           *AgentService
+	previousRoot    string
+	previousGen     uint64
+	previousOwners  map[string]agentSessionOwner
+	previousSkills  map[string]map[string]string
+	previousRuntime agentcore.RuntimeSnapshot
+	lifecycleReset  *agentLifecycleWorkspaceReset
+	authority       *agentWorkspaceAuthorityGuard
+	ownsAuthority   bool
+	previousSkill   skillsWorkspaceState
+	skills          *SkillsService
+	done            bool
+	result          error
+}
+
+func cloneAgentSessionOwners(values map[string]agentSessionOwner) map[string]agentSessionOwner {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string]agentSessionOwner, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
+func cloneAgentSessionSkills(values map[string]map[string]string) map[string]map[string]string {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string]map[string]string, len(values))
+	for sessionID, bindings := range values {
+		if bindings == nil {
+			clone[sessionID] = nil
+			continue
+		}
+		copied := make(map[string]string, len(bindings))
+		for skillID, fingerprint := range bindings {
+			copied[skillID] = fingerprint
+		}
+		clone[sessionID] = copied
+	}
+	return clone
+}
+
+func (s *AgentService) poisonWorkspaceAuthorityAfterRollback(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	if s != nil {
+		deps := executionDependenciesFor(s)
+		deps.mu.RLock()
+		lifecycle := deps.lifecycle
+		deps.mu.RUnlock()
+		if lifecycle != nil {
+			lifecycle.poisonWorkspaceAuthority(cause)
+		} else {
+			s.executionMu.RLock()
+			runtime := s.executionRuntime
+			s.executionMu.RUnlock()
+			if runtime != nil {
+				runtime.UnregisterAllSessions()
+			}
+		}
+		deps.mu.Lock()
+		deps.sessionOwners = make(map[string]agentSessionOwner)
+		deps.sessionSkills = make(map[string]map[string]string)
+		deps.mu.Unlock()
+	}
+	return errors.Join(agentcore.ErrSessionPersistencePoisoned, cause)
 }
 
 // configureWorkspaceRoot sets the directory within which agent commands are
@@ -223,8 +464,8 @@ type agentServiceRootSetter interface {
 //
 // Plan 11 Task 5: propagates the workspace root to SkillsService so that
 // project-scoped skills (G-SEC-03) load from <root>/.koyori-ide/skills/. The
-// reload is best-effort: failure is logged but does not block the agent
-// (skills are a non-critical enhancement).
+// A load failure is returned and the transition restores the previous policy;
+// accepting a workspace with a partially published Skill source is unsafe.
 //
 //wails:ignore
 func (s *AgentService) configureWorkspaceRoot(root string) error {
@@ -232,33 +473,259 @@ func (s *AgentService) configureWorkspaceRoot(root string) error {
 }
 
 func (s *AgentService) setWorkspaceRoot(root string) error {
+	transition, err := s.beginWorkspaceRootTransition(root)
+	if err != nil {
+		return err
+	}
+	if transition == nil {
+		return nil
+	}
+	transition.commit()
+	return nil
+}
+
+func validateAgentWorkspaceRoot(root string) (string, error) {
 	if root == "" {
-		return fmt.Errorf("agent workspace root is required: %w", ErrInvalidInput)
+		return "", fmt.Errorf("agent workspace root is required: %w", ErrInvalidInput)
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return err
+		return "", err
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("workspace root is not a directory: %s", abs)
+		return "", fmt.Errorf("workspace root is not a directory: %s", abs)
 	}
+	// P19 CI 修复：与 WorkspaceContext/FileService 安全根一致地规范化（Windows
+	// 8.3 短名、macOS /var 符号链接前缀）。否则 agent 侧以原始拼写拼接工具
+	// 路径，而安全根是解析后的形态，容器判断与审计脱敏会在 CI 环境失效。
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = filepath.Clean(resolved)
+	}
+	return abs, nil
+}
+
+func (s *AgentService) beginWorkspaceRootTransition(root string) (workspaceRootChange, error) {
+	abs, err := validateAgentWorkspaceRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	authority := s.beginProjectWorkspaceAuthority()
+	change, err := s.beginResolvedWorkspaceRootTransition(abs, authority, true)
+	if err != nil {
+		authority.release()
+	}
+	return change, err
+}
+
+func (s *AgentService) beginWorkspaceRootClearTransition() (workspaceRootChange, error) {
+	authority := s.beginProjectWorkspaceAuthority()
+	change, err := s.beginResolvedWorkspaceRootTransition("", authority, true)
+	if err != nil {
+		authority.release()
+	}
+	return change, err
+}
+
+func (s *AgentService) beginWorkspaceRootTransitionWithinAuthority(root string, authority *agentWorkspaceAuthorityGuard) (workspaceRootChange, error) {
+	abs, err := validateAgentWorkspaceRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	return s.beginResolvedWorkspaceRootTransition(abs, authority, false)
+}
+
+func (s *AgentService) beginWorkspaceRootClearTransitionWithinAuthority(authority *agentWorkspaceAuthorityGuard) (workspaceRootChange, error) {
+	return s.beginResolvedWorkspaceRootTransition("", authority, false)
+}
+
+func (s *AgentService) beginResolvedWorkspaceRootTransition(abs string, authority *agentWorkspaceAuthorityGuard, ownsAuthority bool) (workspaceRootChange, error) {
+	if s == nil {
+		return nil, fmt.Errorf("agent service is unavailable: %w", ErrNotAllowed)
+	}
+	if err := authority.validate(s); err != nil {
+		return nil, err
+	}
+	deps := executionDependenciesFor(s)
+	deps.mu.RLock()
+	lifecycle := deps.lifecycle
+	previousOwners := cloneAgentSessionOwners(deps.sessionOwners)
+	previousSkills := cloneAgentSessionSkills(deps.sessionSkills)
+	deps.mu.RUnlock()
+
+	s.mu.Lock()
+	previousRoot := s.rootDir
+	previousGeneration := s.rootGeneration
+	sk := s.skillsService
+	s.mu.Unlock()
+	previousSkill := skillsWorkspaceState{}
+	if sk != nil {
+		var err error
+		previousSkill, err = sk.captureWorkspaceState()
+		if err != nil {
+			return nil, fmt.Errorf("capture workspace skill policy: %w", err)
+		}
+	}
+
+	transition := &agentWorkspaceRootTransition{
+		agent: s, previousRoot: previousRoot, previousGen: previousGeneration,
+		previousOwners: previousOwners, previousSkills: previousSkills,
+		authority: authority, ownsAuthority: ownsAuthority,
+		previousSkill: previousSkill, skills: sk,
+	}
+	var err error
+	// Publish the candidate root before the durable lifecycle reset. Recovery
+	// guards intentionally observe this generation while they decide whether an
+	// old unscoped receipt may be disposed. The transaction restores both fields
+	// if reset publication is rejected.
 	s.mu.Lock()
 	s.rootDir = abs
 	s.rootGeneration++
-	sk := s.skillsService
 	s.mu.Unlock()
-	if sk != nil {
-		sk.setWorkspaceRoot(abs)
-		// Best-effort reload; errors are surfaced via slog, not propagated.
-		if err := sk.Load(); err != nil {
-			slog.Warn("skills reload on workspace change failed", "err", err)
+	if lifecycle != nil {
+		transition.lifecycleReset, err = lifecycle.prepareWorkspaceReset()
+		if err == nil && transition.lifecycleReset != nil {
+			err = transition.lifecycleReset.publish()
+		}
+	} else {
+		// Bare AgentService fixtures can still have a runtime without a lifecycle.
+		// Preserve that authority as well instead of silently burning it.
+		s.executionMu.RLock()
+		runtime := s.executionRuntime
+		s.executionMu.RUnlock()
+		if runtime != nil {
+			transition.previousRuntime = runtime.CaptureSnapshot()
+			runtime.UnregisterAllSessions()
 		}
 	}
-	return nil
+	if err != nil {
+		s.mu.Lock()
+		s.rootDir = previousRoot
+		s.rootGeneration = previousGeneration
+		s.mu.Unlock()
+		if errors.Is(err, agentcore.ErrSessionPersistenceIndeterminate) ||
+			errors.Is(err, agentcore.ErrSessionPersistencePoisoned) ||
+			errors.Is(err, ErrUsagePersistenceIndeterminate) ||
+			errors.Is(err, ErrUsagePersistencePoisoned) {
+			deps.mu.Lock()
+			deps.sessionOwners = make(map[string]agentSessionOwner)
+			deps.sessionSkills = make(map[string]map[string]string)
+			deps.mu.Unlock()
+		}
+		if transition.lifecycleReset != nil {
+			transition.lifecycleReset.cancel()
+		}
+		return nil, err
+	}
+	// Lifecycle reset has already revoked durable/runtime authority. Clear the
+	// adapter-side owner maps only after that publication succeeds.
+	deps.mu.Lock()
+	deps.sessionSkills = make(map[string]map[string]string)
+	deps.sessionOwners = make(map[string]agentSessionOwner)
+	deps.mu.Unlock()
+
+	if sk != nil {
+		if err := sk.setWorkspaceRoot(abs); err != nil {
+			rollbackErr := transition.rollback()
+			return nil, errors.Join(fmt.Errorf("set workspace skill source: %w", err), rollbackErr)
+		}
+		if err := sk.Load(); err != nil {
+			rollbackErr := transition.rollback()
+			return nil, errors.Join(fmt.Errorf("load workspace skills: %w", err), rollbackErr)
+		}
+	}
+	return transition, nil
+}
+
+func (t *agentWorkspaceRootTransition) commit() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return
+	}
+	t.done = true
+	if t.lifecycleReset != nil {
+		t.lifecycleReset.commit()
+	}
+	if t.ownsAuthority {
+		t.authority.release()
+	}
+}
+
+func (t *agentWorkspaceRootTransition) rollback() error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return t.result
+	}
+	var errs []error
+	if t.agent != nil {
+		t.agent.mu.Lock()
+		t.agent.rootDir = t.previousRoot
+		t.agent.rootGeneration = t.previousGen
+		t.agent.mu.Unlock()
+	}
+	if t.skills != nil {
+		if err := t.skills.restoreWorkspaceState(t.previousSkill); err != nil {
+			errs = append(errs, fmt.Errorf("restore workspace skill policy: %w", err))
+		}
+	}
+	deps := executionDependenciesFor(t.agent)
+	if t.lifecycleReset != nil {
+		if err := t.lifecycleReset.rollback(); err != nil {
+			errs = append(errs, errors.Join(agentcore.ErrSessionPersistencePoisoned, err))
+		}
+	} else {
+		t.agent.executionMu.RLock()
+		runtime := t.agent.executionRuntime
+		t.agent.executionMu.RUnlock()
+		if runtime != nil {
+			runtime.RestoreSnapshot(t.previousRuntime)
+		}
+	}
+	// Never restore adapter owner maps when durable lifecycle restoration failed.
+	if len(errs) == 0 {
+		deps.mu.Lock()
+		deps.sessionOwners = cloneAgentSessionOwners(t.previousOwners)
+		deps.sessionSkills = cloneAgentSessionSkills(t.previousSkills)
+		deps.mu.Unlock()
+	} else {
+		if t.lifecycleReset != nil && t.lifecycleReset.lifecycle != nil {
+			t.lifecycleReset.lifecycle.poisonWorkspaceAuthority(errors.Join(errs...))
+		} else {
+			t.agent.executionMu.RLock()
+			runtime := t.agent.executionRuntime
+			t.agent.executionMu.RUnlock()
+			if runtime != nil {
+				runtime.UnregisterAllSessions()
+			}
+		}
+		deps.mu.Lock()
+		deps.sessionOwners = make(map[string]agentSessionOwner)
+		deps.sessionSkills = make(map[string]map[string]string)
+		deps.mu.Unlock()
+	}
+	t.done = true
+	t.result = errors.Join(errs...)
+	if t.result != nil {
+		// Any incomplete authority restoration is a poisoned lifecycle, not a
+		// normal retryable setter error. Expose that state on the first failure so
+		// callers cannot mistake an internally revoked session for a clean rollback.
+		t.result = errors.Join(agentcore.ErrSessionPersistencePoisoned, t.result)
+	}
+	if t.ownsAuthority {
+		t.authority.release()
+	}
+	return t.result
 }
 
 func (s *AgentService) currentWorkspaceRoot() string {
@@ -273,138 +740,15 @@ func (s *AgentService) restoreWorkspaceRoot(root string) error {
 	if root != "" {
 		return s.setWorkspaceRoot(root)
 	}
-	s.mu.Lock()
-	s.rootDir = ""
-	s.rootGeneration++
-	sk := s.skillsService
-	s.mu.Unlock()
-	if sk != nil {
-		sk.setWorkspaceRoot("")
-	}
-	return nil
-}
-
-// RequestCommandApproval creates a short-lived, single-use capability for a
-// specific command and working directory. Checking a command in the renderer
-// is only advisory; execution requires this backend-issued token.
-func (s *AgentService) RequestCommandApproval(command, cwd string) (string, error) {
-	check := s.CheckCommand(command)
-	if check.Blocked {
-		return "", fmt.Errorf("command blocked: %s", check.BlockReason)
-	}
-	if strings.TrimSpace(command) == "" {
-		return "", fmt.Errorf("command is required: %w", ErrInvalidInput)
-	}
-	lease, err := s.acquireWorkspaceLease()
-	if err != nil {
-		return "", err
-	}
-	resolvedCwd, err := lease.resolve(cwd)
-	if err != nil {
-		return "", err
-	}
-	generation := lease.generation
-	argv, err := parseCommand(command)
-	if err != nil {
-		return "", err
-	}
-	// GOAL-P1-02: fail before prompting when the budget is already spent.
-	//
-	// This pre-check is a UX affordance only — prompting the user and *then*
-	// refusing would be worse than refusing up front. It is deliberately not the
-	// enforcement point: two concurrent callers can both pass it. The atomic
-	// consume below is what actually bounds issuance.
-	if err := s.ensureBudget().precheck(); err != nil {
-		return "", err
-	}
-	if s.approveCommand == nil || !s.approveCommand(command, resolvedCwd, check.RiskLevel) {
-		return "", fmt.Errorf("command execution was not approved: %w", ErrNotAllowed)
-	}
-	if err := lease.validateCurrent(); err != nil {
-		return "", err
-	}
-	// GOAL-P1-02: consume atomically, after approval and before minting.
-	//
-	// Ordering is the contract for execution point 4: a declined approval must
-	// not spend budget (otherwise declining is punished), while an approved call
-	// must spend it before a token exists (otherwise a caller could obtain
-	// tokens beyond the ceiling and spend them later). Concurrent approvals
-	// serialize on the budget mutex, so N racing callers consume N distinct
-	// slots and the (limit+1)-th is refused.
-	budgetEpoch, err := s.ensureBudget().reserve()
-	if err != nil {
-		return "", err
-	}
-	raw := make([]byte, 32)
-	if _, err := crypto_rand.Read(raw); err != nil {
-		return "", fmt.Errorf("create approval token: %w", err)
-	}
-	token := hex.EncodeToString(raw)
-	s.approvalMu.Lock()
-	if s.approvals == nil {
-		s.approvals = make(map[string]commandApproval)
-	}
-	s.approvals[token] = commandApproval{
-		argv:           argv,
-		cwd:            resolvedCwd,
-		rootGeneration: generation,
-		budgetEpoch:    budgetEpoch,
-		expiresAt:      time.Now().Add(2 * time.Minute),
-	}
-	s.approvalMu.Unlock()
-	return token, nil
-}
-
-func (s *AgentService) consumeCommandApproval(token, command, cwd string) error {
-	if token == "" {
-		return fmt.Errorf("command approval is required: %w", ErrInvalidInput)
-	}
-	resolvedCwd, generation, err := s.validateCwdWithGeneration(cwd)
+	transition, err := s.beginWorkspaceRootClearTransition()
 	if err != nil {
 		return err
 	}
-	argv, err := parseCommand(command)
-	if err != nil {
-		return err
+	if transition == nil {
+		return nil
 	}
-	s.approvalMu.Lock()
-	approval, ok := s.approvals[token]
-	if ok {
-		delete(s.approvals, token)
-	}
-	s.approvalMu.Unlock()
-	argvMatches := len(approval.argv) == len(argv)
-	if argvMatches {
-		for i := range argv {
-			if approval.argv[i] != argv[i] {
-				argvMatches = false
-				break
-			}
-		}
-	}
-	if !ok || time.Now().After(approval.expiresAt) || !argvMatches || approval.cwd != resolvedCwd || approval.rootGeneration != generation {
-		return fmt.Errorf("invalid, expired, or mismatched command approval: %w", ErrInvalidInput)
-	}
-	// GOAL-P1-02 AC 3: a capability is bound to the budget epoch that issued it.
-	//
-	// Without this, a caller could mint tokens right up to the ceiling, ask the
-	// user to open a new epoch, and then redeem the stockpiled tokens on top of
-	// the fresh allowance — spending 2N calls for an N-call budget. The token is
-	// already deleted above, so a rejected cross-epoch token is also burned
-	// rather than left available for another attempt.
-	if approval.budgetEpoch != s.ensureBudget().currentEpoch() {
-		return fmt.Errorf(
-			"command approval was issued in a previous tool-budget epoch: %w",
-			ErrInvalidInput,
-		)
-	}
+	transition.commit()
 	return nil
-}
-
-func (s *AgentService) discardCommandApproval(token string) {
-	s.approvalMu.Lock()
-	delete(s.approvals, token)
-	s.approvalMu.Unlock()
 }
 
 // setMCPService injects the MCP service so the agent can dispatch
@@ -488,8 +832,33 @@ var shellMetachars = []struct {
 	{')', "subshell syntax () is not supported"},
 	{'{', "brace expansion {} is not supported"},
 	{'}', "brace expansion {} is not supported"},
-	{'~', "home directory expansion (~) is not supported — use the full path"},
 	{'\n', "multi-line commands are not supported — run each command separately"},
+}
+
+// tildeMetacharDesc 保留 ~ 的拒绝语义（home 目录展开），但由
+// rejectTokenLeadingTilde 按位置判定：只有 token 起始处的 ~ 才是 shell
+// home 展开语法；路径中段的 ~ 是合法字符（GitHub Windows runner 的
+// TEMP 目录用 8.3 短名目录，例如 <用户目录>~1），并且命令不经 shell
+// 直接 exec，mid-token 的 ~ 对 exec 无任何特殊含义。
+const tildeMetacharDesc = "home directory expansion (~) is not supported — use the full path"
+
+// rejectTokenLeadingTilde rejects ~ at the start of a token (after
+// whitespace or an opening quote) where a shell would expand it to the
+// home directory. Mid-token ~ (Windows 8.3 short names) is allowed.
+func rejectTokenLeadingTilde(command string) error {
+	for i := 0; i < len(command); i++ {
+		if command[i] != '~' {
+			continue
+		}
+		if i == 0 {
+			return fmt.Errorf("unsupported shell syntax: %s", tildeMetacharDesc)
+		}
+		switch command[i-1] {
+		case ' ', '\t', '"', '\'':
+			return fmt.Errorf("unsupported shell syntax: %s", tildeMetacharDesc)
+		}
+	}
+	return nil
 }
 
 // parseCommand splits a command line into an argv slice for direct
@@ -506,6 +875,9 @@ func parseCommand(command string) ([]string, error) {
 		if strings.IndexByte(command, mc.char) >= 0 {
 			return nil, fmt.Errorf("unsupported shell syntax: %s", mc.desc)
 		}
+	}
+	if err := rejectTokenLeadingTilde(command); err != nil {
+		return nil, err
 	}
 	argv, err := shlex.Split(command)
 	if err != nil {
@@ -671,10 +1043,11 @@ func (s *AgentService) InvalidateMCPCache() {
 	s.mcpCacheMu.Unlock()
 }
 
-// CallMCPTool dispatches an mcp.<server>.<tool> call to the MCP service
-// after the user has approved it (Plan 11 Task 4 Step 6). The args map is
-// passed as the tool's arguments. The result is returned as a JSON string
-// for the agent to interpret.
+// CallMCPTool is retained only for package-level compatibility. Renderer MCP
+// execution is owned by the unified Agent capability pipeline, so this
+// legacy endpoint is deliberately deny-only and must not be exported.
+//
+//wails:ignore
 func (s *AgentService) CallMCPTool(ctx context.Context, namespace string, args map[string]interface{}) (*MCPToolResult, error) {
 	return nil, fmt.Errorf("backend MCP approval token required: %w", ErrInvalidInput)
 }
@@ -690,6 +1063,55 @@ type ExecResult struct {
 	RiskLevel   RiskLevel `json:"riskLevel"`
 	Blocked     bool      `json:"blocked"`
 	BlockReason string    `json:"blockReason,omitempty"`
+}
+
+const maxAgentCommandOutputBytes = 256 * 1024
+
+const defaultAgentCommandTimeout = 30 * time.Second
+
+type boundedAgentCommandOutput struct {
+	data  []byte
+	total int64
+}
+
+func (o *boundedAgentCommandOutput) Write(p []byte) (int, error) {
+	written := len(p)
+	o.total += int64(written)
+	remaining := maxAgentCommandOutputBytes - len(o.data)
+	if remaining > 0 {
+		if remaining > written {
+			remaining = written
+		}
+		o.data = append(o.data, p[:remaining]...)
+	}
+	// Report the full write even after the capture budget is exhausted so the
+	// child process can continue and exit instead of observing a short write.
+	return written, nil
+}
+
+func (o *boundedAgentCommandOutput) String() string {
+	return boundAgentText(string(o.data), o.total, maxAgentCommandOutputBytes)
+}
+
+func appendAgentCommandNotice(output, notice string) string {
+	if notice == "" {
+		return output
+	}
+	notice = strings.ToValidUTF8(notice, "\uFFFD")
+	if len(notice) >= maxAgentCommandOutputBytes {
+		return boundAgentText(notice, int64(len(notice)), maxAgentCommandOutputBytes)
+	}
+	return boundAgentText(output, int64(len(output)), maxAgentCommandOutputBytes-len(notice)) + notice
+}
+
+func (s *AgentService) executionCommandTimeout() time.Duration {
+	s.mu.Lock()
+	timeout := s.commandTimeout
+	s.mu.Unlock()
+	if timeout <= 0 {
+		return defaultAgentCommandTimeout
+	}
+	return timeout
 }
 
 // ExecCommand runs the given command line in the given working directory
@@ -710,19 +1132,6 @@ type ExecResult struct {
 // duration, and risk level.
 func (s *AgentService) ExecCommand(command, cwd string) (ExecResult, error) {
 	return ExecResult{Command: command, Cwd: cwd, Blocked: true, BlockReason: "backend approval token required"}, fmt.Errorf("backend approval token required: %w", ErrInvalidInput)
-}
-
-// ExecuteApprovedCommand consumes a backend-issued approval and executes the
-// exact command it was issued for. The token cannot be replayed.
-func (s *AgentService) ExecuteApprovedCommand(command, cwd, approvalToken string) (ExecResult, error) {
-	lease, err := s.acquireWorkspaceLease()
-	if err != nil {
-		return ExecResult{Command: command, Cwd: cwd, Blocked: true, BlockReason: err.Error()}, err
-	}
-	if err := s.consumeCommandApproval(approvalToken, command, cwd); err != nil {
-		return ExecResult{Command: command, Cwd: cwd, Blocked: true, BlockReason: err.Error()}, err
-	}
-	return s.executeCommandWithLease(command, cwd, lease)
 }
 
 func (s *AgentService) executeCommand(command, cwd string) (ExecResult, error) {
@@ -782,7 +1191,8 @@ func (s *AgentService) executeCommandWithLease(command, cwd string, lease worksp
 	}
 
 	// Use a timeout so a misbehaving command cannot block the agent loop.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	commandTimeout := s.executionCommandTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
 	cmd := commandContext(ctx, argv[0], argv[1:]...)
@@ -791,7 +1201,7 @@ func (s *AgentService) executeCommandWithLease(command, cwd string, lease worksp
 	}
 
 	start := time.Now()
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr boundedAgentCommandOutput
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if s.beforeWorkspaceCommandStart != nil {
@@ -815,6 +1225,15 @@ func (s *AgentService) executeCommandWithLease(command, cwd string, lease worksp
 	}
 
 	if runErr != nil {
+		// CommandContext commonly returns *exec.ExitError after killing a timed
+		// out child. Classify the context first so timeout is observable and the
+		// unified runtime records a failed terminal usage receipt.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			result.Stderr = appendAgentCommandNotice(result.Stderr, fmt.Sprintf("\n[command timed out after %s]", commandTimeout))
+			result.ExitCode = -1
+			s.audit(resolvedCwd, result)
+			return result, fmt.Errorf("command timed out after %s: %w", commandTimeout, context.DeadlineExceeded)
+		}
 		// If the command ran but exited non-zero, extract the exit code
 		// and return a normal result (not an error). The agent should see
 		// the stderr and decide what to do.
@@ -824,14 +1243,6 @@ func (s *AgentService) executeCommandWithLease(command, cwd string, lease worksp
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
-			s.audit(resolvedCwd, result)
-			return result, nil
-		}
-		// If the context deadline was exceeded, return a timeout result.
-		// N-107: use errors.Is so wrapped context errors are recognized.
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			result.Stderr += "\n[command timed out after 30s]"
-			result.ExitCode = -1
 			s.audit(resolvedCwd, result)
 			return result, nil
 		}
@@ -859,11 +1270,7 @@ func (s *AgentService) audit(cwd string, r ExecResult) {
 		"riskLevel", string(r.RiskLevel),
 		"blocked", r.Blocked,
 	}
-	if s.auditLogger != nil {
-		s.auditLogger.Info("agent exec", keyvals...)
-		return
-	}
-	slog.Default().Info("agent exec", keyvals...)
+	s.auditEvent("agent exec", keyvals...)
 }
 
 // commandAuditMetadata permits correlation and basic forensic review without

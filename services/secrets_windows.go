@@ -42,6 +42,18 @@ type dataBlob struct {
 // 而非账户标签),接受该参数以保持跨平台统一接口。
 func platformEncryptSecret(account, plaintext string) (string, error) {
 	_ = account // DPAPI 不使用 account
+	// secretsTestAESOnly 由 services 包测试的 TestMain 置真：单元测试不触碰
+	// 真实用户密钥链（DPAPI 为机器绑定但同样属于用户态资产），改走 AES
+	// fallback；DPAPI 覆盖由 TestDPAPIRoundTrip 直接验证底层实现。
+	if secretsTestAESOnly {
+		return aesEncrypt(plaintext)
+	}
+	return dpapiEncrypt(plaintext)
+}
+
+// dpapiEncrypt 用 CryptProtectData（应用专属熵）加密并返回 "dpapi:" 前缀
+// 的 base64 密文。
+func dpapiEncrypt(plaintext string) (string, error) {
 	bytes := []byte(plaintext)
 	if len(bytes) == 0 {
 		return "", nil
@@ -112,6 +124,12 @@ func platformDecryptSecret(account, stored string) (string, error) {
 		// or foreign format the caller can surface).
 		return stored, nil
 	}
+	return dpapiDecrypt(stored)
+}
+
+// dpapiDecrypt 用 CryptUnprotectData（同一应用专属熵）解密 "dpapi:" 前缀
+// 的 base64 密文。
+func dpapiDecrypt(stored string) (string, error) {
 	b64 := strings.TrimPrefix(stored, secretPrefixDPAPI)
 	encrypted, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {

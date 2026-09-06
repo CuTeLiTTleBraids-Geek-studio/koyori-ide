@@ -22,7 +22,7 @@ import { aiAssistantState, switchMode } from "@/stores/aiAssistant";
 import { appState } from "@/stores/app";
 import { agentMcpTools, refreshAgentMcpTools } from "@/stores/mcp";
 import { skillsList, loadSkills, activateSkill } from "@/stores/skills";
-import { createPlan as createPlanFromStore } from "@/stores/aiPlan";
+import { agentState, ensureAgentSession } from "@/stores/agent";
 import type { ContextChipKind } from "@/types";
 
 const { t } = useI18n();
@@ -33,7 +33,7 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null);
 interface SlashCommand {
   cmd: string;
   descKey: string;
-  mode?: "chat" | "plan" | "goal" | "agent";
+  mode?: "chat" | "goal" | "agent";
   action?: "clear";
 }
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -45,7 +45,6 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/review", descKey: "aiAssistant.slashReview" },
   { cmd: "/security", descKey: "aiAssistant.slashSecurity" },
   { cmd: "/commit", descKey: "aiAssistant.slashCommit" },
-  { cmd: "/plan", descKey: "aiAssistant.slashPlan", mode: "plan" },
   { cmd: "/goal", descKey: "aiAssistant.slashGoal", mode: "goal" },
   { cmd: "/agent", descKey: "aiAssistant.slashAgent", mode: "agent" },
   { cmd: "/clear", descKey: "aiAssistant.slashClear", action: "clear" },
@@ -362,6 +361,7 @@ function selectMention(m: MentionType): void {
     id: makeChipId(),
     kind: m.kind,
     label: t(m.labelKey),
+    query: m.kind === "codebase" ? text.value.trim() : undefined,
   });
 }
 
@@ -397,6 +397,7 @@ async function selectSkill(idx: number): Promise<void> {
   const sk = filteredSkills.value[idx];
   if (!sk) return;
   showSkillMenu.value = false;
+	let cacheProjectApproval = false;
   // G-SEC-03：项目级技能需用户显式批准
   if (sk.scope === "project" && !approvedSkillIds.value.has(sk.id)) {
     try {
@@ -408,10 +409,16 @@ async function selectSkill(idx: number): Promise<void> {
     } catch {
       return;
     }
-    const success = await activateSkill(sk.id);
-    if (!success) return;
-    approvedSkillIds.value.add(sk.id);
+	cacheProjectApproval = true;
   }
+	// Every selected skill, including user/global and already-approved project
+	// skills, must establish its allowlist on the current Agent session before
+	// its prompt is attached to the message.
+	const ensuredSession = ensureAgentSession();
+	if (typeof ensuredSession !== "string") await ensuredSession;
+	const success = await activateSkill(sk.id, agentState.sessionId);
+	if (!success) return;
+	if (cacheProjectApproval) approvedSkillIds.value.add(sk.id);
   addContextChip({
     id: makeChipId(),
     kind: "skill",
@@ -421,28 +428,18 @@ async function selectSkill(idx: number): Promise<void> {
 }
 
 // --- Send ---
-// BUG4: plan 模式下发送消息 = 用消息内容作为 goal 创建 Plan。
-// 这样用户在主输入框输入目标即可创建 Plan，无需手动到右侧面板填写。
 async function handleSend(): Promise<void> {
   const content = text.value.trim();
   if (!content || aiState.streaming || aiState.globalStreamBusy) return;
+
+  const accepted = await sendMessage(content);
+  if (!accepted) return;
   text.value = "";
   showSlashMenu.value = false;
   showMentionMenu.value = false;
   showMcpToolMenu.value = false;
   showSkillMenu.value = false;
   void nextTick(autoResize);
-
-  // plan 模式：把消息当作 goal 创建 Plan。
-  if (aiAssistantState.mode === "plan") {
-    const id = `plan-${Date.now()}`;
-    // Do not turn the goal into an echo command. Until AI plan generation is
-    // wired here, the user must add explicit steps through Replan.
-    await createPlanFromStore(id, content, []);
-    return;
-  }
-
-  void sendMessage(content);
 }
 
 function handleStop(): void {
@@ -629,10 +626,9 @@ defineExpose({
           class="ai-input__select"
           :value="aiAssistantState.mode"
           :title="t('aiAssistant.mode')"
-          @change="switchMode(($event.target as HTMLSelectElement).value as 'chat' | 'plan' | 'goal' | 'agent')"
+          @change="switchMode(($event.target as HTMLSelectElement).value as 'chat' | 'goal' | 'agent')"
         >
           <option value="chat">{{ t("aiAssistant.modeChat") }}</option>
-          <option value="plan">{{ t("aiAssistant.modePlan") }}</option>
           <option value="goal">{{ t("aiAssistant.modeGoal") }}</option>
           <option value="agent">{{ t("aiAssistant.modeAgent") }}</option>
         </select>
@@ -677,7 +673,7 @@ defineExpose({
 .ai-input {
   border-top: 1px solid var(--color-border-subtle, #2a2a2a);
   padding: 8px 12px;
-  background: var(--color-bg-surface, #1e1e1e);
+  background: var(--color-bg-surface, #fafafc);
   flex-shrink: 0;
   position: relative;
 }
@@ -693,7 +689,7 @@ defineExpose({
   gap: 4px;
   padding: 2px 6px;
   font-size: 11px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 4px;
   color: var(--color-text-primary, #e0e0e0);
@@ -729,7 +725,7 @@ defineExpose({
   padding: 8px;
   font-size: 13px;
   font-family: inherit;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-primary, #e0e0e0);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 6px;
@@ -746,7 +742,7 @@ defineExpose({
   list-style: none;
   margin: 0;
   padding: 4px 0;
-  background: var(--color-bg-elevated, #2a2a2a);
+  background: var(--color-bg-elevated, #f5f5f7);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 6px;
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
@@ -804,7 +800,7 @@ defineExpose({
 .ai-input__select {
   padding: 2px 4px;
   font-size: 11px;
-  background: var(--color-bg-elevated, #252525);
+  background: var(--color-bg-elevated, #f5f5f7);
   color: var(--color-text-primary, #e0e0e0);
   border: 1px solid var(--color-border-default, #3a3a3a);
   border-radius: 4px;

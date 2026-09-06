@@ -7,12 +7,11 @@ vars:
   APP_ID: '{{.APP_ID | default "com.wails.app"}}'
   MIN_SDK: '21'
   TARGET_SDK: '34'
-  # The emulator runs the host architecture; physical devices are arm64
-  HOST_ARCH:
-    sh: '[ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64"'
+  # Task exposes the host architecture on every platform. Avoid invoking
+  # `uname` while Task eagerly evaluates included platform variables on Windows.
+  HOST_ARCH: '{{.ARCH}}'
   # System-image ABI for the host, used in the "create an AVD" hint below.
-  ANDROID_ABI:
-    sh: '[ "$(uname -m)" = "arm64" ] && echo "arm64-v8a" || echo "x86_64"'
+  ANDROID_ABI: '{{if eq ARCH "arm64"}}arm64-v8a{{else}}x86_64{{end}}'
   # SDK location: $ANDROID_HOME / $ANDROID_SDK_ROOT, else the per-OS default
   # (macOS: ~/Library/Android/sdk, Linux/other: ~/Android/Sdk)
   SDK_ROOT:
@@ -34,7 +33,7 @@ tasks:
   build:
     summary: Creates a debug build of the application for Android
     deps:
-      - task: common:go:mod:tidy
+      - task: common:go:mod:verify
       - task: generate:android:overlay
       - task: common:build:frontend
         vars:

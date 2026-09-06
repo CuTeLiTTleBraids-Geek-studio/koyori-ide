@@ -59,9 +59,15 @@ func ValidatePathWithinRoot(root, target string) (string, error) {
 	}
 	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		// If the root itself can't be resolved (e.g. temp dir already
-		// cleaned in tests), fall back to the lexical root.
-		rootResolved = root
+		// P19 CI 修复：根暂不存在（如首次创建 .koyori-ide/workflows）时，
+		// 与目标同样用 evalSymlinksAllowMissing 解析最深存在祖先后再拼接，
+		// 保证两侧处于同一形态（Windows 8.3 短名 / 符号链接前缀）。
+		// 词法回退仅在连祖先都无法解析时使用（如测试已清理临时目录）。
+		if resolvedRoot, rootErr := evalSymlinksAllowMissing(root); rootErr == nil {
+			rootResolved = resolvedRoot
+		} else {
+			rootResolved = root
+		}
 	}
 	rel, err := filepath.Rel(rootResolved, absResolved)
 	if err != nil {
@@ -178,7 +184,13 @@ func IsPathOutsideRoot(rootDir, absTarget string) bool {
 	}
 	rootResolved, err := filepath.EvalSymlinks(rootDir)
 	if err != nil {
-		rootResolved = rootDir
+		// 与 ValidatePathWithinRoot 同理：根暂不存在时解析最深存在祖先，
+		// 避免与已解析的目标形态不一致而误判越界。
+		if resolvedRoot, rootErr := evalSymlinksAllowMissing(rootDir); rootErr == nil {
+			rootResolved = resolvedRoot
+		} else {
+			rootResolved = rootDir
+		}
 	}
 	rel, err := filepath.Rel(rootResolved, absResolved)
 	if err != nil {

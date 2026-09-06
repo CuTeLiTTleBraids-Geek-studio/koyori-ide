@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -18,16 +17,7 @@ const keychainCommandTimeout = 10 * time.Second
 // macosKeychainAvailable reports whether the `security` CLI is on PATH.
 // Used to decide whether to try the Keychain path or fall straight through
 // to the AES fallback.
-//
-// KOYORI_DISABLE_KEYCHAIN forces the AES fallback even when the CLI exists.
-// Headless CI runners can hold a keychain that accepts `add` but returns an
-// empty password from `find` (partition-list ACLs), which broke the
-// encrypt/decrypt roundtrip tests; the cross-platform AES path is
-// deterministic in tests.
 func macosKeychainAvailable() bool {
-	if os.Getenv("KOYORI_DISABLE_KEYCHAIN") != "" {
-		return false
-	}
 	_, err := exec.LookPath("security")
 	return err == nil
 }
@@ -103,7 +93,7 @@ func keychainLoad(account, markerB64 string) (string, error) {
 // L-4: account 参数化,传递给 keychainStore 用于 Keychain 条目标签。
 // AES fallback 路径不使用 account。
 func platformEncryptSecret(account, plaintext string) (string, error) {
-	if macosKeychainAvailable() {
+	if !secretsTestAESOnly && macosKeychainAvailable() {
 		stored, err := keychainStore(account, plaintext)
 		if err == nil {
 			return stored, nil

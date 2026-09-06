@@ -46,13 +46,9 @@ function onResizeStart(e: MouseEvent): void {
 
 async function handleSelectConversation(id: string): Promise<void> {
   if (id === "") {
-    // 新会话 — Task 2 接入 createConversation。
-    aiState.currentConversationId = null;
-    aiState.currentConversationTitle = null;
-    aiState.messages = [];
+    clearMessages();
     return;
   }
-  aiState.currentConversationId = id;
   await loadConversation(id);
 }
 
@@ -72,8 +68,6 @@ const newConvShortcut = {
   shift: true,
   label: t("shortcuts.aiNewConversation"),
   handler: () => {
-    aiState.currentConversationId = null;
-    aiState.currentConversationTitle = null;
     clearMessages();
   },
 };
@@ -127,7 +121,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
-  background: var(--color-bg-base, #1e1e1e);
+  background: var(--color-bg-base, #ffffff);
   color: var(--color-text-primary, #e0e0e0);
   overflow: hidden;
 }

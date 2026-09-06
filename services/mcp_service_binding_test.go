@@ -1,10 +1,15 @@
 package services
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -108,5 +113,69 @@ func TestMCPServiceSetWorkspaceRootRejectsEmptyWithoutChangingState(t *testing.T
 			service.rootGeneration,
 			service.lifecycleGeneration,
 		)
+	}
+}
+
+// TestMCPServiceRendererBindingContract proves the P1-03-D renderer surface:
+// the safe, lease-gated read APIs are really exported by the generated Wails
+// binding with Go-shaped parameters, while the deny-only execution shims and
+// every internal setter stay unreachable from the renderer.
+func TestMCPServiceRendererBindingContract(t *testing.T) {
+	bindingPath := filepath.Join("..", "frontend", "bindings", "github.com", "CuTeLiTTleBraids-Geek-studio", "koyori-ide", "services", "mcpservice.ts")
+	source, err := os.ReadFile(bindingPath)
+	if err != nil {
+		t.Fatalf("read generated binding: %v", err)
+	}
+	text := string(source)
+
+	requiredExports := []string{
+		"ListResources(name: string): $CancellablePromise<$models.MCPResource[] | null>",
+		"ReadResource(name: string, uri: string): $CancellablePromise<$models.MCPResourceRead | null>",
+		"ListPrompts(name: string): $CancellablePromise<$models.MCPPrompt[] | null>",
+		"GetPrompt(name: string, prompt: string, args: { [_ in string]?: string } | null): $CancellablePromise<$models.MCPPromptRender | null>",
+		"ServerCapabilities(name: string): $CancellablePromise<$models.MCPCapabilitySnapshot>",
+	}
+	for _, signature := range requiredExports {
+		if !strings.Contains(text, signature) {
+			t.Fatalf("generated binding is missing the Go-shaped export %q", signature)
+		}
+	}
+
+	forbiddenExports := []string{
+		"CallTool(",
+		"RequestToolApproval(",
+		"ExecuteApprovedTool(",
+		"SetWorkspaceRoot(",
+		"setWorkspaceContext(",
+		"Close(",
+	}
+	for _, forbidden := range forbiddenExports {
+		if strings.Contains(text, "export function "+forbidden) {
+			t.Fatalf("generated binding must not export deny-only method %s", forbidden)
+		}
+	}
+}
+
+// TestMCPServiceRendererReadAPIsFailClosedWithoutWorkspace proves the newly
+// exposed read APIs are safe renderer entry points: without a committed
+// workspace identity they fail closed before any server interaction.
+func TestMCPServiceRendererReadAPIsFailClosedWithoutWorkspace(t *testing.T) {
+	service := newTestMCPService(t)
+	ctx := context.Background()
+
+	if _, err := service.ListResources(ctx, "srv"); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("ListResources without workspace = %v, want ErrNotAllowed", err)
+	}
+	if _, err := service.ReadResource(ctx, "srv", "file:///x"); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("ReadResource without workspace = %v, want ErrNotAllowed", err)
+	}
+	if _, err := service.ListPrompts(ctx, "srv"); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("ListPrompts without workspace = %v, want ErrNotAllowed", err)
+	}
+	if _, err := service.GetPrompt(ctx, "srv", "p", nil); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("GetPrompt without workspace = %v, want ErrNotAllowed", err)
+	}
+	if _, err := service.ServerCapabilities("srv"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ServerCapabilities without connection = %v, want ErrNotFound", err)
 	}
 }

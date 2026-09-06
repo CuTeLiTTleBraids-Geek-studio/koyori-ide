@@ -188,7 +188,7 @@ func TestGitWorktreeServiceListUsesPorcelainAndPropagatesErrors(t *testing.T) {
 }
 
 func TestGitWorktreeServiceAddArgumentCombinations(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalTestPath(t, t.TempDir())
 	tests := []struct {
 		name string
 		ref  string
@@ -309,7 +309,7 @@ func TestGitWorktreeServiceAddRejectsInvalidOptions(t *testing.T) {
 }
 
 func TestGitWorktreeServiceRegisteredMutationArguments(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalTestPath(t, t.TempDir())
 	target := filepath.Join(repo, "wt")
 	movedTarget := filepath.Join(repo, "moved")
 	registered := gitWorktreePorcelain(repo, target)
@@ -366,7 +366,7 @@ func TestGitWorktreeServiceRegisteredMutationArguments(t *testing.T) {
 }
 
 func TestGitWorktreeServiceMovePathAuthorization(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	repo := filepath.Join(root, "repo")
 	if err := os.Mkdir(repo, 0o755); err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestGitWorktreeServiceMovePathAuthorization(t *testing.T) {
 	})
 }
 func TestGitWorktreeServiceCurrentLinkedMutationPolicy(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	mainPath := filepath.Join(root, "main")
 	linkedPath := filepath.Join(root, "linked")
 	for _, path := range []string{mainPath, linkedPath} {
@@ -580,7 +580,7 @@ func TestGitWorktreeServiceCommandErrorPreservesCauseAndOutput(t *testing.T) {
 
 func TestGitWorktreeServiceAddPathSecurity(t *testing.T) {
 	t.Run("allows repository child", func(t *testing.T) {
-		repo := t.TempDir()
+		repo := canonicalTestPath(t, t.TempDir())
 		runner := &gitWorktreeTestRunner{}
 		svc := newGitWorktreeTestService(t, runner)
 		if err := svc.AddWorktree(context.Background(), repo, filepath.Join("nested", "wt"), "HEAD", AddWorktreeOptions{Detach: true}); err != nil {
@@ -592,7 +592,7 @@ func TestGitWorktreeServiceAddPathSecurity(t *testing.T) {
 	})
 
 	t.Run("rejects arbitrary parent by default", func(t *testing.T) {
-		root := t.TempDir()
+		root := canonicalTestPath(t, t.TempDir())
 		repo := filepath.Join(root, "repo")
 		if err := os.Mkdir(repo, 0o755); err != nil {
 			t.Fatal(err)
@@ -608,7 +608,7 @@ func TestGitWorktreeServiceAddPathSecurity(t *testing.T) {
 	})
 
 	t.Run("rejects an absolute external path despite renderer confirmation", func(t *testing.T) {
-		root := t.TempDir()
+		root := canonicalTestPath(t, t.TempDir())
 		repo := filepath.Join(root, "repo")
 		if err := os.Mkdir(repo, 0o755); err != nil {
 			t.Fatal(err)
@@ -632,7 +632,7 @@ func TestGitWorktreeServiceAddPathSecurity(t *testing.T) {
 	})
 
 	t.Run("allows sibling under explicitly configured safe root", func(t *testing.T) {
-		root := t.TempDir()
+		root := canonicalTestPath(t, t.TempDir())
 		repo := filepath.Join(root, "repo")
 		if err := os.Mkdir(repo, 0o755); err != nil {
 			t.Fatal(err)
@@ -648,7 +648,7 @@ func TestGitWorktreeServiceAddPathSecurity(t *testing.T) {
 	})
 
 	t.Run("rejects repository itself and empty paths", func(t *testing.T) {
-		repo := t.TempDir()
+		repo := canonicalTestPath(t, t.TempDir())
 		for _, path := range []string{"", "   ", ".", repo, "bad\x00path", "bad\npath"} {
 			runner := &gitWorktreeTestRunner{}
 			err := newGitWorktreeTestService(t, runner).AddWorktree(context.Background(), repo, path, "HEAD", AddWorktreeOptions{})
@@ -662,8 +662,8 @@ func TestGitWorktreeServiceAddPathSecurity(t *testing.T) {
 	})
 
 	t.Run("rejects symlink escape with missing descendants", func(t *testing.T) {
-		repo := t.TempDir()
-		outside := t.TempDir()
+		repo := canonicalTestPath(t, t.TempDir())
+		outside := canonicalTestPath(t, t.TempDir())
 		link := filepath.Join(repo, "link")
 		if err := os.Symlink(outside, link); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
@@ -712,7 +712,7 @@ func TestGitWorktreeServiceSafeRootConfiguration(t *testing.T) {
 }
 
 func TestGitWorktreeServiceRepositoryValidation(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalTestPath(t, t.TempDir())
 	wantErr := errors.New("repository denied")
 	runner := &gitWorktreeTestRunner{}
 	svc, err := NewGitWorktreeServiceWithDependencies(GitWorktreeDependencies{
@@ -812,7 +812,7 @@ func TestGitWorktreeServiceDefaultAdapterListsBareRepository(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
-	root := t.TempDir()
+	root := canonicalTestPath(t, t.TempDir())
 	source := filepath.Join(root, "source")
 	bare := filepath.Join(root, "repo.git")
 	if err := os.Mkdir(source, 0o755); err != nil {

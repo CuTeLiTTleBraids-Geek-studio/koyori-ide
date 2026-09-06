@@ -166,6 +166,10 @@ export const API_SURFACE: Record<string, ApiMethodSpec> = {
     permission: null,
     minLevel: "trusted",
   },
+  "languages.registerDocumentRangeSemanticTokensProvider": {
+    permission: null,
+    minLevel: "trusted",
+  },
   "languages.registerDocumentHighlightProvider": {
     permission: null,
     minLevel: "trusted",
@@ -203,6 +207,18 @@ export const API_SURFACE: Record<string, ApiMethodSpec> = {
     permission: "ui.notifications",
     minLevel: "trusted",
   },
+  "window.setStatusBarMessage": {
+    permission: "ui.notifications",
+    minLevel: "trusted",
+  },
+  "window.createStatusBarItem": {
+    permission: "ui.notifications",
+    minLevel: "trusted",
+  },
+  "window.withProgress": {
+    permission: "ui.notifications",
+    minLevel: "trusted",
+  },
   "window.registerTreeDataProvider": {
     permission: null,
     minLevel: "trusted",
@@ -234,6 +250,14 @@ export const API_SURFACE: Record<string, ApiMethodSpec> = {
   },
   "workspace.onDidOpenTextDocument": {
     permission: null,
+    minLevel: "trusted",
+  },
+  "workspace.onDidChangeConfiguration": {
+    permission: null,
+    minLevel: "trusted",
+  },
+  "workspace.createFileSystemWatcher": {
+    permission: "fs.read",
     minLevel: "trusted",
   },
   // F-6: env.clipboard 读取/写入 → Trusted（已存在 clipboard 权限）

@@ -1,16 +1,60 @@
-# G-CI-16: keep line endings stable across checkouts. GitHub Windows runners
-# default core.autocrlf=true, which converts LF to CRLF and changes the
-# hashes that the G17 license-inventory test compares.
+# Default: normalize all text files to LF on check-in
 * text=auto
-*.go text eol=lf
-go.mod text eol=lf
-go.sum text eol=lf
-*.json text eol=lf
-*.md text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
-*.ts text eol=lf
-*.vue text eol=lf
-*.mjs text eol=lf
-*.sh text eol=lf
-*.ps1 text eol=crlf
+
+# Source code and docs: LF
+*.go    text eol=lf
+go.mod  text eol=lf
+go.sum  text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.scss  text eol=lf
+*.vue   text eol=lf
+*.svg   text eol=lf
+*.xml   text eol=lf
+*.sh    text eol=lf
+*.txt   text eol=lf
+
+# Windows scripts: CRLF for compatibility
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary / generated assets
+*.syso      binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.eot       binary
+*.pdf       binary
+*.zip       binary
+*.tgz       binary
+*.vsix      binary
+*.msi       binary
+*.msix      binary
+*.appimage  binary
+*.dmg       binary
+*.exe       binary
+*.dll       binary
+*.so        binary
+*.dylib     binary
+
+# `git archive` / source tarballs: keep local-only tooling out of archives
+/.claude/               export-ignore
+/.omo/                  export-ignore
+/.agents/               export-ignore
+/.task/                 export-ignore
+/build/e2e-evidence/    export-ignore

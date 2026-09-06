@@ -7,16 +7,17 @@ vi.mock("@wailsio/runtime", () => ({
 vi.mock("@/api/services", () => ({
   taskService: {
     loadTasks: vi.fn(),
+    requestExecutionApproval: vi.fn().mockResolvedValue("approval-1"),
+    executeApproved: vi.fn().mockResolvedValue({
+      command: "", cwd: "", stdout: "", stderr: "", exitCode: 0,
+      durationMs: 1, riskLevel: "safe", blocked: false,
+    }),
+    stop: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
 vi.mock("@/stores/app", () => ({
   appState: { terminalVisible: false, currentProject: null },
-}));
-
-vi.mock("@/stores/terminal", () => ({
-  createSession: vi.fn().mockResolvedValue("session-1"),
-  writeToSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/stores/output", () => ({
@@ -39,8 +40,8 @@ import {
   cleanupTaskStoreTimers,
 } from "./tasks";
 import { taskService } from "@/api/services";
-import { createSession, writeToSession } from "@/stores/terminal";
 import { pushOutput } from "@/stores/output";
+import type { TaskDef } from "@/types";
 
 describe("tasks store", () => {
   beforeEach(() => {
@@ -83,6 +84,24 @@ describe("tasks store", () => {
       await loadTasks("/proj");
       expect(taskState.tasks).toEqual([{ label: "last-good", command: "echo" }]);
       expect(taskState.errorMessage).toBe("parse failed");
+      expect(taskState.loading).toBe(false);
+    });
+
+    it("does not let an older workspace response overwrite a newer load", async () => {
+      let resolveFirst!: (value: TaskDef[]) => void;
+      let resolveSecond!: (value: TaskDef[]) => void;
+      vi.mocked(taskService.loadTasks)
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+
+      const first = loadTasks("/first");
+      const second = loadTasks("/second");
+      resolveSecond([{ label: "second", command: "echo" }]);
+      await second;
+      resolveFirst([{ label: "first", command: "echo" }]);
+      await first;
+
+      expect(taskState.tasks).toEqual([{ label: "second", command: "echo" }]);
       expect(taskState.loading).toBe(false);
     });
   });
@@ -131,53 +150,69 @@ describe("tasks store", () => {
   });
 
   describe("runTask", () => {
-    it("creates a session and writes the command", async () => {
-      vi.useFakeTimers();
+    it("requests and redeems a backend Agent capability", async () => {
       await runTask({ label: "build", command: "go", args: ["build"] }, "/proj");
-      expect(createSession).toHaveBeenCalledWith("/proj");
-      await vi.advanceTimersByTimeAsync(80);
-      expect(writeToSession).toHaveBeenCalledWith("session-1", "go 'build'\n");
+      const [executionId] = vi.mocked(taskService.requestExecutionApproval).mock.calls[0];
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        executionId, "go 'build'", "/proj",
+      );
+      expect(taskService.executeApproved).toHaveBeenCalledWith(
+        executionId, "go 'build'", "/proj", "approval-1",
+      );
       expect(pushOutput).toHaveBeenCalledWith("task", "info", expect.stringContaining("build"));
     });
 
     it("uses task cwd when provided", async () => {
       await runTask({ label: "x", command: "ls", cwd: "sub" }, "/proj");
-      expect(createSession).toHaveBeenCalledWith("/proj/sub");
+      expect(taskService.requestExecutionApproval).toHaveBeenCalledWith(
+        expect.any(String), "ls", "/proj/sub",
+      );
     });
 
-    it("does not throw when session creation fails", async () => {
-      vi.mocked(createSession).mockResolvedValueOnce("");
+    it("does not execute when backend approval fails", async () => {
+      vi.mocked(taskService.requestExecutionApproval).mockRejectedValueOnce(new Error("denied"));
       await runTask({ label: "x", command: "ls" }, "/proj");
-      // Should not throw; error is surfaced via notifyError.
-      expect(writeToSession).not.toHaveBeenCalled();
+      expect(taskService.executeApproved).not.toHaveBeenCalled();
     });
 
-    it("cancels a pending command write during runtime cleanup", async () => {
-      vi.useFakeTimers();
-      await runTask({ label: "build", command: "go" }, "/proj");
+    it("stops an in-flight tracked execution during runtime cleanup", async () => {
+      let resolveExecution: ((result: Awaited<ReturnType<typeof taskService.executeApproved>>) => void) | undefined;
+      vi.mocked(taskService.executeApproved).mockImplementationOnce(
+        () => new Promise((resolve) => {
+          resolveExecution = resolve;
+        }),
+      );
+      const runPromise = runTask({ label: "build", command: "go" }, "/proj");
+      await Promise.resolve();
+      await Promise.resolve();
+      const [executionId] = vi.mocked(taskService.executeApproved).mock.calls[0];
 
       cleanupTaskStoreTimers();
-      await vi.runAllTimersAsync();
-
-      expect(writeToSession).not.toHaveBeenCalled();
+      expect(taskService.stop).toHaveBeenCalledWith(executionId);
+      resolveExecution?.({
+        command: "go", cwd: "/proj", stdout: "", stderr: "[command terminated]",
+        exitCode: -1, durationMs: 1, riskLevel: "safe", blocked: false,
+      });
+      await runPromise;
     });
 
-    it("does not schedule a command after cleanup while session creation is pending", async () => {
-      vi.useFakeTimers();
-      let resolveSession: ((sessionId: string) => void) | undefined;
-      vi.mocked(createSession).mockImplementationOnce(
+    it("stops and does not redeem after cleanup while approval is pending", async () => {
+      let resolveApproval: ((token: string) => void) | undefined;
+      vi.mocked(taskService.requestExecutionApproval).mockImplementationOnce(
         () => new Promise<string>((resolve) => {
-          resolveSession = resolve;
+          resolveApproval = resolve;
         }),
       );
 
       const runPromise = runTask({ label: "build", command: "go" }, "/proj");
+      await Promise.resolve();
+      const [executionId] = vi.mocked(taskService.requestExecutionApproval).mock.calls[0];
       cleanupTaskStoreTimers();
-      resolveSession?.("stale-session");
+      resolveApproval?.("stale-approval");
       await runPromise;
-      await vi.runAllTimersAsync();
 
-      expect(writeToSession).not.toHaveBeenCalled();
+      expect(taskService.stop).toHaveBeenCalledWith(executionId);
+      expect(taskService.executeApproved).not.toHaveBeenCalled();
     });
   });
 });

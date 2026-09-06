@@ -28,7 +28,6 @@ import {
   rollbackToCheckpoint,
   refreshExecutorCapability,
   setPrototypeExecutionEnabled,
-  isExecutorPrototype,
   executorLimitation,
   prototypeAutoRunEnabled,
 } from "@/stores/aiGoal";
@@ -244,7 +243,7 @@ function formatDuration(ns: number): string {
       `executorLimitation` is the backend's own text, not UI copy, so the two
       cannot drift apart and overstate what the executor does.
     -->
-    <div v-if="isExecutorPrototype" class="goal-prototype-notice">
+    <div class="goal-prototype-notice">
       <div class="goal-prototype-head">
         <span class="goal-prototype-badge">{{ t("goalSection.prototypeBadge") }}</span>
         <span class="goal-prototype-title">{{ t("goalSection.prototypeTitle") }}</span>

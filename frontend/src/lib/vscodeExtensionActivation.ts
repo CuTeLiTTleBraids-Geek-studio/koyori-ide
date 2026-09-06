@@ -19,12 +19,16 @@
 // Koyori IDE 模块 · Vscode Extension Activation；交互服务：调试（DebugService）、插件市场（MarketplaceService）。
 // 喵，这是 Koyori IDE 的 Vscode Extension Activation 模块（前端实现）~
 
+import * as monaco from "monaco-editor";
 import { marketplaceService } from "@/api/services";
+import { restoreBuiltInMonacoTheme } from "@/lib/monaco-themes";
 import type { VSCodeExtensionManifest, ExtensionContributes, ExtensionCommandContribution, ExtensionViewContribution, ExtensionGrammarContribution, ExtensionSnippetContribution } from "@/types";
 import {
+  ExtensionApiUnsupportedError,
   ExtensionHost,
   resetExtensionHostModuleState,
   type ExtensionModule,
+  type MonacoBridge,
 } from "@/lib/extensionHost/extensionHost";
 import type { ExtensionPermission } from "@/lib/extensionHost/permissions";
 import type {
@@ -37,16 +41,26 @@ import type {
   OutputChannel,
   SourceControl,
   SourceControlResourceGroup,
+  StatusBarItem,
+  FileSystemWatcher,
   Task,
   TaskExecution,
   Terminal,
   TerminalOptions,
   TextEditor,
+  TextEditorDecorationType,
+  DecorationRenderOptions,
   TextSearchQuery,
   TextDocument,
   Uri,
   VscodeAPI,
   WebviewPanel,
+  InputBoxOptions,
+  QuickPickItem,
+  QuickPickOptions,
+  Progress,
+  ProgressOptions,
+  Thenable,
   WorkspaceFolder,
 } from "@/lib/extensionHost/vscodeApi";
 import {
@@ -67,6 +81,9 @@ import {
   unregisterVscodeExtensionGrammars,
   registerVscodeExtensionSnippets,
   unregisterVscodeExtensionSnippets,
+  registerVscodeExtensionThemes,
+  unregisterVscodeExtensionThemes,
+  getActiveVscodeExtensionTheme,
 } from "@/lib/vscodeExtensions";
 
 // ---------------------------------------------------------------------------
@@ -334,11 +351,37 @@ function isWorkerUri(value: unknown): value is Uri {
     && typeof value.fsPath === "string";
 }
 
-function isDocumentSelector(value: unknown): value is DocumentSelector {
+function isWorkerPosition(value: unknown): boolean {
+  return isRecord(value)
+    && Number.isInteger(value.line)
+    && Number(value.line) >= 0
+    && Number.isInteger(value.character)
+    && Number(value.character) >= 0;
+}
+
+function isWorkerRange(value: unknown): boolean {
+  return isRecord(value)
+    && isWorkerPosition(value.start)
+    && isWorkerPosition(value.end);
+}
+
+function isWorkerSelection(value: unknown): boolean {
+  return isWorkerRange(value)
+    && isWorkerPosition((value as Record<string, unknown>).anchor)
+    && isWorkerPosition((value as Record<string, unknown>).active);
+}
+
+function isDocumentFilter(value: unknown): value is Exclude<DocumentSelector, readonly unknown[]> {
   return isRecord(value)
     && typeof value.language === "string"
     && (value.scheme === undefined || typeof value.scheme === "string")
     && (value.pattern === undefined || typeof value.pattern === "string");
+}
+
+function isDocumentSelector(value: unknown): value is DocumentSelector {
+  return Array.isArray(value)
+    ? value.length > 0 && value.every(isDocumentFilter)
+    : isDocumentFilter(value);
 }
 
 function isCallbackMap(value: unknown): value is Record<string, number> {
@@ -374,6 +417,7 @@ const LANGUAGE_PROVIDER_KINDS = new Set<LanguageProviderKind>([
   "rename",
   "documentSymbol",
   "documentSemanticTokens",
+  "documentRangeSemanticTokens",
   "documentHighlight",
   "inlayHints",
 ]);
@@ -401,6 +445,18 @@ function toWorkerSerializable(
   seen.add(value);
 
   const candidate = value as Record<string, unknown>;
+  const editorDocument = candidate.document;
+  if (
+    isRecord(editorDocument)
+    && typeof editorDocument.getText === "function"
+    && typeof candidate.setDecorations === "function"
+  ) {
+    return {
+      __koyoriIdeType: "TextEditor",
+      document: toWorkerSerializable(editorDocument, seen),
+      selection: toWorkerSerializable(candidate.selection, seen),
+    };
+  }
   const getText = candidate.getText;
   const getValue = candidate.getValue;
   const uri = candidate.uri;
@@ -424,11 +480,21 @@ function toWorkerSerializable(
       : typeof candidate.getVersionId === "function"
         ? Number(candidate.getVersionId.call(value))
         : 1;
+    const fileName = typeof candidate.fileName === "string"
+      ? candidate.fileName
+      : typeof (uri as Record<string, unknown>).fsPath === "string"
+        ? String((uri as Record<string, unknown>).fsPath)
+        : undefined;
+    const lineCount = typeof candidate.lineCount === "number"
+      ? candidate.lineCount
+      : text.split(/\r\n|\r|\n/).length;
     return {
       __koyoriIdeType: "TextDocument",
       uri: toWorkerSerializable(uri, seen),
+      fileName,
       languageId,
       version,
+      lineCount,
       text,
     };
   }
@@ -443,11 +509,16 @@ function toWorkerSerializable(
 }
 
 function serializeTextDocument(document: TextDocument): unknown {
+  const text = document.getText();
+  const fileName = document.fileName ?? document.uri.fsPath;
+  const lineCount = document.lineCount ?? text.split(/\r\n|\r|\n/).length;
   return {
     __koyoriIdeType: "TextDocument",
     uri: toWorkerSerializable(document.uri),
+    fileName,
     languageId: document.languageId,
-    text: document.getText(),
+    lineCount,
+    text,
   };
 }
 
@@ -484,9 +555,16 @@ function extensionWorkerBootstrap(): void {
   type ExtensionSubscription = { dispose(): unknown };
   let extensionModule: LoadedExtensionModule | undefined;
   const extensionSubscriptions: ExtensionSubscription[] = [];
+  // Runtime registrations remain legal until deactivation. The separate
+  // activation flag only controls which promises belong to the initial
+  // activation barrier.
   let acceptingRegistrations = true;
+  let activationInProgress = true;
   let hostMachineId = "";
   let hostSessionId = "";
+  const configurationSnapshots = new Map<string, Record<string, unknown>>();
+  let activeTextEditorSnapshot: unknown;
+  let workspaceFoldersSnapshot: unknown;
   let nextRequestId = 1;
   let nextCallbackId = 1;
   const pendingHostRequests = new Map<
@@ -495,6 +573,9 @@ function extensionWorkerBootstrap(): void {
   >();
   const callbacks = new Map<number, (...args: unknown[]) => unknown>();
   const taskCompletionHandlers = new Map<number, () => void>();
+  const pendingProgressReports = new Map<number, Set<Promise<unknown>>>();
+  const decorationHandles = new WeakMap<object, Promise<number>>();
+  let nextDecorationTypeKey = 1;
   const registrations: Promise<unknown>[] = [];
   const isObjectRecord = (
     value: unknown,
@@ -503,6 +584,13 @@ function extensionWorkerBootstrap(): void {
 
   const toErrorMessage = (error: unknown): string =>
     error instanceof Error ? error.message : String(error);
+
+  const unsupportedApi = (api: string): Error =>
+    new Error(
+      "KOYORI_IDE_EXT_API_UNSUPPORTED: " +
+        api +
+        " is not implemented (koyori-ide extension API v1)",
+    );
 
   const post = (type: string, payload: Record<string, unknown> = {}): void => {
     send({ type, token: protocolToken, ...payload });
@@ -535,17 +623,107 @@ function extensionWorkerBootstrap(): void {
   const reviveWorkerValue = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(reviveWorkerValue);
     if (!isObjectRecord(value)) return value;
+    if (value.__koyoriIdeType === "Progress" && typeof value.id === "number") {
+      const progressId = value.id;
+      return Object.freeze({
+        report(reportValue: unknown): Promise<unknown> {
+          const request = requestHost("window.progress.report", [progressId, reportValue])
+            .catch(() => undefined);
+          let reports = pendingProgressReports.get(progressId);
+          if (!reports) {
+            reports = new Set<Promise<unknown>>();
+            pendingProgressReports.set(progressId, reports);
+          }
+          reports.add(request);
+          void request.finally(() => reports?.delete(request));
+          return request;
+        },
+      });
+    }
+    if (value.__koyoriIdeType === "ConfigurationChangeEvent") {
+      const section = typeof value.section === "string" ? value.section : undefined;
+      if (isObjectRecord(value.configuration)) {
+        configurationSnapshots.set(section ?? "", value.configuration);
+      }
+      return Object.freeze({
+        affectsConfiguration(candidate: string): boolean {
+          if (!section) return true;
+          return candidate === section
+            || candidate.startsWith(section + ".")
+            || section.startsWith(candidate + ".");
+        },
+      });
+    }
     if (value.__koyoriIdeType === "TextDocument") {
       const text = typeof value.text === "string" ? value.text : "";
+      const lines = text.split(/\r\n|\r|\n/);
       const document = { ...value };
       delete document.__koyoriIdeType;
       delete document.text;
       return Object.freeze({
         ...document,
+        fileName: typeof document.fileName === "string"
+          ? document.fileName
+          : isObjectRecord(document.uri) && typeof document.uri.fsPath === "string"
+            ? document.uri.fsPath
+            : "",
+        lineCount: typeof document.lineCount === "number"
+          ? document.lineCount
+          : lines.length,
         getText(): string {
           return text;
         },
+        lineAt(line: number): { text: string } {
+          if (!Number.isInteger(line) || line < 0 || line >= lines.length) {
+            throw new Error("TextDocument.lineAt line is out of range");
+          }
+          return { text: lines[line] };
+        },
       });
+    }
+    if (value.__koyoriIdeType === "TextEditor") {
+      const document = reviveWorkerValue(value.document);
+      let currentSelection = value.selection === undefined
+        ? undefined
+        : reviveWorkerValue(value.selection);
+      const documentUri = isObjectRecord(value.document)
+        ? value.document.uri
+        : undefined;
+      const editor = {
+        document,
+        get selection(): unknown {
+          return currentSelection;
+        },
+        set selection(next: unknown) {
+          currentSelection = next;
+          void requestHost("window.textEditor.setSelection", [next, documentUri]).catch((error) => {
+            post("runtime-error", { error: toErrorMessage(error) });
+          });
+        },
+        revealRange(range: unknown, revealType = 0): void {
+          void requestHost("window.textEditor.revealRange", [range, revealType, documentUri]).catch((error) => {
+            post("runtime-error", { error: toErrorMessage(error) });
+          });
+        },
+        setDecorations(type: unknown, ranges: unknown): void {
+          if (!isObjectRecord(type)) {
+            throw new Error("TextEditor.setDecorations requires a decoration type");
+          }
+          const creation = decorationHandles.get(type);
+          if (!creation) {
+            throw new Error("TextEditor.setDecorations received an unknown decoration type");
+          }
+          if (!Array.isArray(ranges)) {
+            throw new Error("TextEditor.setDecorations requires an array of ranges");
+          }
+          void creation
+            .then((handleId) => requestHost("window.textEditor.setDecorations", [handleId, ranges, documentUri]))
+            .catch((error) => {
+              post("runtime-error", { error: toErrorMessage(error) });
+            });
+        },
+      };
+      return Object.freeze(editor);
     }
     const revived: Record<string, unknown> = Object.create(null);
     for (const [key, entry] of Object.entries(value)) {
@@ -568,7 +746,7 @@ function extensionWorkerBootstrap(): void {
       if (disposed) return requestHost("disposables.dispose", [value]);
       return undefined;
     });
-    registrations.push(pending);
+    if (activationInProgress) registrations.push(pending);
     return Object.freeze({
       dispose(): void {
         if (disposed) return;
@@ -622,7 +800,7 @@ function extensionWorkerBootstrap(): void {
       }
       return value;
     });
-    if (acceptingRegistrations) registrations.push(creation);
+    if (activationInProgress) registrations.push(creation);
     else void creation.catch(() => undefined);
     return creation;
   };
@@ -651,6 +829,7 @@ function extensionWorkerBootstrap(): void {
       "provideDocumentSemanticTokens",
       "provideDocumentSemanticTokensEdits",
     ],
+    documentRangeSemanticTokens: ["provideDocumentRangeSemanticTokens"],
     documentHighlight: ["provideDocumentHighlights"],
     inlayHints: ["provideInlayHints"],
   };
@@ -670,6 +849,160 @@ function extensionWorkerBootstrap(): void {
       methodNames,
     );
   };
+
+  class SemanticTokensLegend {
+    readonly tokenTypes: string[];
+    readonly tokenModifiers: string[];
+
+    constructor(tokenTypes: readonly string[], tokenModifiers: readonly string[] = []) {
+      this.tokenTypes = Array.from(tokenTypes);
+      this.tokenModifiers = Array.from(tokenModifiers);
+    }
+  }
+
+  class ThemeColor {
+    readonly id: string;
+
+    constructor(id: string) {
+      if (typeof id !== "string" || id.trim().length === 0) {
+        throw new Error("ThemeColor requires a non-empty id");
+      }
+      this.id = id;
+    }
+  }
+
+  class Position {
+    readonly line: number;
+    readonly character: number;
+
+    constructor(line: number, character: number) {
+      if (!Number.isInteger(line) || line < 0 || !Number.isInteger(character) || character < 0) {
+        throw new Error("Position requires non-negative integer coordinates");
+      }
+      this.line = line;
+      this.character = character;
+    }
+  }
+
+  class Range {
+    readonly start: Position;
+    readonly end: Position;
+
+    constructor(
+      startOrLine: Position | number,
+      endOrStartCharacter: Position | number,
+      endLine?: number,
+      endCharacter?: number,
+    ) {
+      if (typeof startOrLine === "number") {
+        if (typeof endOrStartCharacter !== "number" || endLine === undefined || endCharacter === undefined) {
+          throw new Error("Range requires four numeric coordinates");
+        }
+        this.start = new Position(startOrLine, endOrStartCharacter);
+        this.end = new Position(endLine, endCharacter);
+      } else {
+        if (typeof endOrStartCharacter === "number") {
+          throw new Error("Range requires two Position values");
+        }
+        this.start = startOrLine;
+        this.end = endOrStartCharacter;
+      }
+    }
+
+    get isEmpty(): boolean {
+      return this.start.line === this.end.line && this.start.character === this.end.character;
+    }
+  }
+
+  class Selection extends Range {
+    readonly anchor: Position;
+    readonly active: Position;
+
+    constructor(
+      anchorOrLine: Position | number,
+      activeOrAnchorCharacter: Position | number,
+      activeLine?: number,
+      activeCharacter?: number,
+    ) {
+      const anchor = typeof anchorOrLine === "number"
+        ? new Position(anchorOrLine, activeOrAnchorCharacter as number)
+        : anchorOrLine;
+      const active = typeof anchorOrLine === "number"
+        ? new Position(activeLine as number, activeCharacter as number)
+        : activeOrAnchorCharacter as Position;
+      const anchorFirst = anchor.line < active.line
+        || (anchor.line === active.line && anchor.character <= active.character);
+      super(anchorFirst ? anchor : active, anchorFirst ? active : anchor);
+      this.anchor = anchor;
+      this.active = active;
+    }
+
+    get isReversed(): boolean {
+      return this.start !== this.anchor;
+    }
+  }
+
+  class Uri {
+    readonly scheme: string;
+    readonly authority: string;
+    readonly path: string;
+    readonly query: string;
+    readonly fragment: string;
+    readonly fsPath: string;
+
+    constructor(
+      scheme: string,
+      authority: string,
+      path: string,
+      query = "",
+      fragment = "",
+    ) {
+      this.scheme = scheme;
+      this.authority = authority;
+      this.path = path;
+      this.query = query;
+      this.fragment = fragment;
+      const decodedPath = decodeURIComponent(path);
+      this.fsPath = scheme === "file" && /^\/[A-Za-z]:/.test(decodedPath)
+        ? decodedPath.slice(1).replaceAll("/", "\\")
+        : decodedPath;
+    }
+
+    static file(fsPath: string): Uri {
+      const normalized = fsPath.replaceAll("\\", "/");
+      const path = normalized.startsWith("/") ? normalized : "/" + normalized;
+      return new Uri("file", "", path);
+    }
+
+    static parse(value: string): Uri {
+      const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/.exec(value);
+      if (!match) throw new Error("Invalid URI: " + value);
+      return new Uri(match[1], match[2] ?? "", match[3] || "/", match[4] ?? "", match[5] ?? "");
+    }
+
+    static joinPath(base: Uri, ...paths: string[]): Uri {
+      let joined = base.path.replace(/\/+$/, "");
+      for (const segment of paths) joined += "/" + segment.replace(/^\/+/, "");
+      return new Uri(base.scheme, base.authority, joined, base.query, base.fragment);
+    }
+
+    with(change: { scheme?: string; authority?: string; path?: string; query?: string; fragment?: string }): Uri {
+      return new Uri(
+        change.scheme ?? this.scheme,
+        change.authority ?? this.authority,
+        change.path ?? this.path,
+        change.query ?? this.query,
+        change.fragment ?? this.fragment,
+      );
+    }
+
+    toString(): string {
+      const authority = this.authority ? "//" + this.authority : this.scheme === "file" ? "//" : "";
+      const query = this.query ? "?" + this.query : "";
+      const fragment = this.fragment ? "#" + this.fragment : "";
+      return this.scheme + ":" + authority + this.path + query + fragment;
+    }
+  }
 
   const createLanguagesAPI = (): object => {
     const languages = {
@@ -718,8 +1051,10 @@ function extensionWorkerBootstrap(): void {
         registerLanguageProvider("rename", selector, provider),
       registerDocumentSymbolProvider: (selector: unknown, provider: unknown) =>
         registerLanguageProvider("documentSymbol", selector, provider),
-      registerDocumentSemanticTokensProvider: (selector: unknown, provider: unknown) =>
-        registerLanguageProvider("documentSemanticTokens", selector, provider),
+      registerDocumentSemanticTokensProvider: (selector: unknown, provider: unknown, legend?: unknown) =>
+        registerLanguageProvider("documentSemanticTokens", selector, provider, legend),
+      registerDocumentRangeSemanticTokensProvider: (selector: unknown, provider: unknown) =>
+        registerLanguageProvider("documentRangeSemanticTokens", selector, provider),
       registerDocumentHighlightProvider: (selector: unknown, provider: unknown) =>
         registerLanguageProvider("documentHighlight", selector, provider),
       registerInlayHintsProvider: (selector: unknown, provider: unknown) =>
@@ -730,7 +1065,7 @@ function extensionWorkerBootstrap(): void {
         if (typeof property === "symbol" || property in target) {
           return Reflect.get(target, property, receiver);
         }
-        throw new Error("Unsupported vscode.languages API: " + String(property));
+        throw unsupportedApi("vscode.languages." + String(property));
       },
     });
   };
@@ -742,7 +1077,7 @@ function extensionWorkerBootstrap(): void {
     ): { dispose(): void } =>
       registerRemoteProvider(method, [], { listener }, ["listener"]);
     const workspace = {
-      fs: Object.freeze({
+      fs: new Proxy(Object.freeze({
         readFile: (uri: unknown) => requestHost("workspace.fs.readFile", [uri]),
         writeFile: (uri: unknown, content: unknown) =>
           requestHost("workspace.fs.writeFile", [uri, content]),
@@ -755,13 +1090,85 @@ function extensionWorkerBootstrap(): void {
           requestHost("workspace.fs.delete", [uri, options]),
         readDirectory: (uri: unknown) =>
           requestHost("workspace.fs.readDirectory", [uri]),
+      }), {
+        get(target, property, receiver) {
+          if (typeof property === "symbol" || property in target) {
+            return Reflect.get(target, property, receiver);
+          }
+          throw unsupportedApi("vscode.workspace.fs." + String(property));
+        },
       }),
-      getConfiguration: (_section?: string) => Object.freeze({
-        get: <T>(_key: string, defaultValue?: T): T => defaultValue as T,
-        has: (_key: string): boolean => false,
-      }),
-      onDidChangeConfiguration: (_listener: unknown) =>
-        Object.freeze({ dispose(): void {} }),
+      get workspaceFolders(): unknown {
+        return workspaceFoldersSnapshot === undefined
+          ? undefined
+          : reviveWorkerValue(workspaceFoldersSnapshot);
+      },
+      getConfiguration: (section?: string) => {
+        const cacheKey = section ?? "";
+        void requestHost("workspace.getConfiguration", [section]).then((snapshot) => {
+          if (isObjectRecord(snapshot)) configurationSnapshots.set(cacheKey, snapshot);
+        }).catch(() => undefined);
+        const rootConfig = configurationSnapshots.get("");
+        const cached = configurationSnapshots.get(cacheKey);
+        const configData = cached
+          ?? (cacheKey && rootConfig && isObjectRecord(rootConfig[cacheKey])
+            ? rootConfig[cacheKey] as Record<string, unknown>
+            : rootConfig)
+          ?? Object.create(null) as Record<string, unknown>;
+        return Object.freeze({
+          get: <T>(key: string, defaultValue?: T): T => {
+            let current: unknown = configData;
+            for (const part of key.split(".")) {
+              if (!isObjectRecord(current) || !(part in current)) return defaultValue as T;
+              current = current[part];
+            }
+            return (current === undefined ? defaultValue : current) as T;
+          },
+          has: (key: string): boolean => {
+            let current: unknown = configData;
+            for (const part of key.split(".")) {
+              if (!isObjectRecord(current) || !(part in current)) return false;
+              current = current[part];
+            }
+            return true;
+          },
+        });
+      },
+      onDidChangeConfiguration: (listener: unknown) =>
+        registerDocumentEvent("workspace.onDidChangeConfiguration", listener),
+      createFileSystemWatcher: (globPattern: unknown) => {
+        const creation = createRemoteHandle("workspace.createFileSystemWatcher", [globPattern]);
+        const listenerDisposables = new Set<{ dispose(): void }>();
+        const register = (event: string, listener: unknown): { dispose(): void } => {
+          if (typeof listener !== "function") throw new Error(event + " requires a listener");
+          const callbackId = nextCallbackId++;
+          callbacks.set(callbackId, (...callbackArgs: unknown[]) =>
+            (listener as (...args: unknown[]) => unknown)(...callbackArgs.map(reviveWorkerValue)),
+          );
+          const remote = createRemoteDisposable(
+            creation.then((handleId) => requestHost(event, [handleId, { listener: callbackId }])),
+            [callbackId],
+          );
+          const disposable = {
+            dispose(): void {
+              remote.dispose();
+              listenerDisposables.delete(disposable);
+            },
+          };
+          listenerDisposables.add(disposable);
+          return disposable;
+        };
+        return {
+          onDidCreate: (listener: unknown) => register("workspace.watcher.onDidCreate", listener),
+          onDidChange: (listener: unknown) => register("workspace.watcher.onDidChange", listener),
+          onDidDelete: (listener: unknown) => register("workspace.watcher.onDidDelete", listener),
+          dispose(): void {
+            for (const listener of listenerDisposables) listener.dispose();
+            listenerDisposables.clear();
+            void creation.then((handleId) => requestHost("workspace.watcher.dispose", [handleId])).catch(() => undefined);
+          },
+        };
+      },
       findFiles: (include: unknown, exclude?: unknown, maxResults?: number) =>
         requestHost("workspace.findFiles", [include, exclude, maxResults]),
       findTextInFiles: (query: unknown, options: unknown) =>
@@ -776,13 +1183,15 @@ function extensionWorkerBootstrap(): void {
         registerDocumentEvent("workspace.onDidChangeTextDocument", listener),
       onDidOpenTextDocument: (listener: unknown) =>
         registerDocumentEvent("workspace.onDidOpenTextDocument", listener),
+      onDidCloseTextDocument: (listener: unknown) =>
+        registerDocumentEvent("workspace.onDidCloseTextDocument", listener),
     };
     return new Proxy(Object.freeze(workspace), {
       get(target, property, receiver) {
         if (typeof property === "symbol" || property in target) {
           return Reflect.get(target, property, receiver);
         }
-        throw new Error("Unsupported vscode.workspace API: " + String(property));
+        throw unsupportedApi("vscode.workspace." + String(property));
       },
     });
   };
@@ -820,7 +1229,7 @@ function extensionWorkerBootstrap(): void {
           }
           return undefined;
         });
-        registrations.push(registration);
+        if (activationInProgress) registrations.push(registration);
 
         return Object.freeze({
           dispose(): void {
@@ -850,9 +1259,7 @@ function extensionWorkerBootstrap(): void {
         if (typeof property === "symbol" || property in target) {
           return Reflect.get(target, property, receiver);
         }
-        throw new Error(
-          "Unsupported vscode.commands API: " + String(property),
-        );
+        throw unsupportedApi("vscode.commands." + String(property));
       },
     });
   };
@@ -895,7 +1302,7 @@ function extensionWorkerBootstrap(): void {
         if (typeof property === "symbol" || property in target) {
           return Reflect.get(target, property, receiver);
         }
-        throw new Error("Unsupported vscode.secrets API: " + String(property));
+        throw unsupportedApi("vscode.secrets." + String(property));
       },
     });
   };
@@ -945,12 +1352,18 @@ function extensionWorkerBootstrap(): void {
         if (typeof property === "symbol" || property in target) {
           return Reflect.get(target, property, receiver);
         }
-        throw new Error("Unsupported vscode.tasks API: " + String(property));
+        throw unsupportedApi("vscode.tasks." + String(property));
       },
     });
   };
 
   const createWindowAPI = (): object => {
+    const registerWindowEvent = (
+      method: string,
+      listener: unknown,
+    ): { dispose(): void } =>
+      registerRemoteProvider(method, [], { listener }, ["listener"]);
+
     const createOutputChannel = (name: string): object => {
       if (typeof name !== "string" || name.trim().length === 0) {
         throw new Error("window.createOutputChannel requires a non-empty name");
@@ -1057,11 +1470,100 @@ function extensionWorkerBootstrap(): void {
       showErrorMessage(message: string, ...items: string[]): Promise<unknown> {
         return requestHost("window.showMessage", ["error", message, items]);
       },
+      createTextEditorDecorationType(options: unknown): object {
+        if (!isObjectRecord(options)) {
+          throw new Error("window.createTextEditorDecorationType requires render options");
+        }
+        const key = "worker-decoration-" + nextDecorationTypeKey++;
+        let disposed = false;
+        const creation = createRemoteHandle("window.createTextEditorDecorationType", [options]);
+        const type: Record<string, unknown> = {
+          key,
+          dispose(): void {
+            if (disposed) return;
+            disposed = true;
+            void creation
+              .then((handleId) => requestHost("disposables.dispose", [handleId]))
+              .catch(() => undefined);
+          },
+        };
+        decorationHandles.set(type, creation);
+        return Object.freeze(type);
+      },
       showInputBox(options?: unknown): Promise<unknown> {
-        return requestHost("window.showInputBox", [options]);
+        if (options !== undefined && !isObjectRecord(options)) {
+          return Promise.reject(new Error("window.showInputBox requires an options object"));
+        }
+        const serialized = options ? { ...options } : undefined;
+        let validateCallbackId: number | undefined;
+        if (serialized && typeof serialized.validateInput === "function") {
+          validateCallbackId = nextCallbackId++;
+          const validator = serialized.validateInput as (value: string) => unknown;
+          callbacks.set(validateCallbackId, (...args: unknown[]) =>
+            validator(String(args[0] ?? "")),
+          );
+          delete serialized.validateInput;
+        }
+        return requestHost("window.showInputBox", [serialized, validateCallbackId])
+          .finally(() => {
+            if (validateCallbackId !== undefined) callbacks.delete(validateCallbackId);
+          });
       },
       showQuickPick(items: unknown[], options?: unknown): Promise<unknown> {
         return requestHost("window.showQuickPick", [items, options]);
+      },
+      setStatusBarMessage(text: string, hideAfter?: number): { dispose(): void } {
+        const creation = createRemoteHandle("window.setStatusBarMessage", [text, hideAfter]);
+        return Object.freeze({
+          dispose(): void {
+            void creation.then((handleId) => requestHost("window.status.dispose", [handleId])).catch(() => undefined);
+          },
+        });
+      },
+      createStatusBarItem(): object {
+        const creation = createRemoteHandle("window.createStatusBarItem", []);
+        let disposed = false;
+        const invoke = (method: string, args: unknown[] = []): void => {
+          if (disposed && method !== "window.status.dispose") return;
+          void creation.then((handleId) => requestHost(method, [handleId, ...args])).catch(() => undefined);
+        };
+        let text = "";
+        let tooltip: string | undefined;
+        let command: string | undefined;
+        const item = {
+          get text(): string { return text; },
+          set text(value: string) { text = value; invoke("window.status.setText", [value]); },
+          get tooltip(): string | undefined { return tooltip; },
+          set tooltip(value: string | undefined) { tooltip = value; invoke("window.status.setTooltip", [value]); },
+          get command(): string | undefined { return command; },
+          set command(value: string | undefined) { command = value; invoke("window.status.setCommand", [value]); },
+          show(): void { invoke("window.status.show"); },
+          hide(): void { invoke("window.status.hide"); },
+          dispose(): void { if (!disposed) { disposed = true; invoke("window.status.dispose"); } },
+        };
+        return item;
+      },
+      withProgress(options: unknown, task: (progress: unknown) => unknown): Promise<unknown> {
+        if (typeof task !== "function") throw new Error("window.withProgress requires a callback");
+        const callbackId = nextCallbackId++;
+        callbacks.set(callbackId, async (...args: unknown[]) => {
+          const progressId = callbackId;
+          pendingProgressReports.set(progressId, new Set<Promise<unknown>>());
+          try {
+            const result = await task(args[0]);
+            const reports = pendingProgressReports.get(progressId);
+            if (reports && reports.size > 0) await Promise.all([...reports]);
+            return result;
+          } finally {
+            pendingProgressReports.delete(progressId);
+          }
+        });
+        const result = requestHost("window.withProgress", [options, callbackId])
+          .finally(() => {
+            callbacks.delete(callbackId);
+            pendingProgressReports.delete(callbackId);
+          });
+        return result;
       },
       createOutputChannel,
       createTerminal(options?: Record<string, unknown>): object {
@@ -1074,7 +1576,7 @@ function extensionWorkerBootstrap(): void {
             return handleId;
           },
         );
-        if (acceptingRegistrations) {
+        if (activationInProgress) {
           registrations.push(creation);
         } else {
           void creation.catch(() => undefined);
@@ -1126,7 +1628,15 @@ function extensionWorkerBootstrap(): void {
           ["resolveWebviewView"],
         );
       },
-      activeTextEditor: undefined,
+      onDidChangeActiveTextEditor: (listener: unknown) =>
+        registerWindowEvent("window.onDidChangeActiveTextEditor", listener),
+      onDidChangeTextEditorSelection: (listener: unknown) =>
+        registerWindowEvent("window.onDidChangeTextEditorSelection", listener),
+      get activeTextEditor(): unknown {
+        return activeTextEditorSnapshot === undefined
+          ? undefined
+          : reviveWorkerValue(activeTextEditorSnapshot);
+      },
     };
 
     return new Proxy(Object.freeze(windowApi), {
@@ -1134,12 +1644,12 @@ function extensionWorkerBootstrap(): void {
         if (typeof property === "symbol" || property in target) {
           return Reflect.get(target, property, receiver);
         }
-        throw new Error("Unsupported vscode.window API: " + String(property));
+        throw unsupportedApi("vscode.window." + String(property));
       },
     });
   };
 
-  const createDebugAPI = (): object => Object.freeze({
+  const createDebugAPI = (): object => new Proxy(Object.freeze({
     registerDebugConfigurationProvider(type: string, provider: unknown) {
       return registerRemoteProvider(
         "debug.registerConfigurationProvider",
@@ -1150,6 +1660,13 @@ function extensionWorkerBootstrap(): void {
     },
     startDebugging(folder: unknown, config: unknown): Promise<unknown> {
       return requestHost("debug.startDebugging", [folder, config]);
+    },
+  }), {
+    get(target, property, receiver) {
+      if (typeof property === "symbol" || property in target) {
+        return Reflect.get(target, property, receiver);
+      }
+      throw unsupportedApi("vscode.debug." + String(property));
     },
   });
 
@@ -1230,12 +1747,26 @@ function extensionWorkerBootstrap(): void {
     });
   };
 
-  const createScmAPI = (): object => Object.freeze({ createSourceControl });
+  const createScmAPI = (): object => new Proxy(Object.freeze({ createSourceControl }), {
+    get(target, property, receiver) {
+      if (typeof property === "symbol" || property in target) {
+        return Reflect.get(target, property, receiver);
+      }
+      throw unsupportedApi("vscode.scm." + String(property));
+    },
+  });
 
-  const createEnvAPI = (): object => Object.freeze({
-    clipboard: Object.freeze({
+  const createEnvAPI = (): object => new Proxy(Object.freeze({
+    clipboard: new Proxy(Object.freeze({
       readText: () => requestHost("env.clipboard.readText", []),
       writeText: (value: string) => requestHost("env.clipboard.writeText", [value]),
+    }), {
+      get(target, property, receiver) {
+        if (typeof property === "symbol" || property in target) {
+          return Reflect.get(target, property, receiver);
+        }
+        throw unsupportedApi("vscode.env.clipboard." + String(property));
+      },
     }),
     openExternal: (uri: unknown) => requestHost("env.openExternal", [uri]),
     get machineId(): string {
@@ -1244,11 +1775,31 @@ function extensionWorkerBootstrap(): void {
     get sessionId(): string {
       return hostSessionId;
     },
+  }), {
+    get(target, property, receiver) {
+      if (typeof property === "symbol" || property in target) {
+        return Reflect.get(target, property, receiver);
+      }
+      throw unsupportedApi("vscode.env." + String(property));
+    },
   });
 
   const createVscodeProxy = (): object => {
     const api = Object.freeze({
       languages: createLanguagesAPI(),
+      SemanticTokensLegend,
+      ThemeColor,
+      Selection,
+      StatusBarAlignment: Object.freeze({ Left: 1, Right: 2 }),
+      TextEditorRevealType: Object.freeze({
+        Default: 0,
+        InCenter: 1,
+        InCenterIfOutsideViewport: 2,
+        AtTop: 3,
+      }),
+      Position,
+      Range,
+      Uri,
       commands: createCommandsAPI(),
       workspace: createWorkspaceAPI(),
       secrets: createSecretsAPI(),
@@ -1263,7 +1814,7 @@ function extensionWorkerBootstrap(): void {
         if (typeof property === "symbol" || property in target) {
           return Reflect.get(target, property, receiver);
         }
-        throw new Error("Unsupported vscode API namespace: " + String(property));
+        throw unsupportedApi("vscode." + String(property));
       },
     });
   };
@@ -1314,10 +1865,13 @@ function extensionWorkerBootstrap(): void {
     if (typeof loader !== "function") {
       throw new Error("Extension Worker CommonJS loader is unavailable");
     }
+    // Keep the callable Function constructor unreachable, but preserve the
+    // standard prototype helpers that bundled libraries use for binding.
+    // Dynamic source construction still throws through the facade below.
+    const nativeFunction = Function;
     for (const name of [
       "BroadcastChannel",
       "EventSource",
-      "Function",
       "SharedWorker",
       "WebSocket",
       "WebTransport",
@@ -1331,6 +1885,33 @@ function extensionWorkerBootstrap(): void {
     ]) {
       disableGlobal(name);
     }
+    const blockedFunction = function koyoriBlockedFunction(): never {
+      throw new Error("Dynamic code generation is disabled in extension Workers");
+    };
+    const blockedPrototype = Object.create(null) as Record<PropertyKey, unknown>;
+    for (const property of Object.getOwnPropertyNames(nativeFunction.prototype)) {
+      if (property === "constructor") continue;
+      const descriptor = Object.getOwnPropertyDescriptor(nativeFunction.prototype, property);
+      if (descriptor) Object.defineProperty(blockedPrototype, property, descriptor);
+    }
+    Object.defineProperty(blockedPrototype, "constructor", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: blockedFunction,
+    });
+    Object.defineProperty(blockedFunction, "prototype", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: blockedPrototype,
+    });
+    Object.defineProperty(scope, "Function", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: blockedFunction,
+    });
     const candidate = await loader(vscodeApi);
     if (
       !isObjectRecord(candidate) ||
@@ -1368,18 +1949,42 @@ function extensionWorkerBootstrap(): void {
     post("protocol-ready", { protocolVersion: negotiatedProtocolVersion });
     hostMachineId = typeof message.machineId === "string" ? message.machineId : "";
     hostSessionId = typeof message.sessionId === "string" ? message.sessionId : "";
+    if (isObjectRecord(message.configuration)) {
+      configurationSnapshots.set("", message.configuration);
+    }
+    if (message.activeTextEditor !== undefined) {
+      activeTextEditorSnapshot = message.activeTextEditor;
+    }
+    if (message.workspaceFolders !== undefined) {
+      workspaceFoldersSnapshot = message.workspaceFolders;
+    }
     try {
       const api = createVscodeProxy();
       const loadedModule = await loadCommonJSModule(api);
       extensionModule = loadedModule;
+      const extensionPath = "/extensions/" + String(message.extensionId ?? "unknown");
+      const extensionUri = {
+        scheme: "koyori-extension",
+        authority: "",
+        path: extensionPath,
+        fsPath: extensionPath,
+        query: "",
+        fragment: "",
+        toString: () => "koyori-extension:" + extensionPath,
+      };
       const context = Object.freeze(
-        Object.assign({ subscriptions: extensionSubscriptions }, api),
+        Object.assign({
+          subscriptions: extensionSubscriptions,
+          extensionUri,
+          extensionPath,
+        }, api),
       );
       await loadedModule.activate(context);
-      acceptingRegistrations = false;
+      activationInProgress = false;
       await Promise.all(registrations);
       post("activated");
     } catch (error) {
+      activationInProgress = false;
       acceptingRegistrations = false;
       post("activation-error", { error: toErrorMessage(error) });
     }
@@ -1412,6 +2017,7 @@ function extensionWorkerBootstrap(): void {
     message: Record<string, unknown>,
   ): Promise<void> => {
     if (typeof message.id !== "number") return;
+    activationInProgress = false;
     acceptingRegistrations = false;
     let failure: unknown;
     try {
@@ -1447,6 +2053,7 @@ function extensionWorkerBootstrap(): void {
   };
 
   const handleTerminate = async (): Promise<void> => {
+    activationInProgress = false;
     acceptingRegistrations = false;
     try {
       if (typeof extensionModule?.deactivate === "function") {
@@ -1603,12 +2210,16 @@ export class WorkerExtensionModule implements ExtensionModule {
     { resolve(): void; reject(error: Error): void }
   >();
   private readonly remoteDisposables = new Map<number, Disposable>();
+  private readonly decorationTypes = new Map<number, TextEditorDecorationType>();
   private readonly taskExecutions = new Map<
     number,
     { execution: TaskExecution }
   >();
   private readonly terminals = new Map<number, Terminal>();
   private readonly outputChannels = new Map<number, OutputChannel>();
+  private readonly statusBarItems = new Map<number, StatusBarItem>();
+  private readonly fileSystemWatchers = new Map<number, FileSystemWatcher>();
+  private readonly progressReporters = new Map<number, Progress<{ message?: string; increment?: number }>>();
   private readonly webviewPanels = new Map<number, WebviewPanel>();
   private readonly sourceControls = new Map<number, SourceControl>();
   private readonly sourceControlGroups = new Map<
@@ -1682,6 +2293,9 @@ export class WorkerExtensionModule implements ExtensionModule {
       mainPath: this.mainPath,
       machineId: api.env.machineId,
       sessionId: api.env.sessionId,
+      configuration: api.workspace.getConfigurationSnapshot?.(),
+      workspaceFolders: toWorkerSerializable(api.workspace.workspaceFolders),
+      activeTextEditor: toWorkerSerializable(api.window.activeTextEditor),
     });
 
     try {
@@ -1773,6 +2387,15 @@ export class WorkerExtensionModule implements ExtensionModule {
       }
     }
     this.outputChannels.clear();
+    for (const item of this.statusBarItems.values()) {
+      try { item.dispose(); } catch { /* Worker cleanup remains authoritative. */ }
+    }
+    this.statusBarItems.clear();
+    for (const watcher of this.fileSystemWatchers.values()) {
+      try { watcher.dispose(); } catch { /* Worker cleanup remains authoritative. */ }
+    }
+    this.fileSystemWatchers.clear();
+    this.progressReporters.clear();
     for (const panel of this.webviewPanels.values()) {
       try {
         panel.dispose();
@@ -1805,6 +2428,7 @@ export class WorkerExtensionModule implements ExtensionModule {
       }
     }
     this.remoteDisposables.clear();
+    this.decorationTypes.clear();
     if (this.worker) {
       const worker = this.worker;
       try {
@@ -2296,6 +2920,16 @@ export class WorkerExtensionModule implements ExtensionModule {
             : {}),
         });
       }
+      case "documentRangeSemanticTokens": {
+        type Provider = Parameters<
+          typeof api.languages.registerDocumentRangeSemanticTokensProvider
+        >[1];
+        return api.languages.registerDocumentRangeSemanticTokensProvider(selector, {
+          provideDocumentRangeSemanticTokens: this.workerProviderMethod<
+            Provider["provideDocumentRangeSemanticTokens"]
+          >(provider, "provideDocumentRangeSemanticTokens"),
+        });
+      }
       case "documentHighlight": {
         type Provider = Parameters<
           typeof api.languages.registerDocumentHighlightProvider
@@ -2328,7 +2962,7 @@ export class WorkerExtensionModule implements ExtensionModule {
     try {
       let result: unknown;
       if (method === "commands.registerCommand") {
-        if (this.status !== "activating") {
+        if (this.status !== "activating" && this.status !== "active") {
           throw new Error("Late command registration was rejected");
         }
         const command = args[0];
@@ -2371,8 +3005,53 @@ export class WorkerExtensionModule implements ExtensionModule {
         }
         this.remoteDisposables.get(disposableId)?.dispose();
         this.remoteDisposables.delete(disposableId);
+        this.decorationTypes.delete(disposableId);
+        this.fileSystemWatchers.delete(disposableId);
+      } else if (method === "workspace.createFileSystemWatcher") {
+        if (this.status !== "activating" && this.status !== "active") {
+          throw new Error("Late file watcher registration was rejected");
+        }
+        const globPattern = args[0];
+        if (!isGlobPattern(globPattern)) {
+          throw new Error("Invalid workspace.createFileSystemWatcher request");
+        }
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        const watcher = api.workspace.createFileSystemWatcher(globPattern);
+        const handleId = this.nextDisposableId++;
+        this.fileSystemWatchers.set(handleId, watcher);
+        this.remoteDisposables.set(handleId, watcher);
+        result = handleId;
+      } else if (
+        method === "workspace.watcher.onDidCreate"
+        || method === "workspace.watcher.onDidChange"
+        || method === "workspace.watcher.onDidDelete"
+      ) {
+        const handleId = args[0];
+        const callbackMap = args[1];
+        if (typeof handleId !== "number" || !isCallbackMap(callbackMap) || typeof callbackMap.listener !== "number") {
+          throw new Error("Invalid workspace watcher listener request");
+        }
+        const watcher = this.fileSystemWatchers.get(handleId);
+        if (!watcher) throw new Error("Unknown file watcher handle");
+        const event = method === "workspace.watcher.onDidCreate"
+          ? watcher.onDidCreate
+          : method === "workspace.watcher.onDidChange"
+            ? watcher.onDidChange
+            : watcher.onDidDelete;
+        result = this.storeRemoteDisposable(
+          event((uri) => {
+            void this.invokeWorkerCallback(callbackMap.listener, [uri]).catch(() => undefined);
+          }),
+        );
+      } else if (method === "workspace.watcher.dispose") {
+        const handleId = args[0];
+        if (typeof handleId !== "number") throw new Error("Invalid file watcher handle");
+        this.fileSystemWatchers.get(handleId)?.dispose();
+        this.fileSystemWatchers.delete(handleId);
+        this.remoteDisposables.delete(handleId);
       } else if (method === "languages.registerProvider") {
-        if (this.status !== "activating") {
+        if (this.status !== "activating" && this.status !== "active") {
           throw new Error("Late language provider registration was rejected");
         }
         const kind = args[0];
@@ -2457,6 +3136,14 @@ export class WorkerExtensionModule implements ExtensionModule {
         } else {
           throw new Error("Unsupported workspace filesystem method: " + method);
         }
+      } else if (method === "workspace.getConfiguration") {
+        const section = args[0];
+        if (section !== undefined && typeof section !== "string") {
+          throw new Error("Invalid workspace.getConfiguration request");
+        }
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        result = api.workspace.getConfigurationSnapshot?.(section) ?? {};
       } else if (method === "workspace.findFiles") {
         const api = this.api;
         if (!api) throw new Error("Extension API is unavailable");
@@ -2528,8 +3215,12 @@ export class WorkerExtensionModule implements ExtensionModule {
         method === "workspace.onDidSaveTextDocument"
         || method === "workspace.onDidChangeTextDocument"
         || method === "workspace.onDidOpenTextDocument"
+        || method === "workspace.onDidCloseTextDocument"
+        || method === "workspace.onDidChangeConfiguration"
+        || method === "window.onDidChangeActiveTextEditor"
+        || method === "window.onDidChangeTextEditorSelection"
       ) {
-        if (this.status !== "activating") {
+        if (this.status !== "activating" && this.status !== "active") {
           throw new Error("Late workspace listener registration was rejected");
         }
         const callbackMap = args[0];
@@ -2546,7 +3237,17 @@ export class WorkerExtensionModule implements ExtensionModule {
             ? api.workspace.onDidChangeTextDocument(
                 listener as Parameters<typeof api.workspace.onDidChangeTextDocument>[0],
               )
-            : api.workspace.onDidOpenTextDocument(listener);
+            : method === "workspace.onDidOpenTextDocument"
+              ? api.workspace.onDidOpenTextDocument(listener)
+              : method === "workspace.onDidCloseTextDocument"
+                ? api.workspace.onDidCloseTextDocument(listener)
+                : method === "window.onDidChangeActiveTextEditor"
+                  ? api.window.onDidChangeActiveTextEditor(listener)
+                  : method === "window.onDidChangeTextEditorSelection"
+                    ? api.window.onDidChangeTextEditorSelection(
+                        listener as Parameters<typeof api.window.onDidChangeTextEditorSelection>[0],
+                      )
+                    : api.workspace.onDidChangeConfiguration(listener as Parameters<typeof api.workspace.onDidChangeConfiguration>[0]);
         result = this.storeRemoteDisposable(disposable);
       } else if (method === "secrets.get") {
         const key = args[0];
@@ -2578,7 +3279,7 @@ export class WorkerExtensionModule implements ExtensionModule {
         if (!api) throw new Error("Extension API is unavailable");
         await api.secrets.delete(key);
       } else if (method === "tasks.registerTaskProvider") {
-        if (this.status !== "activating") {
+        if (this.status !== "activating" && this.status !== "active") {
           throw new Error("Late task provider registration was rejected");
         }
         const type = args[0];
@@ -2647,6 +3348,82 @@ export class WorkerExtensionModule implements ExtensionModule {
         executionRecord.execution.terminate();
         this.taskExecutions.delete(handleId);
         this.postToWorker({ type: "task-completed", handleId });
+      } else if (method === "window.createTextEditorDecorationType") {
+        if (this.status !== "activating" && this.status !== "active") {
+          throw new Error("Late decoration registration was rejected");
+        }
+        const options = args[0];
+        if (!isRecord(options)) {
+          throw new Error("Invalid window.createTextEditorDecorationType request");
+        }
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        const decorationType = api.window.createTextEditorDecorationType(options);
+        const handleId = this.nextDisposableId++;
+        this.decorationTypes.set(handleId, decorationType);
+        this.remoteDisposables.set(handleId, decorationType);
+        result = handleId;
+      } else if (method === "window.textEditor.setSelection") {
+        const selection = args[0];
+        const documentUri = args[1];
+        if (!isWorkerSelection(selection)) {
+          throw new Error("Invalid text editor selection");
+        }
+        if (documentUri !== undefined && !isWorkerUri(documentUri)) {
+          throw new Error("Invalid selection document URI");
+        }
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        const editor = api.window.activeTextEditor;
+        if (!editor) throw new Error("No active text editor is available for selection");
+        if (documentUri && editor.document.uri.fsPath !== documentUri.fsPath) {
+          throw new Error("Active editor does not match selection document");
+        }
+        editor.selection = selection as import("@/lib/extensionHost/vscodeApi").Selection;
+      } else if (method === "window.textEditor.revealRange") {
+        const range = args[0];
+        const revealType = args[1];
+        const documentUri = args[2];
+        if (!isWorkerRange(range) || !Number.isInteger(revealType) || Number(revealType) < 0 || Number(revealType) > 3) {
+          throw new Error("Invalid text editor reveal request");
+        }
+        if (documentUri !== undefined && !isWorkerUri(documentUri)) {
+          throw new Error("Invalid reveal document URI");
+        }
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        const editor = api.window.activeTextEditor;
+        if (!editor) throw new Error("No active text editor is available for reveal");
+        if (documentUri && editor.document.uri.fsPath !== documentUri.fsPath) {
+          throw new Error("Active editor does not match reveal document");
+        }
+        editor.revealRange(
+          range as import("@/lib/extensionHost/vscodeApi").Range,
+          revealType as number,
+        );
+      } else if (method === "window.textEditor.setDecorations") {
+        const handleId = args[0];
+        const ranges = args[1];
+        const documentUri = args[2];
+        if (typeof handleId !== "number" || !Array.isArray(ranges)) {
+          throw new Error("Invalid window.textEditor.setDecorations request");
+        }
+        if (documentUri !== undefined && !isWorkerUri(documentUri)) {
+          throw new Error("Invalid decoration document URI");
+        }
+        const decorationType = this.decorationTypes.get(handleId);
+        if (!decorationType) throw new Error("Unknown text editor decoration handle");
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        const editor = api.window.activeTextEditor;
+        if (!editor) throw new Error("No active text editor is available for decorations");
+        if (documentUri && editor.document.uri.fsPath !== documentUri.fsPath) {
+          throw new Error("Active editor does not match decoration document");
+        }
+        editor.setDecorations(
+          decorationType,
+          ranges as Parameters<TextEditor["setDecorations"]>[1],
+        );
       } else if (method === "window.createWebviewPanel") {
         const viewType = args[0];
         const title = args[1];
@@ -2712,11 +3489,28 @@ export class WorkerExtensionModule implements ExtensionModule {
             ? await api.window.showWarningMessage(messageText, ...items)
             : await api.window.showErrorMessage(messageText, ...items);
       } else if (method === "window.showInputBox") {
+        const rawOptions = args[0];
+        const validateCallbackId = args[1];
+        if (rawOptions !== undefined && !isRecord(rawOptions)) {
+          throw new Error("Invalid window.showInputBox options");
+        }
+        if (validateCallbackId !== undefined && typeof validateCallbackId !== "number") {
+          throw new Error("Invalid window.showInputBox validator callback");
+        }
         const api = this.api;
         if (!api) throw new Error("Extension API is unavailable");
-        result = await api.window.showInputBox(
-          args[0] as Parameters<typeof api.window.showInputBox>[0],
-        );
+        const options: Parameters<typeof api.window.showInputBox>[0] = rawOptions
+          ? {
+              ...(rawOptions as Parameters<typeof api.window.showInputBox>[0]),
+              ...(typeof validateCallbackId === "number"
+                ? {
+                    validateInput: (value: string) =>
+                      this.invokeWorkerCallback(validateCallbackId, [value]) as Promise<string | undefined | null>,
+                  }
+                : {}),
+            }
+          : undefined;
+        result = await api.window.showInputBox(options);
       } else if (method === "window.showQuickPick") {
         if (!Array.isArray(args[0])) {
           throw new Error("Invalid window.showQuickPick request");
@@ -2727,6 +3521,72 @@ export class WorkerExtensionModule implements ExtensionModule {
           args[0] as Parameters<typeof api.window.showQuickPick>[0],
           args[1] as Parameters<typeof api.window.showQuickPick>[1],
         );
+      } else if (method === "window.setStatusBarMessage") {
+        if (typeof args[0] !== "string") throw new Error("Invalid status bar message");
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        const disposable = api.window.setStatusBarMessage(args[0], typeof args[1] === "number" ? args[1] : undefined);
+        const handleId = this.nextDisposableId++;
+        this.remoteDisposables.set(handleId, disposable);
+        result = handleId;
+      } else if (method === "window.createStatusBarItem") {
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        const item = api.window.createStatusBarItem();
+        const handleId = this.nextDisposableId++;
+        this.remoteDisposables.set(handleId, item);
+        this.statusBarItems.set(handleId, item);
+        result = handleId;
+      } else if (method.startsWith("window.status.")) {
+        const handleId = args[0];
+        if (typeof handleId !== "number") throw new Error("Invalid status bar handle");
+        const item = this.statusBarItems.get(handleId) ?? this.remoteDisposables.get(handleId);
+        if (!item) throw new Error("Unknown status bar handle");
+        if (method === "window.status.show") {
+          (item as StatusBarItem).show?.();
+        } else if (method === "window.status.hide") {
+          (item as StatusBarItem).hide?.();
+        } else if (method === "window.status.setText") {
+          if (typeof args[1] !== "string") throw new Error("Invalid status text");
+          (item as StatusBarItem).text = args[1];
+        } else if (method === "window.status.setTooltip") {
+          (item as StatusBarItem).tooltip = typeof args[1] === "string" ? args[1] : undefined;
+        } else if (method === "window.status.setCommand") {
+          (item as StatusBarItem).command = typeof args[1] === "string" ? args[1] : undefined;
+        } else if (method === "window.status.dispose") {
+          item.dispose();
+          this.statusBarItems.delete(handleId);
+          this.remoteDisposables.delete(handleId);
+        } else {
+          throw new Error("Unsupported status bar method: " + method);
+        }
+      } else if (method === "window.withProgress") {
+        const options = args[0];
+        const callbackId = args[1];
+        if (typeof callbackId !== "number") throw new Error("Invalid progress callback");
+        const api = this.api;
+        if (!api) throw new Error("Extension API is unavailable");
+        result = await api.window.withProgress(
+          options as Parameters<typeof api.window.withProgress>[0],
+          (progress) => {
+            this.progressReporters.set(callbackId, progress);
+            return this.invokeWorkerCallback(callbackId, [
+              { __koyoriIdeType: "Progress", id: callbackId },
+            ]).finally(() => this.progressReporters.delete(callbackId));
+          },
+        );
+      } else if (method === "window.progress.report") {
+        const progressId = args[0];
+        const value = args[1];
+        if (typeof progressId !== "number" || !isRecord(value)) {
+          throw new Error("Invalid progress report request");
+        }
+        const reporter = this.progressReporters.get(progressId);
+        if (!reporter) throw new Error("Progress reporter is no longer active");
+        const reportValue: { message?: string; increment?: number } = {};
+        if (typeof value.message === "string") reportValue.message = value.message;
+        if (typeof value.increment === "number" && Number.isFinite(value.increment)) reportValue.increment = value.increment;
+        reporter.report(reportValue);
       } else if (method === "window.createOutputChannel") {
         const name = args[0];
         if (typeof name !== "string" || name.trim().length === 0) {
@@ -2764,7 +3624,7 @@ export class WorkerExtensionModule implements ExtensionModule {
           throw new Error("Unsupported output channel method: " + method);
         }
       } else if (method === "window.registerTreeDataProvider") {
-        if (this.status !== "activating") {
+        if (this.status !== "activating" && this.status !== "active") {
           throw new Error("Late tree provider registration was rejected");
         }
         const viewId = args[0];
@@ -2799,7 +3659,7 @@ export class WorkerExtensionModule implements ExtensionModule {
           ),
         );
       } else if (method === "window.registerWebviewViewProvider") {
-        if (this.status !== "activating") {
+        if (this.status !== "activating" && this.status !== "active") {
           throw new Error("Late webview provider registration was rejected");
         }
         const viewId = args[0];
@@ -2869,7 +3729,7 @@ export class WorkerExtensionModule implements ExtensionModule {
           throw new Error("Unsupported terminal method: " + method);
         }
       } else if (method === "debug.registerConfigurationProvider") {
-        if (this.status !== "activating") {
+        if (this.status !== "activating" && this.status !== "active") {
           throw new Error("Late debug provider registration was rejected");
         }
         const type = args[0];
@@ -3019,7 +3879,7 @@ export class WorkerExtensionModule implements ExtensionModule {
         if (!api) throw new Error("Extension API is unavailable");
         result = await api.env.openExternal(args[0]);
       } else {
-        throw new Error("Unsupported extension Worker RPC method: " + method);
+        throw new ExtensionApiUnsupportedError(method);
       }
       this.postWorkerRPCResult(id, { result });
     } catch (error) {
@@ -3141,6 +4001,18 @@ function normalizeExtensionEntryPath(entry: string): string {
     : "extension/" + normalized;
 }
 
+function extensionEntryCandidates(entry: string): string[] {
+  const normalized = normalizeExtensionEntryPath(entry);
+  if (/\.(?:cjs|mjs|js)$/i.test(normalized)) return [normalized];
+  return [
+    normalized,
+    normalized + ".js",
+    normalized + ".cjs",
+    normalized + "/index.js",
+    normalized + "/index.cjs",
+  ];
+}
+
 function validateBundledCommonJSSource(
   source: string,
   mainPath: string,
@@ -3192,8 +4064,8 @@ async function resolveExtensionRuntime(
   if (!securityInfo) {
     throw new Error("Extension security record is missing for " + extId);
   }
-  if (!securityInfo.verified) {
-    throw new Error("Extension security verification failed for " + extId);
+  if (!securityInfo.integrityChecked) {
+    throw new Error("Extension SHA-256 integrity check has not passed for " + extId);
   }
   if (securityInfo.blacklisted) {
     throw new Error("Extension is blacklisted: " + extId);
@@ -3246,28 +4118,38 @@ async function resolveExtensionRuntime(
   const permissions: ExtensionPermission[] = securityInfo.permissions.slice();
   const failures: string[] = [];
   for (const rawEntry of rawEntries) {
+    const entryFailures: string[] = [];
+    let candidates: string[];
     try {
-      const mainPath = normalizeExtensionEntryPath(rawEntry);
-      const source = decodeExtensionFile(
-        await marketplaceService.readExtensionFile(
-          manifest.publisher,
-          manifest.name,
-          mainPath,
-        ),
-      );
-      validateBundledCommonJSSource(source, mainPath);
-      state.moduleSourceCache.set(extId, { mainPath, source });
-      return {
-        descriptor: {
-          id: extId,
-          mainPath,
-          permissions,
-        },
-        approveRestricted: securityInfo.level === "restricted",
-      };
+      candidates = extensionEntryCandidates(rawEntry);
     } catch (error) {
       failures.push(rawEntry + ": " + errorMessage(error));
+      continue;
     }
+    for (const mainPath of candidates) {
+      try {
+        const source = decodeExtensionFile(
+          await marketplaceService.readExtensionFile(
+            manifest.publisher,
+            manifest.name,
+            mainPath,
+          ),
+        );
+        validateBundledCommonJSSource(source, mainPath);
+        state.moduleSourceCache.set(extId, { mainPath, source });
+        return {
+          descriptor: {
+            id: extId,
+            mainPath,
+            permissions,
+          },
+          approveRestricted: securityInfo.level === "restricted",
+        };
+      } catch (error) {
+        entryFailures.push(mainPath + ": " + errorMessage(error));
+      }
+    }
+    failures.push(rawEntry + ": " + entryFailures.join("; "));
   }
   throw new Error(
     "No compatible extension entry point for " +
@@ -3281,11 +4163,19 @@ async function resolveExtensionRuntime(
 // BUG-FIX-2d: 模块级别的回调引用，由主应用在初始化时设置。
 // 这样避免在 getExtensionHost 中使用 require() 导致的 Vite 打包问题。
 let _onGetActiveTextEditor: (() => TextEditor | undefined) | undefined;
+let _onGetWorkspaceFolders: (() => WorkspaceFolder[] | undefined) | undefined;
 let _onGetConfiguration: ((section?: string) => Record<string, unknown>) | undefined;
 let _onSaveAll: ((
   includeUntitled?: boolean,
 ) => Promise<{ savedCount: number; failedPaths: string[] }>) | undefined;
 let _onNotify: ((level: "info" | "warn" | "error", message: string) => void) | undefined;
+let _onShowInputBox: ((options?: InputBoxOptions) => Promise<string | undefined>) | undefined;
+let _onShowQuickPick: ((items: string[] | QuickPickItem[], options?: QuickPickOptions) => Promise<string | QuickPickItem | (string | QuickPickItem)[] | undefined>) | undefined;
+let _onSetStatusBarMessage: ((text: string, hideAfter?: number) => Disposable) | undefined;
+let _onCreateStatusBarItem: (() => import("@/lib/extensionHost/vscodeApi").StatusBarItem) | undefined;
+let _onOutput: ((channel: string, action: "append" | "appendLine" | "clear" | "show" | "hide" | "dispose", value?: string) => void) | undefined;
+let _onWithProgress: (<R>(options: ProgressOptions, task: (progress: Progress<{ message?: string; increment?: number }>) => Thenable<R>) => Thenable<R>) | undefined;
+let _onCreateTextEditorDecorationType: ((extensionId: string, options: DecorationRenderOptions) => TextEditorDecorationType) | undefined;
 
 /**
  * BUG-FIX-2d: 设置活跃编辑器状态回调。
@@ -3297,6 +4187,13 @@ export function setExtensionHostActiveEditorCallback(
   _onGetActiveTextEditor = cb;
 }
 
+/** Set the current single-root workspace folder for extension APIs. */
+export function setExtensionHostWorkspaceFoldersCallback(
+  cb: () => WorkspaceFolder[] | undefined,
+): void {
+  _onGetWorkspaceFolders = cb;
+}
+
 /**
  * BUG-FIX-2d: 设置配置读取回调。
  * 由主 Vue 应用在初始化扩展系统时调用。
@@ -3305,6 +4202,23 @@ export function setExtensionHostConfigurationCallback(
   cb: (section?: string) => Record<string, unknown>,
 ): void {
   _onGetConfiguration = cb;
+}
+
+export function notifyExtensionHostConfigurationChange(section?: string): void {
+  activationState?.extensionHost?.notifyConfigurationChange(section);
+}
+
+/** Forward one real Monaco selection update to subscribed VSIX Workers. */
+export function notifyExtensionHostTextEditorSelectionChange(
+  path: string,
+  selections: readonly import("@/lib/extensionHost/vscodeApi").Selection[],
+): void {
+  const host = activationState?.extensionHost;
+  const textEditor = _onGetActiveTextEditor?.();
+  if (!host || !textEditor || selections.length === 0) return;
+  const normalize = (value: string) => value.replaceAll("\\", "/").toLowerCase();
+  if (normalize(textEditor.document.uri.fsPath) !== normalize(path)) return;
+  host.notifyTextEditorSelectionChange({ textEditor, selections });
 }
 
 /**
@@ -3328,15 +4242,45 @@ export function setExtensionHostNotifyCallback(
   _onNotify = cb;
 }
 
+export function setExtensionHostInputCallback(
+  cb: ((options?: InputBoxOptions) => Promise<string | undefined>) | undefined,
+): void { _onShowInputBox = cb; }
+
+export function setExtensionHostQuickPickCallback(
+  cb: ((items: string[] | QuickPickItem[], options?: QuickPickOptions) => Promise<string | QuickPickItem | (string | QuickPickItem)[] | undefined>) | undefined,
+): void { _onShowQuickPick = cb; }
+
+export function setExtensionHostStatusBarCallback(
+  message: ((text: string, hideAfter?: number) => Disposable) | undefined,
+  item: (() => import("@/lib/extensionHost/vscodeApi").StatusBarItem) | undefined,
+): void { _onSetStatusBarMessage = message; _onCreateStatusBarItem = item; }
+
+export function setExtensionHostOutputCallback(
+  cb: ((channel: string, action: "append" | "appendLine" | "clear" | "show" | "hide" | "dispose", value?: string) => void) | undefined,
+): void { _onOutput = cb; }
+
+export function setExtensionHostProgressCallback(
+  cb: <R>(options: ProgressOptions, task: (progress: Progress<{ message?: string; increment?: number }>) => Thenable<R>) => Thenable<R>,
+): void { _onWithProgress = cb; }
+
+/** Set the real editor decoration factory used by VSIX Workers. */
+export function setExtensionHostDecorationCallback(
+  cb: ((extensionId: string, options: DecorationRenderOptions) => TextEditorDecorationType) | undefined,
+): void {
+  _onCreateTextEditorDecorationType = cb;
+}
+
 function getExtensionHost(state: ActivationState): ExtensionHost {
   if (!state.extensionHost) {
     state.extensionHost = new ExtensionHost({
       loadModule: (extensionId, mainPath) =>
         loadExtensionWorkerModule(state, extensionId, mainPath),
+      monaco: monaco as unknown as MonacoBridge,
       confirmHandler: (operation) =>
         confirmExtensionRuntimeOperation(operation),
       // BUG-FIX-2d: 桥接活跃编辑器状态到扩展宿主。
       onGetActiveTextEditor: () => _onGetActiveTextEditor?.(),
+      onGetWorkspaceFolders: () => _onGetWorkspaceFolders?.(),
       // BUG-FIX-2d: 桥接设置到扩展宿主。
       onGetConfiguration: (section) => _onGetConfiguration?.(section) ?? {},
       // G13: 真实 saveAll（editor store）与真实通知（lib/notifications）。
@@ -3344,6 +4288,28 @@ function getExtensionHost(state: ActivationState): ExtensionHost {
         new Error("extension host saveAll callback is not wired"),
       ),
       onNotify: (level, message) => _onNotify?.(level, message),
+      onShowInputBox: (options) => _onShowInputBox?.(options) ?? Promise.reject(
+        new ExtensionApiUnsupportedError("window.showInputBox", "host input UI callback is not wired"),
+      ),
+      onShowQuickPick: (items, options) => _onShowQuickPick?.(items, options) ?? Promise.reject(
+        new ExtensionApiUnsupportedError("window.showQuickPick", "host quick-pick UI callback is not wired"),
+      ),
+      onSetStatusBarMessage: (text, hideAfter) => _onSetStatusBarMessage?.(text, hideAfter) ?? (() => {
+        throw new ExtensionApiUnsupportedError("window.setStatusBarMessage", "host status bar callback is not wired");
+      })(),
+      onCreateStatusBarItem: () => _onCreateStatusBarItem?.() ?? (() => {
+        throw new ExtensionApiUnsupportedError("window.createStatusBarItem", "host status bar callback is not wired");
+      })(),
+      onOutput: (channel, action, value) => {
+        if (!_onOutput) throw new ExtensionApiUnsupportedError("window.createOutputChannel", "host output callback is not wired");
+        _onOutput(channel, action, value);
+      },
+      onWithProgress: (options, task) => _onWithProgress?.(options, task) ?? Promise.reject(
+        new ExtensionApiUnsupportedError("window.withProgress", "host progress UI callback is not wired"),
+      ),
+      onCreateTextEditorDecorationType: (extensionId, options) => _onCreateTextEditorDecorationType?.(extensionId, options) ?? (() => {
+        throw new ExtensionApiUnsupportedError("window.createTextEditorDecorationType", "host decoration callback is not wired");
+      })(),
     });
   }
   return state.extensionHost;
@@ -3936,6 +4902,13 @@ function injectContributes(
       registerVscodeExtensionSnippets(extId, lang, list);
     }
   }
+
+  if (contributes.themes) {
+    registerVscodeExtensionThemes(
+      extId,
+      contributes.themes.filter((theme) => Boolean(theme.label && theme.path)),
+    );
+  }
 }
 
 function injectCommands(
@@ -4138,6 +5111,16 @@ function cleanupExtensionContributions(
       unregisterVscodeExtensionSnippets(extId, lang, paths);
     }
   }
+  if (contributes?.themes) {
+    const removedActiveTheme = getActiveVscodeExtensionTheme()?.extensionId === extId;
+    unregisterVscodeExtensionThemes(
+      extId,
+      contributes.themes
+        .map((theme) => theme.path)
+        .filter((path): path is string => Boolean(path)),
+    );
+    if (removedActiveTheme) restoreBuiltInMonacoTheme();
+  }
 }
 
 function cleanupExtensionCommands(
@@ -4185,6 +5168,11 @@ async function safeTrigger(fn: () => Promise<string[]>): Promise<string[]> {
  */
 export function getActivatedExtensions(): string[] {
   return Array.from(getActivationState().activatedExtensions);
+}
+
+/** Return the last fail-closed activation diagnostic for one extension. */
+export function getExtensionActivationError(extensionId: string): Error | undefined {
+  return getActivationState().activationErrors.get(extensionId);
 }
 
 /**

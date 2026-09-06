@@ -98,6 +98,55 @@ steps:
 	}
 }
 
+func TestWorkflowService_LoadWorkflows_loadsTypedFileRead(t *testing.T) {
+	service := NewWorkflowService()
+	root := t.TempDir()
+	writeWorkflowFile(t, root, ".koyori-ide/workflows/read.yml", `
+name: read-notes
+steps:
+  - name: read
+    type: file
+    tool: read
+    input:
+      path: ./notes/readme.txt
+`)
+	workflows, err := service.LoadWorkflows(root)
+	if err != nil {
+		t.Fatalf("LoadWorkflows: %v", err)
+	}
+	if len(workflows) != 1 || len(workflows[0].Steps) != 1 {
+		t.Fatalf("typed file workflow was not loaded: %+v", workflows)
+	}
+	step := workflows[0].Steps[0]
+	if step.Type != WorkflowStepFile || step.Tool != "read" || step.Input["path"] != "./notes/readme.txt" {
+		t.Fatalf("typed file step = %+v", step)
+	}
+}
+
+func TestWorkflowService_LoadWorkflows_loadsTypedGitStatus(t *testing.T) {
+	service := NewWorkflowService()
+	root := t.TempDir()
+	writeWorkflowFile(t, root, ".koyori-ide/workflows/status.yml", `
+name: inspect-repository
+steps:
+  - name: status
+    type: git
+    tool: status
+    input: {}
+`)
+	workflows, err := service.LoadWorkflows(root)
+	if err != nil {
+		t.Fatalf("LoadWorkflows: %v", err)
+	}
+	if len(workflows) != 1 || len(workflows[0].Steps) != 1 {
+		t.Fatalf("typed git workflow was not loaded: %+v", workflows)
+	}
+	step := workflows[0].Steps[0]
+	if step.Type != WorkflowStepGit || step.Tool != "status" || len(step.Input) != 0 {
+		t.Fatalf("typed git step = %+v", step)
+	}
+}
+
 func TestWorkflowService_LoadWorkflows_loadsJSON(t *testing.T) {
 	svc := NewWorkflowService()
 	tmp := t.TempDir()
@@ -195,7 +244,7 @@ steps:
 	}
 }
 
-func TestWorkflowService_LoadWorkflows_skipsStepsWithoutNameOrCommand(t *testing.T) {
+func TestWorkflowService_LoadWorkflows_rejectsWorkflowWithMalformedStep(t *testing.T) {
 	svc := NewWorkflowService()
 	tmp := t.TempDir()
 	writeWorkflowFile(t, tmp, ".koyori-ide/workflows/partial.yml", `
@@ -210,14 +259,8 @@ steps:
 	if err != nil {
 		t.Fatalf("LoadWorkflows: %v", err)
 	}
-	if len(out) != 1 {
-		t.Fatalf("expected 1, got %d", len(out))
-	}
-	if len(out[0].Steps) != 1 {
-		t.Fatalf("expected 1 valid step, got %d", len(out[0].Steps))
-	}
-	if out[0].Steps[0].Name != "valid" {
-		t.Errorf("step name = %q", out[0].Steps[0].Name)
+	if len(out) != 0 {
+		t.Fatalf("malformed workflow must fail closed instead of running a subset: %+v", out)
 	}
 }
 

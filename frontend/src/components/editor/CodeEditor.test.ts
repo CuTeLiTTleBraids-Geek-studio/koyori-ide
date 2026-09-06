@@ -25,6 +25,8 @@ const {
   setSidebarVisible,
   setCallHierarchyQuery,
   layoutState,
+  sendSelectionToAIDesktopWindow,
+  notifyExtensionHostTextEditorSelectionChange,
 } = vi.hoisted(() => {
   const mountedEditors: any[] = [];
 
@@ -70,8 +72,18 @@ const {
   const setSidebarVisible = vi.fn();
   const setCallHierarchyQuery = vi.fn();
   const layoutState = { tree: { activeLeafId: "group-a" } };
+  const sendSelectionToAIDesktopWindow = vi.fn().mockResolvedValue(undefined);
+  const notifyExtensionHostTextEditorSelectionChange = vi.fn();
 
   const fakeMonaco = {
+    Selection: class {
+      constructor(
+        readonly selectionStartLineNumber: number,
+        readonly selectionStartColumn: number,
+        readonly positionLineNumber: number,
+        readonly positionColumn: number,
+      ) {}
+    },
     Range: class {
       a: number;
       b: number;
@@ -141,6 +153,13 @@ const {
     const cursorChangeCallbacks: Array<
       (event: { position: { lineNumber: number; column: number } }) => void
     > = [];
+    const selectionChangeCallbacks: Array<() => void> = [];
+    const selections = [{
+      selectionStartLineNumber: 3,
+      selectionStartColumn: 4,
+      positionLineNumber: 5,
+      positionColumn: 6,
+    }];
     const model = {
       getLanguageId: () => "typescript",
       getValue: () => "const answer = 42;",
@@ -155,6 +174,8 @@ const {
       actions,
       contentChangeCallbacks,
       cursorChangeCallbacks,
+      selectionChangeCallbacks,
+      selections,
       updateOptions: (options: unknown) => {
         optionUpdates.push(options);
       },
@@ -164,6 +185,10 @@ const {
         }) => void,
       ) => {
         cursorChangeCallbacks.push(cb);
+        return makeDisposable();
+      },
+      onDidChangeCursorSelection: (cb: () => void) => {
+        selectionChangeCallbacks.push(cb);
         return makeDisposable();
       },
       onMouseDown: () => makeDisposable(),
@@ -200,8 +225,15 @@ const {
       getSelection: () => ({
         startLineNumber: 3,
         startColumn: 4,
-        isEmpty: () => true,
+        endLineNumber: 5,
+        endColumn: 6,
+        selectionStartLineNumber: 3,
+        selectionStartColumn: 4,
+        positionLineNumber: 5,
+        positionColumn: 6,
+        isEmpty: () => false,
       }),
+      getSelections: () => selections,
       getModel: () => model,
       dispose: () => undefined,
       focus: vi.fn(),
@@ -237,6 +269,8 @@ const {
     setSidebarVisible,
     setCallHierarchyQuery,
     layoutState,
+    sendSelectionToAIDesktopWindow,
+    notifyExtensionHostTextEditorSelectionChange,
   };
 });
 
@@ -404,6 +438,10 @@ vi.mock("@/stores/ai", () => ({
   runAIAction: vi.fn(),
 }));
 
+vi.mock("@/stores/aiAssistant", () => ({
+  sendSelectionToAIDesktopWindow,
+}));
+
 vi.mock("@/stores/inlineCompletion", () => ({
   requestCompletion,
   cancelInlineCompletion,
@@ -417,6 +455,10 @@ vi.mock("@/stores/toolchain", () => ({
 vi.mock("@/lib/notifications", () => ({
   notifyWarning: vi.fn(),
   notifySuccess: vi.fn(),
+}));
+
+vi.mock("@/lib/vscodeExtensionActivation", () => ({
+  notifyExtensionHostTextEditorSelectionChange,
 }));
 
 import CodeEditor from "./CodeEditor.vue";
@@ -443,6 +485,26 @@ const expectedStableEditorOptions = {
     independentColorPoolPerBracketType: true,
   },
 };
+
+describe("VSIX selection forwarding", () => {
+  it("forwards Monaco selections with VS Code zero-based coordinates", async () => {
+    notifyExtensionHostTextEditorSelectionChange.mockClear();
+    const wrapper = mountEditor("C:\\repo\\sample.csv");
+    await flushPromises();
+    const editor = mountedEditors[0];
+
+    editor.selectionChangeCallbacks[0]();
+
+    expect(notifyExtensionHostTextEditorSelectionChange).toHaveBeenCalledWith(
+      "C:\\repo\\sample.csv",
+      [expect.objectContaining({
+        anchor: expect.objectContaining({ line: 2, character: 3 }),
+        active: expect.objectContaining({ line: 4, character: 5 }),
+      })],
+    );
+    wrapper.unmount();
+  });
+});
 
 describe("7D: Monaco sticky scroll and multi-cursor options", () => {
   beforeEach(() => {
@@ -535,6 +597,7 @@ describe("editor navigation targeting", () => {
     setPanelTab.mockClear();
     setSidebarVisible.mockClear();
     setCallHierarchyQuery.mockClear();
+    sendSelectionToAIDesktopWindow.mockClear();
   });
 
   it("consumes a targeted jump only in the matching file and editor group", async () => {
@@ -606,6 +669,32 @@ describe("editor navigation targeting", () => {
     expect(setPanelTab).toHaveBeenCalledWith("callHierarchy");
     wrapper.unmount();
     appStateHolder.state.currentFilePath = null;
+    await flushPromises();
+  });
+
+  it("hands off the active conversation before sending selected code", async () => {
+    const wrapper = mountEditor("/repo/own.ts", "group-a");
+    await flushPromises();
+    const editor = mountedEditors[0];
+    editor.getSelection = () => ({
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 12,
+      isEmpty: () => false,
+    });
+    const action = editor.actions.find(
+      (entry: { id?: string }) => entry.id === "ai-send-to-window",
+    );
+
+    await action?.run?.(editor);
+
+    expect(sendSelectionToAIDesktopWindow).toHaveBeenCalledWith(
+      "const answer = ",
+      "typescript",
+      "/repo/own.ts",
+    );
+    wrapper.unmount();
     await flushPromises();
   });
 });

@@ -132,11 +132,33 @@ test("build entry points cannot reuse unverified frontend assets", async () => {
   const dockerignore = await readRepositoryFile(".dockerignore");
   assert.match(dockerignore, /^frontend\/bindings\/$/m);
   assert.match(dockerignore, /^frontend\/dist\/$/m);
+  assert.match(dockerignore, /^\.env$/m);
+  assert.match(dockerignore, /^\.env\.\*$/m);
+  assert.match(dockerignore, /^\*\.pem$/m);
+  assert.match(dockerignore, /^\*\.pfx$/m);
 
   const dockerfile = await readRepositoryFile("build/docker/Dockerfile.server");
-  assert.match(dockerfile, /^FROM golang:1\.25-alpine AS bindings-go$/m);
-  assert.match(dockerfile, /^FROM node:20-alpine AS frontend-builder$/m);
-  assert.match(dockerfile, /^RUN cd frontend && npm ci && npm run build$/m);
+  const goImage = dockerfile.match(
+    /^ARG GO_IMAGE=(golang:1\.25-alpine@sha256:[0-9a-f]{64})$/m,
+  );
+  assert.ok(
+    goImage,
+    "Dockerfile.server must declare a digest-pinned default GO_IMAGE",
+  );
+  const bindingsGo = dockerfile.match(
+    /^FROM (golang:1\.25-alpine@sha256:[0-9a-f]{64}) AS bindings-go$/m,
+  );
+  assert.ok(
+    bindingsGo,
+    "Dockerfile.server bindings-go stage must use an exact SHA-256-pinned Go image",
+  );
+  assert.equal(
+    bindingsGo[1],
+    goImage[1],
+    "Dockerfile.server bindings-go stage must match the declared GO_IMAGE digest",
+  );
+  assert.match(dockerfile, /^FROM node:20\.19-alpine@sha256:[0-9a-f]{64} AS frontend-builder$/m);
+  assert.match(dockerfile, /^RUN cd frontend && npm ci --ignore-scripts && npm run build$/m);
   assert.match(
     dockerfile,
     /^COPY --from=frontend-builder \/app\/frontend\/dist \.\/frontend\/dist$/m,
@@ -172,6 +194,22 @@ test("build entry points cannot reuse unverified frontend assets", async () => {
   assert.equal(packageJson.scripts.prebuild, "npm run bindings:generate");
   assert.equal(packageJson.scripts.postbuild, "node ../scripts/check-http-client-production.mjs");
   assert.equal(packageJson.scripts["bindings:generate"], "node ../scripts/generate-bindings.mjs");
+
+  const commonTaskfile = await readRepositoryFile("build/Taskfile.yml");
+  assert.doesNotMatch(
+    commonTaskfile,
+    /go mod tidy|go:mod:tidy/,
+    "Wails build and dev must not mutate the module graph or fetch dependency test modules",
+  );
+  assert.match(taskBlock(commonTaskfile, "go:mod:verify"), /go list -mod=readonly \./);
+  assert.match(taskBlock(commonTaskfile, "install:frontend:deps"), /- task: go:mod:verify/);
+  assert.match(taskBlock(commonTaskfile, "generate:bindings"), /- task: go:mod:verify/);
+
+  const rootTaskfile = await readRepositoryFile("Taskfile.yml");
+  const rootBuild = taskBlock(rootTaskfile, "build");
+  assert.match(rootBuild, /DEV must be .*true.*false/);
+  assert.match(rootBuild, /eq \.DEV "true"/);
+  assert.match(rootBuild, /eq \.DEV "false"/);
 });
 
 test("release verifies the repository Wails pin before installing or building", async () => {
@@ -353,6 +391,61 @@ test("directory audit rejects missing, empty, stale, extra, FQN and forbidden ex
       errors = await auditBindingsDirectory(directory, secretManifest);
       assert.match(errors.join("\n"), new RegExp(`forbidden export ${method}`));
     }
+
+    const agentRelative = "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/agentservice.ts";
+    for (const method of ["CallMCPTool", "Close"]) {
+      await writeGenerated(
+        directory,
+        agentRelative,
+        `${generatedMarker}export function ${method}() { return $Call.ByID(4); }\n`,
+      );
+      const agentManifest = await createBindingsManifest(directory, pin);
+      errors = await auditBindingsDirectory(directory, agentManifest);
+      assert.match(errors.join("\n"), new RegExp(`forbidden export ${method}`));
+    }
+
+	// P19: the deny-only MCP surface ships ListPrompts/GetPrompt/ListResources/
+	// ReadResource as REQUIRED renderer exports (P16 prompts/resources panel),
+	// so only the raw tool-execution and lifecycle methods are forbidden.
+	const mcpRelative = "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/mcpservice.ts";
+	for (const method of [
+		"CallTool",
+		"Close",
+		"ExecuteApprovedTool",
+		"RequestToolApproval",
+		"SetOnToolsChanged",
+	]) {
+		await writeGenerated(
+			directory,
+			mcpRelative,
+			`${generatedMarker}export function ${method}() { return $Call.ByID(6); }\n`,
+		);
+		const mcpManifest = await createBindingsManifest(directory, pin);
+		errors = await auditBindingsDirectory(directory, mcpManifest);
+		assert.match(errors.join("\n"), new RegExp(`forbidden export ${method}`));
+	}
+	for (const method of ["ListPrompts", "GetPrompt", "ListResources", "ReadResource"]) {
+		await writeGenerated(
+			directory,
+			mcpRelative,
+			`${generatedMarker}export function ${method}() { return $Call.ByID(6); }\n`,
+		);
+		const mcpManifest = await createBindingsManifest(directory, pin);
+		errors = await auditBindingsDirectory(directory, mcpManifest);
+		assert.doesNotMatch(errors.join("\n"), new RegExp(`forbidden export ${method}`));
+	}
+
+	const aiRelative = "github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services/aiservice.ts";
+	for (const method of ["SendStream", "SendStreamWithContext"]) {
+		await writeGenerated(
+			directory,
+			aiRelative,
+			`${generatedMarker}export function ${method}() { return $Call.ByID(5); }\n`,
+		);
+		const aiManifest = await createBindingsManifest(directory, pin);
+		errors = await auditBindingsDirectory(directory, aiManifest);
+		assert.match(errors.join("\n"), new RegExp(`forbidden export ${method}`));
+	}
   });
 });
 

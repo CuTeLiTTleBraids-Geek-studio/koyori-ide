@@ -56,6 +56,8 @@ vi.mock("element-plus", () => ({
 // Import the component AFTER mocks are set up.
 import ConversationSidebar from "./ConversationSidebar.vue";
 
+const { aiState } = await import("@/stores/ai");
+
 function makeConv(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: "c1",
@@ -80,6 +82,9 @@ describe("ConversationSidebar (Plan 11 Task 2)", () => {
     conversationServiceMock.list.mockReset();
     conversationServiceMock.save.mockReset();
     conversationServiceMock.delete.mockReset();
+    aiState.streaming = false;
+    aiState.globalStreamBusy = false;
+    aiState.activeStreamId = null;
   });
 
   it("loads the first bounded page and appends the next page", async () => {
@@ -274,6 +279,19 @@ describe("ConversationSidebar (Plan 11 Task 2)", () => {
     await nextTick();
     await w.find(".ai-conv-sidebar__new").trigger("click");
     expect(w.emitted("select")![0]).toEqual([""]);
+  });
+
+  it("disables new and selection while the backend stream slot is busy", async () => {
+    aiState.globalStreamBusy = true;
+    conversationServiceMock.list.mockResolvedValue([makeConv({ id: "busy" })]);
+    const w = mountSidebar();
+    await flushPromises();
+
+    expect(w.get(".ai-conv-sidebar__new").attributes("disabled")).toBeDefined();
+    const item = w.get(".ai-conv-sidebar__item");
+    expect(item.attributes("aria-disabled")).toBe("true");
+    await item.trigger("click");
+    expect(w.emitted("select")).toBeUndefined();
   });
 
   // Plan 11 Task 2 Step 6: drag-and-drop reordering.

@@ -11,6 +11,10 @@ vi.mock("@/lib/i18n", () => {
   };
 });
 
+vi.mock("@/lib/pluginRegistry", () => ({
+  isProductionSandboxRequired: () => true,
+}));
+
 describe("GeneralSection", () => {
   let wrapper: VueWrapper | undefined;
 
@@ -48,5 +52,13 @@ describe("GeneralSection", () => {
     expect(wrapper.text()).toContain("mainLayout.commandCheckUpdates");
     expect(wrapper.text()).toContain("general.autoUpdateUnavailable");
     expect(wrapper.text()).not.toMatch(/install now|一键更新|今すぐインストール/i);
+  });
+
+  it("disables the plugin sandbox switch when production forces sandbox (P13-G02 / UI-3)", () => {
+    const wrapper = mountSection();
+    const sandboxSwitch = wrapper.get("el-switch");
+    expect(sandboxSwitch.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("general.pluginSandboxForcedHint");
+    expect(wrapper.text()).not.toContain("general.pluginSandboxHint");
   });
 });

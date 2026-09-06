@@ -5,7 +5,7 @@ package main
 // prompt-5 Task I: service registration extracted from main.go so the entry
 // point stays focused on lifecycle (lock → wire → window → run).
 //
-// 这里的职责是「把 46 个后端服务用构造器注入组装成一颗可运行的对象图」：
+// 这里的职责是「把 47 个后端服务用构造器注入组装成一颗可运行的对象图」：
 //   - 每个服务通过 appBundle 暴露给入口与测试
 //   - 服务之间只依赖注入，不互相 new，保证可测试性
 //   - 平台相关的差异由 services 包内部的构建标签（build tags）隔离
@@ -24,6 +24,7 @@ type appBundle struct {
 	// Diff, and the default executors) reads this instead, so opening or
 	// switching a project is visible to all of them atomically.
 	WorkspaceCtx      *services.WorkspaceContext
+	AgentLifecycle    *services.AgentLifecycle
 	File              *services.FileService
 	Project           *services.ProjectService
 	Settings          *services.SettingsService

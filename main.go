@@ -117,7 +117,12 @@ func init() {
 	application.RegisterEvent[map[string]interface{}]("ai:chunk")
 	application.RegisterEvent[map[string]interface{}]("ai:done")
 	application.RegisterEvent[map[string]interface{}]("ai:error")
-	// prompt-5 Task B + prompt-6 Task 2: busy flag with streamId.
+	// Provider-declared reasoning summaries are delivered through the same
+	// caller-window transport as chunks and tool calls. Hidden chain-of-thought
+	// is never inferred or emitted; this channel carries explicit summaries only.
+	application.RegisterEvent[map[string]interface{}]("ai:reasoning")
+	// The process-wide busy event intentionally carries only {busy}; owner
+	// stream IDs stay on per-window sensitive events.
 	application.RegisterEvent[map[string]interface{}]("ai:stream-busy")
 	// prompt-5 Task H: native tool_calls JSON (wrapped with streamId).
 	application.RegisterEvent[map[string]interface{}]("ai:tool_calls")
@@ -135,6 +140,9 @@ func init() {
 	// prompt-6 Task 1: dual-window SSOT sync bus.
 	application.RegisterEvent[map[string]interface{}]("settings:changed")
 	application.RegisterEvent[map[string]interface{}]("conversation:saved")
+	application.RegisterEvent[map[string]interface{}]("ai:open-conversation")
+	application.RegisterEvent[map[string]interface{}]("ai:open-conversation-ack")
+	application.RegisterEvent[map[string]interface{}]("ai:open-settings")
 	application.RegisterEvent[map[string]interface{}]("agent:pending-updated")
 	application.RegisterEvent[services.ExtensionLifecycleRequest]("extension:lifecycle-request")
 	application.RegisterEvent[services.ExtensionLifecycleResult]("extension:lifecycle-result")
@@ -146,12 +154,18 @@ func init() {
 	application.RegisterEvent[map[string]interface{}]("e2e:g06-runtime-role-result")
 	// P9-G10: opt-in packaged Monaco probe result.
 	application.RegisterEvent[map[string]interface{}]("e2e:g10-monaco-result")
+	// P12-BUG-02: packaged dual-WebView conversation handoff result.
+	application.RegisterEvent[map[string]interface{}]("e2e:conversation-handoff-result")
 	// BUG1: project:removed is emitted by ProjectService.RemoveProject so
 	// the frontend can close open files and clear the current project.
 	application.RegisterEvent[map[string]string]("project:removed")
 }
 
 func main() {
+	if err := enforceServerBindAddress(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	// Initialize structured logging (N-11) before any service is created
 	// so all services inherit the configured default logger. The cleanup
 	// function closes the log file on shutdown.
@@ -232,6 +246,7 @@ func runMain() error {
 		Settings:      serviceSet.Settings,
 		Terminal:      serviceSet.Terminal,
 		Search:        serviceSet.Search,
+		Agent:         serviceSet.Agent,
 		AI:            serviceSet.AI,
 		LSP:           serviceSet.LSP,
 		LanguagePacks: serviceSet.LanguagePacks,
@@ -243,7 +258,7 @@ func runMain() error {
 		Window:        serviceSet.Window,
 		HTTPClient:    serviceSet.HTTPClient,
 		ExecJS:        serviceSet.window.ExecJS,
-		ExecAIJS:      func(script string) { services.ExecAIWindowJSForE2E(serviceSet.Window, script) },
+		ExecAIJS:      func(script string) bool { return services.ExecAIWindowJSForE2E(serviceSet.Window, script) },
 		CloseWindow:   serviceSet.window.Close,
 	})
 	if err != nil {
@@ -398,13 +413,49 @@ func buildEditorServices(cfg bootstrapConfig, serviceSet *bootstrapServices) {
 func buildAgentServices(cfg bootstrapConfig, serviceSet *bootstrapServices) {
 	serviceSet.MCP = services.NewMCPService()
 	serviceSet.Skills = services.NewSkillsService(cfg.configDir)
-	services.WireAgentServices(serviceSet.Agent, serviceSet.MCP, serviceSet.Skills)
 	serviceSet.ComputerUse = services.NewComputerUseService(cfg.configDir)
 	serviceSet.IM = services.NewIMService(cfg.configDir)
 	serviceSet.Persona = services.NewPersonaService(cfg.configDir)
 	serviceSet.AIPlan = services.NewAIPlanService()
 	serviceSet.AIGoal = services.NewAIGoalService()
 	serviceSet.AIPermission = services.NewAIPermissionService(cfg.configDir)
+	services.SetAgentSettingsService(serviceSet.Agent, serviceSet.Settings)
+	services.WireAgentServices(serviceSet.Agent, serviceSet.MCP, serviceSet.Skills)
+	if err := services.WireAgentExecutionCore(
+		serviceSet.Agent,
+		serviceSet.File,
+		serviceSet.Search,
+		serviceSet.MCP,
+		serviceSet.Skills,
+		serviceSet.AIPermission,
+		serviceSet.Git,
+	); err != nil {
+		panic(fmt.Sprintf("wire agent execution core: %v", err))
+	}
+	var err error
+	serviceSet.AgentLifecycle, err = services.WireAgentLifecycle(
+		serviceSet.Agent,
+		serviceSet.AI,
+		serviceSet.AIPlan,
+		serviceSet.AIGoal,
+		serviceSet.AIPermission,
+		cfg.koyoriDir,
+	)
+	if err != nil {
+		panic(fmt.Sprintf("wire agent lifecycle: %v", err))
+	}
+	if err := services.WireTaskAgentLifecycle(serviceSet.Task, serviceSet.AgentLifecycle); err != nil {
+		panic(fmt.Sprintf("wire task agent lifecycle: %v", err))
+	}
+	if err := services.WireAgentExecutionAI(serviceSet.Agent, serviceSet.AI); err != nil {
+		panic(fmt.Sprintf("wire agent AI execution: %v", err))
+	}
+	if err := services.WireAgentComputerUse(serviceSet.Agent, serviceSet.ComputerUse); err != nil {
+		slog.Warn("wire agent computer use tools", "error", err)
+	}
+	if err := services.WireAgentWorkflowTools(serviceSet.Agent, serviceSet.Workflow); err != nil {
+		slog.Warn("wire agent workflow tools", "error", err)
+	}
 	serviceSet.Diff = services.NewDiffServiceWithReceiptDir(
 		filepath.Join(cfg.koyoriDir, "diff-receipts"),
 	)
@@ -419,6 +470,17 @@ func buildAnalysisServices(cfg bootstrapConfig, serviceSet *bootstrapServices) {
 	serviceSet.PProf = services.NewPProfService()
 	serviceSet.Update = services.NewUpdateService()
 	serviceSet.Crash = services.NewCrashService(serviceSet.Update)
+	// P20 P1-05: recovered goroutine panics are persisted as crash reports
+	// (fail-closed visibility) in addition to the guard's structured slog.
+	services.SetGoroutinePanicSink(func(scope string, panicValue any, stack []byte) {
+		if err := serviceSet.Crash.ReportCrash(services.CrashReport{
+			Message:   fmt.Sprintf("goroutine panic in %s: %v", scope, panicValue),
+			ErrorType: "goroutine-panic",
+			Stack:     string(stack),
+		}); err != nil {
+			slog.Error("persist goroutine panic report failed", "scope", scope, "err", err)
+		}
+	})
 	serviceSet.Remote = services.NewRemoteService()
 	// GOAL-P0-03: editor dirty-buffer recovery. Kept separate from CrashService,
 	// which only persists panic reports and is not a content backup.
@@ -466,6 +528,7 @@ func bindWorkspaceRoots(serviceSet *bootstrapServices, settings services.Setting
 		serviceSet.Coverage,
 		serviceSet.Eslint,
 		serviceSet.MCP,
+		serviceSet.PProf,
 	)
 	for section, config := range settings.LSPConfigs {
 		serviceSet.LSP.SetLSPConfig(section, config)
@@ -477,9 +540,13 @@ func registerWailsServices(app *application.Options, serviceSet *bootstrapServic
 }
 
 func setupHTTPRoutes(app *application.Options, serviceSet *bootstrapServices) {
+	middleware := assetMiddleware(serviceSet.Plugin)
+	if guard := serverTransportMiddleware(); guard != nil {
+		middleware = application.ChainMiddleware(guard, middleware)
+	}
 	app.Assets = application.AssetOptions{
 		Handler:    application.AssetFileServerFS(assets),
-		Middleware: assetMiddleware(serviceSet.Plugin),
+		Middleware: middleware,
 	}
 }
 
@@ -654,6 +721,7 @@ func startBackgroundJobs(ctx context.Context, serviceSet *bootstrapServices) *ba
 	timeDone := make(chan struct{})
 	jobs.timeDone = timeDone
 	go func() {
+		defer services.RecoverGoroutinePanic("main:time-pump")
 		defer close(timeDone)
 		emitTimeEvents(timeContext, jobs.timeTicker.C, func(value string) {
 			serviceSet.app.Event.Emit("time", value)
@@ -729,6 +797,7 @@ func runShutdownActions(ctx context.Context, actions []shutdownAction, warn func
 func shutdownCoreServices(ctx context.Context, serviceSet *bootstrapServices, jobs *backgroundJobs) {
 	taskDone := make(chan struct{})
 	actions := []shutdownAction{
+		{name: "file", run: serviceSet.File.ServiceShutdown},
 		{name: "terminal", run: func() error { serviceSet.Terminal.Shutdown(); return nil }},
 		{name: "task", run: func() error { defer close(taskDone); return serviceSet.Task.Shutdown() }},
 		{name: "agent", run: func() error {

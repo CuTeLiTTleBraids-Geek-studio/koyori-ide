@@ -1,6 +1,18 @@
 package services
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// sharedTokenEstimator is the one services-layer adapter accepted by the
+// headless agentcore ContextManager. Keeping it unexported prevents a second
+// renderer-selectable estimator from becoming part of the Wails surface.
+type sharedTokenEstimator struct{}
+
+func (sharedTokenEstimator) EstimateTokens(text string) int {
+	return estimateTokens(text)
+}
 
 // N-61: Context window management. Without token counting, long conversations
 // exceed the model's context window, triggering 4xx errors and inflating cost.
@@ -48,9 +60,79 @@ func isCJK(r rune) bool {
 func estimateMessagesTokens(messages []ChatMessage) int {
 	total := 0
 	for _, m := range messages {
-		total += estimateTokens(m.Content) + 3
+		total += estimateTokens(chatMessageBudgetText(m)) + 3
 	}
 	return total
+}
+
+func chatMessageBudgetText(message ChatMessage) string {
+	var builder strings.Builder
+	builder.WriteString(message.Content)
+	for _, call := range message.ToolCalls {
+		builder.WriteString(call.ID)
+		builder.WriteString(call.Name)
+		builder.WriteString(call.Arguments)
+	}
+	for _, result := range message.ToolResults {
+		builder.WriteString(result.ToolCallID)
+		builder.WriteString(result.Content)
+	}
+	return builder.String()
+}
+
+// nativeToolRoundGroups returns message indexes that form one provider-native
+// assistant-call/result round. A context selector must retain or drop every
+// index in a group together, otherwise it manufactures orphan tool results.
+func nativeToolRoundGroups(messages []ChatMessage) [][]int {
+	groups := make([][]int, 0)
+	callGroup := make(map[string]int)
+	for index, message := range messages {
+		if len(message.ToolCalls) > 0 {
+			groupIndex := len(groups)
+			groups = append(groups, []int{index})
+			for _, call := range message.ToolCalls {
+				if call.ID != "" {
+					callGroup[call.ID] = groupIndex
+				}
+			}
+		}
+		if len(message.ToolResults) == 0 {
+			continue
+		}
+		groupIndex := -1
+		for _, result := range message.ToolResults {
+			candidate, ok := callGroup[result.ToolCallID]
+			if !ok || (groupIndex >= 0 && candidate != groupIndex) {
+				groupIndex = -1
+				break
+			}
+			groupIndex = candidate
+		}
+		if groupIndex >= 0 {
+			groups[groupIndex] = append(groups[groupIndex], index)
+		}
+	}
+	return groups
+}
+
+func enforceAtomicNativeToolRounds(messages []ChatMessage, included map[int]bool) {
+	for _, group := range nativeToolRoundGroups(messages) {
+		if len(group) < 2 {
+			continue
+		}
+		allIncluded := true
+		anyIncluded := false
+		for _, index := range group {
+			allIncluded = allIncluded && included[index]
+			anyIncluded = anyIncluded || included[index]
+		}
+		if !anyIncluded || allIncluded {
+			continue
+		}
+		for _, index := range group {
+			included[index] = false
+		}
+	}
 }
 
 // truncateToTokenBudget keeps the system prompt (first message if its role is
@@ -89,15 +171,25 @@ func truncateToTokenBudget(messages []ChatMessage, budget int) []ChatMessage {
 	}
 
 	// Walk backwards from the end, adding messages until budget is exhausted.
-	var tail []ChatMessage
+	included := make(map[int]bool, len(messages))
+	for index := 0; index < headCount; index++ {
+		included[index] = true
+	}
 	tailTokens := 0
 	for i := len(messages) - 1; i >= headCount; i-- {
-		msgTokens := estimateTokens(messages[i].Content) + 3
+		msgTokens := estimateTokens(chatMessageBudgetText(messages[i])) + 3
 		if tailTokens+msgTokens > remainingBudget {
 			break
 		}
-		tail = append([]ChatMessage{messages[i]}, tail...)
+		included[i] = true
 		tailTokens += msgTokens
+	}
+	enforceAtomicNativeToolRounds(messages, included)
+	var tail []ChatMessage
+	for index := headCount; index < len(messages); index++ {
+		if included[index] {
+			tail = append(tail, messages[index])
+		}
 	}
 
 	droppedCount := len(messages) - headCount - len(tail)
