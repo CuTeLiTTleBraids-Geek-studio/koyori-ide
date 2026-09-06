@@ -198,7 +198,7 @@ func TestGoTestWorkflowHasExplicitCrossPlatformRaceMatrix(t *testing.T) {
 	joined := strings.Join(runs, "\n")
 	for _, required := range []string{
 		"go vet ./services/... . ./internal/repo/...",
-		"go test -race ./services/... . ./internal/repo/... -count=1",
+		"go test -race ./services/... . ./internal/repo/... ./build/docker/server-gateway/... -count=1",
 		"go test -race -tags e2e ./internal/e2e/... -count=1",
 	} {
 		if !strings.Contains(joined, required) {

@@ -68,3 +68,38 @@ func TestServerTransportAcceptsSameOriginStandaloneRPC(t *testing.T) {
 		t.Fatalf("same-origin RPC status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
+
+// P20 P1-04: alpha2.111's WS upgrader hardcodes InsecureSkipVerify (any
+// origin), so the transport middleware itself must reject cross-origin
+// upgrades of the events endpoint before they reach the raw handler.
+func TestServerTransportRejectsCrossOriginEventUpgrade(t *testing.T) {
+	t.Setenv(serverGatewayNonceEnv, "")
+	handler := serverTransportMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, origin := range []string{
+		"http://evil.example.com:8081",
+		"https://127.0.0.1:8081", // scheme mismatch
+		"http://127.0.0.1:9999",  // port mismatch
+		"null",
+	} {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8081/wails/events", nil)
+		request.Header.Set("Origin", origin)
+		request.Header.Set("Connection", "Upgrade")
+		request.Header.Set("Upgrade", "websocket")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("origin %q status = %d, want %d", origin, response.Code, http.StatusForbidden)
+		}
+	}
+	same := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8081/wails/events", nil)
+	same.Header.Set("Origin", "http://127.0.0.1:8081")
+	same.Header.Set("Connection", "Upgrade")
+	same.Header.Set("Upgrade", "websocket")
+	ok := httptest.NewRecorder()
+	handler.ServeHTTP(ok, same)
+	if ok.Code != http.StatusNoContent {
+		t.Fatalf("same-origin upgrade status = %d, want %d", ok.Code, http.StatusNoContent)
+	}
+}

@@ -10,6 +10,14 @@ body:
       description: 你想解决什么问题？/ What problem are you trying to solve?
     validations:
       required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and platform / 版本与平台
+      description: Which release or commit is this request based on? / 基于哪个版本或提交？
+      placeholder: "0.2.0 · Windows 11 x64"
+    validations:
+      required: true
   - type: textarea
     id: proposal
     attributes:
@@ -28,4 +36,6 @@ body:
       label: 确认 / Checklist
       options:
         - label: 我已在 Issues 中搜索过类似建议 / I searched existing issues
+          required: true
+        - label: 我确认这不是安全漏洞或敏感信息 / This is not a security report or sensitive data
           required: true

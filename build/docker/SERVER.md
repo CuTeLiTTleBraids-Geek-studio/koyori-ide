@@ -40,19 +40,32 @@ task run:docker
 
 ## Remote deployment
 
-Remote exposure is an explicit opt-in. For a trusted HTTPS reverse proxy, set
-the public origin and bind the Docker port deliberately:
+Remote exposure is an explicit opt-in. The public HTTPS origin is mandatory so
+the gateway can reject forged Host and Origin headers. For a trusted reverse
+proxy deployment, for example:
 
 ```sh
-KOYORI_SERVER_TOKEN="$(openssl rand -hex 32)" \
-KOYORI_EXTERNAL_ORIGIN=https://ide.example.com \
-task run:docker HOST_IP=0.0.0.0 PORT=8080
+export KOYORI_EXTERNAL_ORIGIN=https://ide.example.com
+HOST_IP=127.0.0.1 task run:docker
 ```
 
-Do not send the token over plain HTTP on an untrusted network. Either terminate
-HTTPS at a trusted reverse proxy (and set `KOYORI_EXTERNAL_ORIGIN` to its
-public origin) or mount a certificate and key and set
-`KOYORI_TLS_CERT_FILE` and `KOYORI_TLS_KEY_FILE`.
+Do not send the token over plain HTTP on an untrusted network. The task command
+forwards `KOYORI_EXTERNAL_ORIGIN` and expects HTTPS termination at the proxy.
+For direct TLS, mount the certificate and key read-only and use their container
+paths explicitly:
+
+```sh
+export KOYORI_SERVER_TOKEN="$(openssl rand -hex 32)"
+docker run --init --rm \
+  -e KOYORI_SERVER_TOKEN \
+  -e KOYORI_EXTERNAL_ORIGIN=https://ide.example.com:8443 \
+  -e KOYORI_TLS_CERT_FILE=/run/tls/tls.crt \
+  -e KOYORI_TLS_KEY_FILE=/run/tls/tls.key \
+  --mount type=bind,src=/absolute/path/tls.crt,dst=/run/tls/tls.crt,readonly \
+  --mount type=bind,src=/absolute/path/tls.key,dst=/run/tls/tls.key,readonly \
+  -p 0.0.0.0:8443:8080 \
+  koyori-ide:latest
+```
 
 For orchestrated deployments, prefer a read-only secret mount over an
 environment variable:
@@ -61,7 +74,6 @@ environment variable:
 docker run --rm \
   --mount type=bind,src=/absolute/path/koyori-token,dst=/run/secrets/koyori-token,readonly \
   -e KOYORI_SERVER_TOKEN_FILE=/run/secrets/koyori-token \
-  -e KOYORI_EXTERNAL_ORIGIN=https://ide.example.com \
   -p 127.0.0.1:8080:8080 \
   koyori-ide:latest
 ```
@@ -74,14 +86,22 @@ Additional settings:
 | `KOYORI_GATEWAY_PORT` | `8080` | Gateway port inside the container |
 | `KOYORI_INTERNAL_PORT` | `8081` | Loopback-only Wails port |
 | `KOYORI_MAX_REQUEST_BYTES` | `33554432` | Maximum authenticated request body |
+| `KOYORI_EXTERNAL_ORIGIN` | unset | Required public HTTPS origin for non-loopback Host/Origin validation |
 | `KOYORI_TLS_CERT_FILE` | unset | PEM certificate used by the gateway |
 | `KOYORI_TLS_KEY_FILE` | unset | PEM private key used by the gateway |
-| `KOYORI_EXTERNAL_ORIGIN` | unset | Public HTTP(S) origin; required for non-loopback hosts |
 
 The unauthenticated `/health` endpoint accepts only GET and HEAD and reports the
 internal server's health. All application, RPC, and WebSocket routes require
 authentication.
 
-The gateway launches the private Wails process with a fresh per-start nonce.
-Only requests proxied by that gateway carry the nonce; the standalone server
-transport rejects a client-controlled mode flag and direct loopback RPC calls.
+The standalone `-tags server` binary applies the same network boundary in a
+different way: it refuses a non-loopback `WAILS_SERVER_HOST`, defaults to
+`127.0.0.1`, and enforces same-origin WebSocket upgrades in its transport
+middleware (the pinned Wails alpha2.111 upgrader accepts any origin, so the
+project middleware rejects cross-origin `/wails/events` and `/wails/runtime`
+requests itself). Do not weaken those guards to expose the raw Wails
+transport; use this authenticated gateway for a remote deployment.
+
+The gateway marks its private child process with an internal environment value
+so the child does not re-apply the external Origin check after proxying. That
+value is stripped from user input and is never a client authentication token.

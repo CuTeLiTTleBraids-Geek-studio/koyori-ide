@@ -9,8 +9,8 @@ Unused public assets are rejected by the checker instead of silently becoming pa
 
 | Path | Bytes | SHA-256 | License | Holder | Evidence / source |
 |---|---:|---|---|---|---|
-| `frontend/public/wails.png` | 9057 | `aa03a350d891ed3359d7b67657a2565ba951a4ef5583a498e55421b71546413b` | MIT | Wails contributors | pinned Wails Vue template + Wails module LICENSE; github.com/wailsapp/wails/v3@v3.0.0-alpha2.111/internal/templates/vue/frontend/public/wails.png |
-| `frontend/public/vue.svg` | 496 | `5532db34f1c52841881bab8aeca6c3e8d092bd21a689a65f4d8f8cf8041eef9d` | MIT | Vue contributors | pinned Wails Vue template + Wails module LICENSE; github.com/wailsapp/wails/v3@v3.0.0-alpha2.111/internal/templates/vue/frontend/public/vue.svg |
+| `frontend/public/wails.png` | 9057 | `aa03a350d891ed3359d7b67657a2565ba951a4ef5583a498e55421b71546413b` | MIT | Wails contributors | historical Wails Vue template copy + Wails module LICENSE; github.com/wailsapp/wails/v3@v3.0.0-alpha2.111/internal/templates/vue/frontend/public/wails.png |
+| `frontend/public/vue.svg` | 496 | `5532db34f1c52841881bab8aeca6c3e8d092bd21a689a65f4d8f8cf8041eef9d` | MIT | Vue contributors | historical Wails Vue template copy + Wails module LICENSE; github.com/wailsapp/wails/v3@v3.0.0-alpha2.111/internal/templates/vue/frontend/public/vue.svg |
 | `icon.png` | 2355198 | `9d45ac5ab6f373d85590ccf869d0856f2e46f847677ef5eda8b529e630447c99` | MIT | koyori-ide contributors | repository LICENSE; first-party source asset |
 | `build/appicon.png` | 2355198 | `9d45ac5ab6f373d85590ccf869d0856f2e46f847677ef5eda8b529e630447c99` | MIT | koyori-ide contributors | repository LICENSE; copy of icon.png used by Wails icon generation |
 | `build/windows/icon.ico` | 120786 | `8874f4ecba72fd333c351aa2e740386de3dff0a303011e503fc11de96e1220d6` | MIT | koyori-ide contributors | generated from build/appicon.png; repository LICENSE; Wails generated Windows icon |
@@ -20,4 +20,4 @@ Unused public assets are rejected by the checker instead of silently becoming pa
 
 The Windows ICO and macOS ICNS files are generated from the first-party `build/appicon.png` by the pinned Wails icon generator. Frontend builds must also contain exactly one `assets/codicon-*.ttf`; it is emitted by `monaco-editor` and is covered by the Monaco MIT license and `ThirdPartyNotices.txt`.
 
-The release workflow attaches this record together with `NOTICE`, the dependency inventory, per-artifact SPDX SBOMs, provenance, and checksums.
+The release workflow attaches this record together with `LICENSE`, `NOTICE`, the dependency inventory, per-artifact SPDX SBOMs, provenance, and checksums.

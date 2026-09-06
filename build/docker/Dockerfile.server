@@ -35,8 +35,28 @@ RUN test -s frontend/dist/index.html
 # Build stage
 FROM ${GO_IMAGE} AS builder
 ARG CGO_ENABLED
+ARG GO_IMAGE
+ARG RUNTIME_IMAGE
 
 WORKDIR /app
+
+# Hardening (from the governance PR): every image reference reaching this
+# build must be digest-pinned, and the distroless static defaults cannot
+# serve a CGO build. Enforced here at build time so a direct `docker build`
+# cannot bypass the Taskfile preconditions.
+RUN if [ "$CGO_ENABLED" = "1" ] && \
+      { [ "$GO_IMAGE" = "golang:1.25-alpine@sha256:3eb6c2b3db8d55e38537302edb510b4417f8a115efbd5906d131ceba9468e29a" ] || \
+        [ "$RUNTIME_IMAGE" = "gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a" ]; }; then \
+      echo "CGO_ENABLED=1 requires explicit compatible GO_IMAGE and RUNTIME_IMAGE overrides" >&2; exit 1; \
+    fi; \
+    for image in "$GO_IMAGE" "$RUNTIME_IMAGE"; do \
+      case "$image" in \
+        *@sha256:*) digest="$(printf '%s' "$image" | sed 's/.*@sha256://')"; \
+          printf '%s' "$digest" | grep -Eq '^[0-9a-fA-F]{64}$' || { echo "image reference is not digest-pinned: $image" >&2; exit 1; }; \
+          ;; \
+        *) echo "image reference is not digest-pinned: $image" >&2; exit 1 ;; \
+      esac; \
+    done
 
 # Install build dependencies: git always; a C compiler only when CGO is enabled.
 # Supports both apk (alpine) and apt (debian/bookworm) base images.
@@ -50,11 +70,9 @@ RUN if command -v apk >/dev/null 2>&1; then \
 COPY . .
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Remove local replace directive if present (for production builds)
-RUN sed -i '/^replace/d' go.mod || true
-
-# Download dependencies
-RUN go mod tidy
+# Verify the locked module set without mutating go.mod/go.sum: the image
+# builds exactly what the repository pinned (no network-driven resolution).
+RUN go mod download && go mod verify
 
 # Build the production server binary and its authentication gateway.
 # - server,production tags: HTTP server mode with production code paths (no dev

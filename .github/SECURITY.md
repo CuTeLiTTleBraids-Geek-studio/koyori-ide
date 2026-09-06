@@ -27,9 +27,9 @@ supports those claims, so they have been removed rather than kept as unverified
 support commitments. Restoring any line requires real tag and artifact evidence
 first.
 
-`main` 和未发布版本仅接受尽力而为的修复，不等同于受支持的稳定发行版。所有 0.x 版本均基于 Wails v3 alpha；本表不构成 SLA 或企业支持承诺。项目当前无响应或修复 SLO、无产品可靠性 SLO 数据，且未接受独立外部安全审计、独立供应链审计或独立可访问性审计；这些状态均为 `U`。
+`main` 和未发布版本仅接受尽力而为的修复，不等同于受支持的稳定发行版。当前 0.2.x 开发线基于 Wails v3 beta.8 预发布版；本表不构成 SLA 或企业支持承诺。项目当前无响应或修复 SLO、无产品可靠性 SLO 数据，且未接受独立外部安全审计、独立供应链审计或独立可访问性审计；这些状态均为 `U`。
 
-`main` and unreleased versions receive best-effort fixes only and are not supported stable releases. All 0.x versions use Wails v3 alpha; this table is not an SLA or an enterprise-support commitment. There is no response or remediation SLO and no product-reliability SLO data. The project has not undergone an independent external security audit, supply-chain audit, or accessibility audit; all of these statuses are `U`.
+`main` and unreleased versions receive best-effort fixes only and are not supported stable releases. The current 0.2.x development line uses the Wails v3 beta.8 pre-release; this table is not an SLA or an enterprise-support commitment. There is no response or remediation SLO and no product-reliability SLO data. The project has not undergone an independent external security audit, supply-chain audit, or accessibility audit; all of these statuses are `U`.
 
 ### 发版周期 / Release cadence
 
@@ -49,6 +49,26 @@ first.
 未来采集条件只记录在 [RELEASING.md](../docs/RELEASING.md#slo-and-external-audit-release-inputs)；当前没有遥测实现或默认数据收集。
 
 Future collection conditions are documented only in [RELEASING.md](../docs/RELEASING.md#slo-and-external-audit-release-inputs). No telemetry implementation or default data collection exists today.
+
+## 当前安全证据边界 / Current Security Evidence Boundary
+
+H1（文件能力边界）仍未在全平台关闭：Linux 内容读写为 `T`，Windows
+真实 NTFS junction 变更路径为 `I`；macOS、`RevealInOS` 外部文件管理器以及
+残余 CAS 路径仍为 `U`。这些证据不构成“所有平台文件操作已安全”的声明。
+
+H2（Windows `cmd.exe` 注入）已不存在：真实 `Command` 与 `CommandContext`
+矩阵为 `I`，包括 shell 元字符作为离散 argv 元素的回归验证。该结论不扩大
+到 H1，也不替代真实发布或 CI runner 证据。
+
+H1 (file capability boundary) is not closed across all platforms: Linux content
+read/write is `T`, the real Windows NTFS junction mutation path is `I`, while
+macOS, the external file manager used by `RevealInOS`, and residual CAS paths
+remain `U`. This is not a claim that file operations are safe on every platform.
+
+H2 (Windows `cmd.exe` injection) is no longer present: the real `Command` and
+`CommandContext` matrix is `I`, including metacharacters preserved as discrete
+argv elements. This conclusion does not expand H1 or substitute for real release
+and CI-runner evidence.
 
 ## 漏洞报告 / Reporting a Vulnerability
 

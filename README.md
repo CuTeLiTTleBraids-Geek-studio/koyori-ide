@@ -205,14 +205,13 @@ flowchart LR
 <details>
 <summary><b>🖥️ Linux 依赖</b></summary>
 
-```bash
-# Debian/Ubuntu
-sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libgcc-12-dev libstdc++-12-dev pkg-config
-# Fedora
-sudo dnf install -y gtk3 webkit2gtk4.1 pkgconf-pkg-config
-# Arch
-sudo pacman -S gtk3 webkit2gtk pkgconf
-```
+| 发行版 | 首选（GTK4 / WebKitGTK 6.0） | 回退（GTK3 / WebKit2GTK 4.1） |
+|---|---|---|
+| Debian / Ubuntu | `libgtk-4-dev libwebkitgtk-6.0-dev` | `libgtk-3-dev libwebkit2gtk-4.1-dev` |
+| Fedora / RHEL | `gtk4-devel webkitgtk6.0-devel` | `gtk3-devel webkit2gtk4.1-devel` |
+| Arch Linux | `gtk4 webkitgtk-6.0` | `gtk3 webkit2gtk-4.1` |
+
+还需要 C 编译器、`pkg-config`（Fedora 为 `pkgconf-pkg-config`）、`libgcc` 和 `libstdc++` 开发包。CI 的 Linux 构建安装的是首选列（`libgtk-4-dev libwebkitgtk-6.0-dev`）。
 
 </details>
 

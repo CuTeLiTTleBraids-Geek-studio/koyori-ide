@@ -35,12 +35,12 @@ export PATH="/usr/local/lib/nodejs/bin:${PATH}"
 node -v
 npm -v
 
-echo "=== install nfpm ==="
-go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+echo "=== install nfpm v2.44.1 ==="
+go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.44.1
 nfpm --version
 
 echo "=== install wails3 ==="
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111 || true
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8 || true
 command -v wails3 && wails3 version || echo "wails3 optional"
 
 echo "TOOLCHAIN_OK"

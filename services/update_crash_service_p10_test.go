@@ -31,7 +31,7 @@ func (f updateRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 func updateReleaseResponse() *http.Response {
-	body := `{"tag_name":"v1.0.0","html_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/v1.0.0","body":"release notes for 1.0.0","published_at":"2024-01-01T00:00:00Z","assets":[{"name":"koyori-ide-windows-amd64.zip","browser_download_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/download/v1.0.0/koyori-ide-windows-amd64.zip","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}`
+	body := `{"tag_name":"v1.0.0","html_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/v1.0.0","body":"release notes for 1.0.0","published_at":"2024-01-01T00:00:00Z","assets":[{"name":"koyori-ide-v1.0.0-linux-arm64.rpm","browser_download_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/download/v1.0.0/koyori-ide-v1.0.0-linux-arm64.rpm","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},{"name":"koyori-ide-v1.0.0-windows-amd64.zip","browser_download_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/download/v1.0.0/koyori-ide-v1.0.0-windows-amd64.zip","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},{"name":"koyori-ide-v1.0.0-linux-amd64.tar.gz","browser_download_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/download/v1.0.0/koyori-ide-v1.0.0-linux-amd64.tar.gz","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},{"name":"koyori-ide-v1.0.0-darwin-amd64.zip","browser_download_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/download/v1.0.0/koyori-ide-v1.0.0-darwin-amd64.zip","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},{"name":"koyori-ide-v1.0.0-darwin-arm64.zip","browser_download_url":"https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases/download/v1.0.0/koyori-ide-v1.0.0-darwin-arm64.zip","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}`
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
@@ -72,8 +72,14 @@ func TestUpdateService_P10_CompareVersions(t *testing.T) {
 		{"prerelease vs newer prerelease", "1.0.0-alpha", "1.0.0-beta", -1},
 		{"release newer than prerelease", "1.0.0", "1.0.0-beta", 1},
 		{"minor bump", "1.2.0", "1.10.0", -1},
-		{"missing segment", "1.0", "1.0.0", 0},
+		{"invalid missing segment uses lexical fallback", "1.0", "1.0.0", -1},
 		{"different major", "2.0.0", "10.0.0", -1},
+		{"numeric prerelease identifiers", "1.0.0-10", "1.0.0-2", 1},
+		{"numeric prerelease below nonnumeric", "1.0.0-2", "1.0.0-alpha", -1},
+		{"nonnumeric prerelease above numeric", "1.0.0-alpha", "1.0.0-2", 1},
+		{"longer equal prerelease is newer", "1.0.0-alpha", "1.0.0-alpha.1", -1},
+		{"build metadata ignored", "1.0.0+build.1", "1.0.0+build.2", 0},
+		{"large core identifiers do not overflow", "999999999999999999999999.0.0", "1000000000000000000000000.0.0", -1},
 	}
 	for _, c := range cases {
 		c := c

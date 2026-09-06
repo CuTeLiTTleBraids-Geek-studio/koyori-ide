@@ -65,9 +65,7 @@ fi
 # stop the build instead of silently stamping an unrelated fallback version.
 VERSION_FILE="$ROOT_DIR/VERSION"
 [ -f "$VERSION_FILE" ] || fail "VERSION file not found: $VERSION_FILE"
-VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || \
-    fail "VERSION contains an invalid SemVer value: ${VERSION:-<empty>}"
+VERSION="$(bash "$ROOT_DIR/scripts/read-release-version.sh" "$VERSION_FILE")"
 
 if [ "$PRINT_VERSION" = true ]; then
     printf '%s\n' "$VERSION"
@@ -99,13 +97,17 @@ check_dependencies() {
     fi
     ok "Go: $GO_VERSION"
 
-    # Node.js 18+
+    # Vite 8 requires Node ^20.19.0 or >=22.12.0.
     if ! command -v node &>/dev/null; then
-        fail "未安装 Node.js。请从 https://nodejs.org/ 安装 Node.js 18+"
+        fail "未安装 Node.js。请从 https://nodejs.org/ 安装 Node.js 20.19+ 或 22.12+"
     fi
-    NODE_MAJOR=$(node --version | sed 's/v//' | cut -d. -f1)
-    if [ "$NODE_MAJOR" -lt 18 ]; then
-        fail "Node.js 版本过低 ($(node --version))，需要 18+"
+    NODE_VERSION=$(node --version | sed 's/^v//')
+    NODE_MAJOR=$(printf '%s' "$NODE_VERSION" | cut -d. -f1)
+    NODE_MINOR=$(printf '%s' "$NODE_VERSION" | cut -d. -f2)
+    if ! { [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]; } &&
+       ! { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]; } &&
+       ! [ "$NODE_MAJOR" -gt 22 ]; then
+        fail "Node.js 版本不受支持 ($(node --version))，需要 ^20.19.0 或 >=22.12.0"
     fi
     ok "Node.js: $(node --version)"
 
@@ -291,15 +293,14 @@ create_dmg() {
         DMG_ARGS+=(--volicon "$ROOT_DIR/build/darwin/icons.icns")
     fi
 
-    create-dmg "${DMG_ARGS[@]}" "$DMG_PATH" "$APP_BUNDLE" || {
-        warn "DMG 创建失败（非致命）"
-        return 0
-    }
-
-    if [ -f "$DMG_PATH" ]; then
-        ok "DMG 安装包创建完成: $DMG_PATH"
-        ls -lh "$DMG_PATH"
+    if ! create-dmg "${DMG_ARGS[@]}" "$DMG_PATH" "$APP_BUNDLE"; then
+        fail "DMG creation failed"
     fi
+    if [ ! -s "$DMG_PATH" ]; then
+        fail "DMG creation did not produce a non-empty artifact: $DMG_PATH"
+    fi
+    ok "DMG created: $DMG_PATH"
+    ls -lh "$DMG_PATH"
 }
 
 # ============================================================================
@@ -314,6 +315,8 @@ main() {
     echo ""
 
     check_dependencies
+    node scripts/sync-release-metadata.mjs --check || \
+        fail "release metadata is not synchronized with VERSION"
     build_frontend
     build_app
     create_app_bundle

@@ -2,7 +2,6 @@
 
 import { createHash } from "node:crypto";
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,14 +15,16 @@ const publicAssets = [
     path: "frontend/public/wails.png",
     license: "MIT",
     holder: "Wails contributors",
-    evidence: "pinned Wails Vue template + Wails module LICENSE",
+    expectedSha256: "aa03a350d891ed3359d7b67657a2565ba951a4ef5583a498e55421b71546413b",
+    evidence: "historical Wails Vue template copy + Wails module LICENSE",
     source: "github.com/wailsapp/wails/v3@v3.0.0-alpha2.111/internal/templates/vue/frontend/public/wails.png",
   },
   {
     path: "frontend/public/vue.svg",
     license: "MIT",
     holder: "Vue contributors",
-    evidence: "pinned Wails Vue template + Wails module LICENSE",
+    expectedSha256: "5532db34f1c52841881bab8aeca6c3e8d092bd21a689a65f4d8f8cf8041eef9d",
+    evidence: "historical Wails Vue template copy + Wails module LICENSE",
     source: "github.com/wailsapp/wails/v3@v3.0.0-alpha2.111/internal/templates/vue/frontend/public/vue.svg",
   },
 ];
@@ -52,28 +53,14 @@ async function readAsset(entry) {
   return { ...entry, bytes: content.length, sha256: sha256(content) };
 }
 
-function runGo(args) {
-  const result = spawnSync("go", args, { cwd: root, encoding: "utf8" });
-  if (result.error || result.status !== 0) {
-    throw new Error(`go ${args.join(" ")} failed: ${result.error?.message ?? result.stderr.trim()}`);
-  }
-  return result.stdout.trim();
-}
-
-async function verifyWailsTemplateCopies() {
-  const moduleDir = runGo(["list", "-m", "-f", "{{.Dir}}", "github.com/wailsapp/wails/v3"]);
-  const sourceRoot = path.join(moduleDir, "internal", "templates", "vue", "frontend", "public");
+async function verifyHistoricalTemplateCopies() {
   for (const entry of publicAssets) {
-    const internalSuffix = entry.source.split("/internal/")[1];
-    if (!internalSuffix) throw new Error(`invalid Wails source record: ${entry.source}`);
-    const sourcePath = path.join(moduleDir, "internal", internalSuffix);
-    const source = await readFile(sourcePath).catch(() => null);
     const target = await readFile(path.join(root, entry.path));
-    if (!source || sha256(source) !== sha256(target)) {
-      throw new Error(`Wails template asset differs from pinned source: ${entry.path}`);
-    }
-    if (!sourcePath.startsWith(sourceRoot)) {
-      throw new Error(`unexpected Wails template source path: ${sourcePath}`);
+    const actualSha256 = sha256(target);
+    if (actualSha256 !== entry.expectedSha256) {
+      throw new Error(
+        `historical template asset hash drifted: ${entry.path} has ${actualSha256}, expected ${entry.expectedSha256}`,
+      );
     }
   }
 }
@@ -139,14 +126,14 @@ function render(entries) {
     "",
     "The Windows ICO and macOS ICNS files are generated from the first-party `build/appicon.png` by the pinned Wails icon generator. Frontend builds must also contain exactly one `assets/codicon-*.ttf`; it is emitted by `monaco-editor` and is covered by the Monaco MIT license and `ThirdPartyNotices.txt`.",
     "",
-    "The release workflow attaches this record together with `NOTICE`, the dependency inventory, per-artifact SPDX SBOMs, provenance, and checksums.",
+    "The release workflow attaches this record together with `LICENSE`, `NOTICE`, the dependency inventory, per-artifact SPDX SBOMs, provenance, and checksums.",
     "",
   ];
   return lines.join("\n");
 }
 
 await verifyPublicAllowlist();
-await verifyWailsTemplateCopies();
+await verifyHistoricalTemplateCopies();
 await verifyDist();
 
 const entries = [];

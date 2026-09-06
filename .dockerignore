@@ -8,6 +8,11 @@ frontend/dist/
 frontend/bindings/
 frontend/.bindings-tmp*
 
+# npm may contain registry credentials even when no .env file is present.
+# Keep all local npm configuration out of every Docker build context.
+.npmrc
+**/.npmrc
+
 # Never send local credentials or private key material to the Docker daemon.
 .env
 .env.*

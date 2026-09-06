@@ -182,7 +182,7 @@ chmod +x "$APP_BUNDLE/Contents/MacOS/koyori-ide-server"
 cat > "$APP_BUNDLE/Contents/MacOS/koyori-ide" <<'L'
 #!/bin/bash
 DIR="$(dirname "$0")"
-"$DIR/koyori-ide-server" &
+WAILS_SERVER_HOST=127.0.0.1 WAILS_SERVER_PORT=34115 "$DIR/koyori-ide-server" &
 sleep 2
 open "http://localhost:34115" 2>/dev/null || true
 wait

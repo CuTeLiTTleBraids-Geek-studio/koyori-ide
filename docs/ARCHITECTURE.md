@@ -10,7 +10,7 @@
 | Layer | Technology |
 |---|---|
 | Backend | Go 1.25 |
-| Desktop runtime | Wails v3 alpha (`v3.0.0-alpha2.111`, pinned in `go.mod`) |
+| Desktop runtime | Wails v3 pre-release (`v3.0.0-beta.8`, pinned in `go.mod`) |
 | Frontend | Vue 3 + TypeScript + Vite |
 | Editor | Monaco Editor |
 | UI library | Element Plus |
