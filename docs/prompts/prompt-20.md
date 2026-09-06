@@ -197,3 +197,58 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
   - `bash -n build/scripts/finalize-release-0.2.0.sh` → 语法通过。
 - 证据类型：`T`（本地自动化验证；CI run 见收敛轮统一 dispatch）。
 - 剩余边界：守卫覆盖文本文件（`textExtensions`/`textBasenames` 白名单扩展名）；二进制与忽略路径不在扫描面（沿 P19 既定 scope）。
+
+### P0-01：main 基线修复（对应 AC-01 部分）— 状态：`complete`（合并待用户决策）
+
+- 实现（PR #43，分支 p20/p0-01-nanoid → main）：
+  - `frontend/package.json` + `frontend/package-lock.json`：`overrides: {"nanoid": "^3.3.18"}`，nanoid 3.3.17→3.3.18（diff 仅 3 insertions/1 deletion，无其他漂移）。
+  - `go.mod`/`go.sum`：x/crypto v0.54.0→v0.56.0（新 advisory，见下）。
+  - `docs/THIRD_PARTY_LICENSES.md`：G17 清单重生成（依赖变更触发）。
+  - `.github/workflows/ci.yml` govulncheck job：go-version 1.25→1.26.6（1.25 最新补丁仍命中 Go stdlib advisory GO-2026-6218/6090/6088/5972）。
+- 复诊结论（P0-01.2/P0-01.3）：
+  - **PR #24 上的 Govulncheck FAILURE = 陈旧 run**（2026-08-18，旧 base），当前 main 同 job 已 success。
+  - **新 advisory 实锤**：GO-2026-6354/GO-2026-6355（golang.org/x/crypto v0.54.0，fixed v0.56.0；调用点 `services/remote_service.go:1212` dialSSH、`services/git_service.go:863` Push），8-31 至 9-5 之间发布；已按最小升级修掉（x/crypto v0.56.0，两个线都打上）。
+  - **LSP real-server matrix (optional) 失败 = 环境缺失**：`lsp-integration` job 无 GTK4/webkit GUI 依赖安装步骤（其他 Linux job 都有），`pkg-config` 找不到 `gtk4/webkitgtk-6.0` 导致 services 编译失败；非产品回归，optional 不阻塞。
+- `T`：npm ci 后 nanoid=3.3.18；vitest 2730 全绿（1 个未复现偶发）；vue-tsc exit 0（bindings 重生成后；此前 8 个报错均为本地陈旧 bindings 伪影）；npm-audit-gate PASS。
+- 边界：PR #43 的合并受 main 分支保护（13 required checks + 1 approving review + enforce_admins）阻塞——owner 是唯一账号，自 PR 自评被 GitHub 拒绝，需用户决策合并路径。
+
+### P0-02：分支收敛（对应 AC-03）— 状态：`complete`（PR #44，合并待用户决策）
+
+- **依赖线决策记录**：收敛到 **alpha2.111 线**（release/v0.2.0）——唯一有完整 P16~P19 测试证据的线；main 的 beta.5 线从未跑过产品代码完整测试。main 的 beta.5 bump（#11/#20）在默认分支回退；后续 Wails 升级走 P1-06 验收门。完整决策记录见 PR #44 描述与合并提交信息。
+- 实现（PR #44，分支 p20/converge-main → main，merge commit 700cef5 + fix 36cf64c + 1cae450）：
+  - go.mod/go.sum、bindings manifest、frontend 依赖、.golangci.yml：release 侧为准。
+  - ci.yml：三方并集（release 的 P19 守卫 job + lint/vulncheck 修复；main 的 job 集 + node 20.19 pin）；CLI pin 对齐 alpha2.111。
+  - vitest.config.ts：release P19 stub + main G-CI-15/17（forks 池 + teardown 噪声容忍；该竞态在收敛树上实际复现）。
+  - 产品代码：release 整体为准；重新应用 main 独有的两个真实修复——1d15d57（LSP 项目打开重探测 + 版本探测限时，`services/lsp_service_server.go`）与 b9e4d14（PTY TERM + 非零 winsize，`services/pty_unix.go`）；其余 main 独有 .go 改动（8335d6f 的 lint 清理）被 release 线取代；agent_write_approval.go 维持删除。
+- 过程中发现并修正的两个偏差：
+  - prompt-20 §2.3-B "main 领先 24 提交全是依赖线" 预判**不完全准确**：main 独有 1d15d57/b9e4d14 是真实产品修复，已在收敛树保留（上方已列）。
+  - P1-03 曾把 `imProviderTypes` var 插在 UpdateConfig 文档注释与函数之间，使注释脱离函数、CI 生成的 imservice.ts 哈希漂移、bindings 门禁失败（d09239a 修复）。经 5 轮 CI 二分（bf002dc 绿 → e4f1097 绿 → e4ab278? → 7db2593 红）+ debug dump 定位。
+- `T`（收敛树本地，Windows）：go vet/build exit 0；TestGit ok；AI/MCP 组 ok；surface 测试 ok；vitest 187 文件/2989 测试全绿；vue-tsc exit 0；check-bindings-imports/package-manager/personal-paths/wails-pin/npm-audit-gate 全 exit 0。bindings manifest 审计以 Linux CI 为权威。
+- 边界：合并同样受 main 分支保护阻塞（与 #43 同一决策）。
+
+### P0-04：packaged-e2e 源指纹门禁修复（对应 AC-05）— 状态：`complete`（最终 dispatch 验证 run 见下）
+
+- 根因（本地逐文件指纹探针 + 失败 run 日志定位）：Linux 的 wails3 build 任务管线会**重写三个被跟踪的派生产物**——`linux:common:generate:icons` 重写 `build/darwin/icons.icns` 与 `build/windows/icon.ico`（自 `build/appicon.icon`/`appicon.png`），`linux:generate:dotdesktop` 用 CLI 内置模板覆盖手工定制过的 `build/linux/koyori-ide.desktop`（提交版含 `Categories=Development;IDE;`/`StartupWMClass`，模板版没有）——文件集不变、内容变化，恰为 "source fingerprint changed during build"。Windows 构建路径不含 icons 任务（本地零变化，解释了 Windows 复现失败）。
+- 实现：`scripts/packaged-e2e.mjs` 指纹输入集纳入三个派生产物豁免（scope `build-inputs-v2`→`build-inputs-v3`），规范源（appicon.*、Taskfile）仍被指纹绑定；`packaged-e2e-driver.test.mjs` 同步豁免用例。后继发现 `internal/e2e/server.go` 的 terminal-exit-probe 硬编码 `cmd` shell（Linux 无此二进制），改为按平台选择（ef863d3）。
+- `T`：`node --test scripts/packaged-e2e-driver.test.mjs` → 75 pass/0 fail/1 skip（本机无法建 symlink 的既有跳过）；`node scripts/packaged-e2e.mjs --dry-run` → exit 0；本地逐文件指纹快照 diff（frontend build、wails3 build）→ 零变化。
+- dispatch 证据链：run 33966360992（5c91d4e）——**指纹门禁通过**（失败点推进到 exit-probe）；run 33973283167/34027036181（d09239a/2c72d7d）——G17 清单重生成后的完整验证（结论见 AC 审计）。
+
+### P1-02：marketplace 相邻 SSRF 收口（对应 AC-06）— 状态：`complete`（e4ab278）
+
+- 实现：`services/marketplace_service.go` 的 `httpGetBytes`（sha256 sidecar、readme 两个 registry 信任的 URL 面）统一过 `validateDownloadURL` 门 + `noRedirectPolicy` + `marketplaceTransport()`（`NewSSRFSafeTransport` dial-time 复验，tests 可经 `allowLoopbackDownloadURLs` 接缝换 nil）；VSIX 漏斗（`downloadVSIXToTempFile`）transport 为空时改用 SSRF-safe transport；registry base JSON（用户已验证面）不加 URL 门，避免波及 httpGetJSON 既有契约。
+- `T`：`TestGetExtensionReadme_RejectsPrivateReadmeURL`（生产门，环回 registry 返回私网 readme URL 必须拒绝）；`TestGetExtensionReadme_DoesNotFollowRedirects`（302→"私网" 计数为 0）；既有 P1-04 组回归全绿；marketplace 全组 ok。
+
+### P1-03：IM 未知 Type fail-closed（对应 AC-06）— 状态：`complete`（7db2593 + d09239a）
+
+- 实现：`services/im_service.go` 增加 `imProviderTypes` 白名单（slack/discord/feishu/wechat_work）；`UpdateConfig` 对已配置 provider（有 WebhookURL 或 BotToken）拒绝白名单外 Type；`sendToProvider` 顶部对未知 Type 返回 `ErrNotAllowed`（覆盖旧版持久化的遗留配置）。
+- `T`：`TestIMService_UpdateConfig_RejectsUnknownProviderType`（保存拒绝 + 草稿放行）；`TestIMService_SendMessage_UnknownTypeFailsClosed`（直接注入内存配置绕过白名单，legacy/空 Type 发送均 ErrNotAllowed 且出站计数为 0）；TestIM 全组 ok。
+- 教训记录：var 插入位置曾截断 UpdateConfig 文档注释导致 bindings 门禁失败（见 P0-02 段），d09239a 修复。
+
+### P1-05：goroutine recover 策略（对应 AC-08）— 状态：`complete`（f43c5f7）
+
+- 实现：新增 `services/goroutine_guard.go`——`RecoverGoroutinePanic(scope)`（defer 用，panic → slog 结构化错误 + 可插拔 sink）与 `SetGoroutinePanicSink`（bootstrap 挂接 CrashService，panic 落盘为 goroutine-panic 崩溃报告）。按"不撒网"原则施加到 8 个长生命周期站点：事件泵（main.go 时间泵 `main:time-pump`、terminal PTY 输出泵 `terminal:read-pump`）、流 worker（AI stream worker + idle 泵、MCP notification dispatch、MCP SSE readLoop、LSP readLoop）、服务后台循环（secrets 审计写入泵）。短生命周期 reaper/fire-and-forget 不动。
+- `T`：`TestRecoverGoroutinePanic_ReportedWithoutKillingProcess`（panic 后进程存活、sink 收到 scope/payload/stack）；`TestRecoverGoroutinePanic_NoPanicNoReport`；`TestSetGoroutinePanicSink_ReturnsPreviousSink`（nil sink 不炸）。受影响模块回归（AI/MCP/LSP/Terminal/Secret/Git）ok。
+
+### P1-06：Wails 升级验收门（对应 AC-08 之外的结构性收口）— 状态：`complete`（d0f87e2）
+
+- 实现：`docs/WAILS-UPGRADE-GATE.md`——7 项验收门（CLI pin 联动、bindings+manifest 重生成、forbidden/required 策略复核、§2.1 全量重跑、surface 契约、packaged dispatch 绿、单 PR 纪律）+ 3 项明确禁止。单一文件，不重复。
