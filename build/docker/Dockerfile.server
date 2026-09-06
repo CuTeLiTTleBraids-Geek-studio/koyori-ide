@@ -22,7 +22,7 @@ ARG CGO_ENABLED=0
 # manually modified binding can enter the image.
 FROM golang:1.25-alpine@sha256:3eb6c2b3db8d55e38537302edb510b4417f8a115efbd5906d131ceba9468e29a AS bindings-go
 
-FROM node:20.19-alpine@sha256:658d0f63e501824d6c23e06d4bb95c71e7d704537c9d9272f488ac03a370d448 AS frontend-builder
+FROM node:26.8-alpine@sha256:2d984a15c9b54fd0aeb608b8e0d0d83529eb34d2966db27a1fb4f1edc3d298a3 AS frontend-builder
 COPY --from=bindings-go /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}" \
     GOTOOLCHAIN=local
