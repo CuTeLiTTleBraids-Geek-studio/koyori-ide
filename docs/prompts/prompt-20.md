@@ -375,3 +375,10 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - dispatch [34758848260](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34758848260) 其余 job 绿，packaged-e2e 红：`source fingerprint changed during build`，phase=`source-verification`，fixture 全部 `not-run`。**不是** WebKitGTK SIGTRAP；启动阶段未到达。
 - 证据：artifact `packaged-e2e-evidence` / `sourceFingerprintStableAfterBuild=false` / scope `build-inputs-v3` / fileCount 1090。错误未列出具体文件。
 - 处理：scope `build-inputs-v4`，豁免 `build/darwin/Assets.car`（`generate icons -macassetdir darwin`）与 `build/linux/desktop`；断言在有 per-file digest 时列出变更路径。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `e143a54`，不改写 U）**
+
+- PR required CI [34759945595](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34759945595) success。
+- dispatch [34759946812](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34759946812) packaged-e2e 红：`source fingerprint changed during build: frontend/package-lock.json`。指纹已过图标豁免，启动阶段仍未到达。
+- 原因：`wails3 build` → `common:install:frontend:deps:npm` 跑 `npm install`，npm 11 会改写已提交的 lockfile。CI 其它 job 用 `npm ci`。
+- 处理：Taskfile 改为 `npm ci --registry=https://registry.npmjs.org`；`wails-bindings.test.mjs` 钉死不得回退到 `npm install`。
