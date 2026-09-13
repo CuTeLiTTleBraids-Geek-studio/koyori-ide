@@ -8,7 +8,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 - `go.mod`: `ab3c07d72f4e3d727b4044465c34b17e5587f7e9039367798fb54965882945ae`
 - `go.sum`: `46830783b4a1d3eb1757c1791d57c4ca678c6ea387b254730697eaff5ceedcd6`
-- `frontend/package-lock.json`: `99e8f49c07a5274dcbc7a7585d79070397054ea05f52cff546a971c59302a08e`
+- `frontend/package-lock.json`: `dc03dcab8f784db1d651de5a33d63eac5118cfae5cbbca5af00afdcd56c07f4e`
 
 ## Review Summary
 
@@ -355,7 +355,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | glob-parent | 6.0.2 | ISC | package-lock.json |
 | globals | 13.24.0 | MIT | package-lock.json |
 | globals | 14.0.0 | MIT | package-lock.json |
-| globals | 15.15.0 | MIT | package-lock.json |
+| globals | 17.12.0 | MIT | package-lock.json |
 | graceful-fs | 4.2.11 | ISC | package-lock.json |
 | has-flag | 4.0.0 | MIT | package-lock.json |
 | he | 1.2.0 | MIT | package-lock.json |
