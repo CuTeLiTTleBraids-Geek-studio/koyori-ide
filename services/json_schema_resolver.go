@@ -93,16 +93,16 @@ const (
 	jsonLSPOptionsTimeout         = 3 * time.Second
 )
 
-	func NewJSONSchemaResolver(cacheDir string) *JSONSchemaResolver {
-		return newJSONSchemaResolver(jsonSchemaResolverOptions{
-			CacheDir:     cacheDir,
-			Client:       &http.Client{Transport: NewSSRFSafeTransport()},
-			AllowedHosts: []string{"json.schemastore.org"},
-			Timeout:      defaultJSONSchemaTimeout,
-			MaxBodyBytes: defaultJSONSchemaMaxBodyBytes,
-			Definitions:  jsonSchemaDefinitions,
-		})
-	}
+func NewJSONSchemaResolver(cacheDir string) *JSONSchemaResolver {
+	return newJSONSchemaResolver(jsonSchemaResolverOptions{
+		CacheDir:     cacheDir,
+		Client:       &http.Client{Transport: NewSSRFSafeTransport()},
+		AllowedHosts: []string{"json.schemastore.org"},
+		Timeout:      defaultJSONSchemaTimeout,
+		MaxBodyBytes: defaultJSONSchemaMaxBodyBytes,
+		Definitions:  jsonSchemaDefinitions,
+	})
+}
 
 func BuildJSONLSPInitializationOptions(workspaceRoot string) map[string]interface{} {
 	cacheDir := filepath.Join(workspaceRoot, ".koyori-ide", "json-schema-cache")
@@ -117,9 +117,9 @@ func BuildJSONLSPInitializationOptions(workspaceRoot string) map[string]interfac
 }
 
 func newJSONSchemaResolver(options jsonSchemaResolverOptions) *JSONSchemaResolver {
-		if options.Client == nil {
-			options.Client = &http.Client{Transport: NewSSRFSafeTransport()}
-		}
+	if options.Client == nil {
+		options.Client = &http.Client{Transport: NewSSRFSafeTransport()}
+	}
 	if options.Timeout <= 0 {
 		options.Timeout = defaultJSONSchemaTimeout
 	}
