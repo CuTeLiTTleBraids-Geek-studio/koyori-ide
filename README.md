@@ -9,7 +9,7 @@
 基于 **Go (Wails v3) + Vue 3 + Monaco Editor** 构建，单文件打包、离线优先、本地工具链优先——喵，断网也能好好写代码哦。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
-![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&style=flat-square)
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&style=flat-square)
 ![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js&style=flat-square)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&style=flat-square)
 ![Wails](https://img.shields.io/badge/Wails-v3%20alpha-red?style=flat-square)
@@ -154,7 +154,7 @@ flowchart LR
         ST["模块级单例 store<br/>terminal · git · lsp · debug · ai …"]
         API["Wails 生成绑定（TS）"]
     end
-    subgraph BE["Backend · Go 1.25 + Wails v3"]
+    subgraph BE["Backend · Go 1.26 + Wails v3"]
         SVC["47 个后端服务<br/>AI · Agent · LSP · Terminal · Git · Plugin …"]
         EV["Wails 事件总线<br/>ai:chunk · terminal:output · file:saved …"]
         SEC["安全核心<br/>pathsec · atomic_write · ai_urlsec · secrets"]
@@ -172,7 +172,7 @@ flowchart LR
 
 | 层级 | 技术 |
 |---|---|
-| 后端 | Go 1.25 · Wails v3 (`v3.0.0-alpha2.111`，go.mod 精确锁定) |
+| 后端 | Go 1.26 · Wails v3 (`v3.0.0-alpha2.111`，go.mod 精确锁定) |
 | 前端 | Vue 3 · TypeScript 5 · Vite 8 · Tailwind CSS v4 |
 | 编辑器 | Monaco Editor 0.52 |
 | UI | Element Plus 2.14 |
@@ -219,8 +219,8 @@ flowchart LR
 
 | 工具 | 最低版本 |
 |---|---|
-| Go | 1.25 |
-| Node.js | 20 |
+| Go | 1.26.0（toolchain 1.26.6） |
+| Node.js | 20.19 |
 | Wails3 CLI | `v3.0.0-alpha2.111`（精确版本，需与 go.mod / CI 一致） |
 
 ```bash
@@ -236,7 +236,7 @@ cd frontend && npm ci && cd ..
 wails3 dev -config ./build/config.yml -port 9245
 
 # 3b. 生产构建（在对应平台原生执行）
-wails3 build -tags desktop,production
+	wails3 build -tags desktop,production DEV=false
 ```
 
 修改导出的 Go 服务方法后，重新生成并校验绑定：
@@ -257,7 +257,7 @@ koyori-ide/
 ├── main.go                       # Go 入口：服务注册、事件绑定、CSP nonce、资源嵌入
 ├── bootstrap_services.go         # 47 个后端服务的装配（appBundle）
 ├── main_test.go / g13_wiring_test.go # 根包测试：入口生命周期与装配接线（package main 约束）
-├── go.mod / go.sum               # 模块 github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide（Go 1.25）
+├── go.mod / go.sum               # 模块 github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide（Go 1.26）
 ├── Taskfile.yml                  # 开发/构建/门禁任务（含 bindings:check、docs:check）
 ├── VERSION                       # 版本单一事实来源（当前 0.2.0）
 ├── icon.png                      # 项目图标（release workflow 会将其放入发布资产）
@@ -389,6 +389,6 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）覆盖三平台测�
 
 **Honest boundaries**: this is a 0.x experimental project on Wails v3 alpha — **not a replacement for VS Code, Cursor, or IntelliJ**, and **not production- or enterprise-ready**. Remote development is a minimal SSH/SFTP surface (no remote PTY/agent/port forwarding), VSIX support is a constrained permission-gated subset of the VS Code Extension API, and `gopls` / `typescript-language-server` / `vtsls` were absent from the verification machine, so no real LSP session is claimed. See the [verification boundary table](#当前能力与验证边界vsu) above and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Quick start**: Go 1.25 + Node 20 + `wails3` CLI (exact `v3.0.0-alpha2.111`), then `cd frontend && npm ci && cd ..` and `wails3 dev -config ./build/config.yml -port 9245`. Production: `wails3 build -tags desktop,production` (native platform only).
+**Quick start**: Go 1.26 + Node 20.19 + `wails3` CLI (exact `v3.0.0-alpha2.111`), then `cd frontend && npm ci && cd ..` and `wails3 dev -config ./build/config.yml -port 9245`. Production: `wails3 build -tags desktop,production DEV=false` (native platform only). alpha2.111's Taskfile requires an explicit `DEV` value.
 
 **License**: [MIT](LICENSE)

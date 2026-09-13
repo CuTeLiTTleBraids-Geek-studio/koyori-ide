@@ -14,14 +14,17 @@ assert(match, `[wails-pin] ${modulePath} is not pinned in go.mod`);
 const pinnedVersion = match[1];
 assert(!/[xX*]|latest/i.test(pinnedVersion), `[wails-pin] invalid floating version: ${pinnedVersion}`);
 
-const pinDeclarationFiles = [
-  ".github/workflows/ci.yml",
-  ".github/workflows/release.yml",
-  ".github/workflows/release-installers.yml",
-  "build/scripts/build-windows.ps1",
-  "docs/RELEASING.md",
-  "docs/E2E.md",
-];
+	const pinDeclarationFiles = [
+	  ".github/workflows/ci.yml",
+	  ".github/workflows/release.yml",
+	  ".github/workflows/release-installers.yml",
+	  "build/scripts/build-windows.ps1",
+	  "build/scripts/wsl-install-toolchain.sh",
+	  "docs/RELEASING.md",
+	  "docs/E2E.md",
+	  "docs/ARCHITECTURE.md",
+	  ".github/CONTRIBUTING.md",
+	];
 
 for (const relative of pinDeclarationFiles) {
   const source = await readFile(path.join(root, relative), "utf8");

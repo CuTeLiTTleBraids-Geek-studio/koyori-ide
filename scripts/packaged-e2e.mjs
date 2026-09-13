@@ -1160,6 +1160,20 @@ async function launchArtifact({ artifact, fixture, display, index, runId }) {
     env: {
       ...process.env,
       ...(display ? { DISPLAY: display } : {}),
+      // Headless Linux (GitHub Actions + Xvfb): WebKitGTK's bubblewrap
+      // sandbox fails with "bwrap: loopback: Failed RTM_NEWADDR" then
+      // SIGTRAP on the credentials portal. Disable the sandbox and a11y
+      // bus, and force software GL. These are test-runner-only.
+      ...(process.platform === "linux"
+        ? {
+            WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1",
+            WEBKIT_DISABLE_COMPOSITING_MODE: "1",
+            GTK_A11Y: "none",
+            NO_AT_BRIDGE: "1",
+            LIBGL_ALWAYS_SOFTWARE: "1",
+            GSETTINGS_BACKEND: "memory",
+          }
+        : {}),
       XDG_CONFIG_HOME: path.join(fixture.configDir, `launch-${index}`),
       // Isolate the instance lock and UserConfigDir-backed state (profiles,
       // settings path resolution) per launch, so a packaged artifact never

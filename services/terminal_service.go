@@ -176,14 +176,21 @@ var allowedShells = map[string]bool{
 	"wsl":        true,
 }
 
-// isAllowedShell returns true if the shell's base name (with .exe stripped
-// on Windows) is in the allowedShells whitelist. This prevents the frontend
-// from launching an arbitrary binary as a terminal shell (M-4).
+// isAllowedShell returns true if the shell is a bare whitelist name
+// (with .exe stripped on Windows). Paths are rejected: a workspace file
+// named "bash" must not satisfy the allowlist via filepath.Base.
 func isAllowedShell(shell string) bool {
-	base := filepath.Base(shell)
-	// HIGH-01: lowercase before trimming .exe so "CMD.EXE" / "PowerShell.exe"
-	// normalize correctly (previously TrimSuffix(".exe") missed uppercase).
-	base = strings.ToLower(base)
+	trimmed := strings.TrimSpace(shell)
+	if trimmed == "" {
+		return false
+	}
+	if strings.ContainsAny(trimmed, `/\`) || filepath.IsAbs(trimmed) {
+		return false
+	}
+	if filepath.Base(trimmed) != trimmed {
+		return false
+	}
+	base := strings.ToLower(trimmed)
 	base = strings.TrimSuffix(base, ".exe")
 	return allowedShells[base]
 }

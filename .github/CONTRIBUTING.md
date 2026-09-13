@@ -19,9 +19,9 @@ Thank you for contributing! This document covers setup and project conventions.
 
 ### 前置条件 / Prerequisites
 
-- **Go** 1.25+
-- **Node.js** 20.19+ 或 22.12+（含 npm）
-- **Wails3 CLI** `v3.0.0-beta.8`（用于 `wails3 dev` / `wails3 build`；不要使用 `@latest`）
+- **Go** 1.26.0+（toolchain `go1.26.6`，与 `go.mod` / CI 一致）
+- **Node.js** 20.19+ 或 22.12+（含 npm；`frontend/package.json` `engines.node` 钉 `>=20.19`）
+- **Wails3 CLI** `v3.0.0-alpha2.111`（用于 `wails3 dev` / `wails3 build`；必须与 `go.mod` 同 pin，不要使用 `@latest` 或 beta 线）
 
 ### 获取代码 / Clone
 
@@ -57,10 +57,10 @@ cd frontend && npm ci
 wails3 dev -config ./build/config.yml -port 9245
 ```
 
-安装与 `go.mod`、CI 一致的 beta CLI：
+安装与 `go.mod`、CI 一致的 CLI：
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 ```
 
 或分终端手动启动 / or two terminals:

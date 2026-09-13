@@ -87,6 +87,25 @@ func JoinAIEndpoint(baseURL, apiPath string) string {
 	return base + apiPath
 }
 
+// sameAIOrigin reports whether two AI base URLs share scheme+host+port after
+// NormalizeAIBaseURL. Used so ListModels cannot attach a stored API key to a
+// caller-chosen host that is not the configured provider origin.
+func sameAIOrigin(left, right string) bool {
+	parse := func(raw string) (*url.URL, error) {
+		u, err := url.Parse(NormalizeAIBaseURL(raw))
+		if err != nil || u.Host == "" {
+			return nil, fmt.Errorf("unusable url")
+		}
+		return u, nil
+	}
+	a, errA := parse(left)
+	b, errB := parse(right)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
 // isLoopbackHost reports whether host is a loopback address. It accepts:
 //   - "localhost"
 //   - "*.localhost" (e.g. "ollama.localhost")
@@ -117,13 +136,38 @@ func isLoopbackHost(host string) bool {
 //   - link-local unicast (169.254.0.0/16, IPv6 fe80::/10) — covers the
 //     cloud metadata endpoint 169.254.169.254
 //   - unspecified (0.0.0.0, ::)
+//   - CGNAT / shared address space (100.64.0.0/10), including some cloud
+//     metadata endpoints such as 100.100.100.200
+//   - benchmark / documentation ranges used as internal test nets
+//     (198.18.0.0/15)
 //
+// IPv4-mapped IPv6 addresses are reduced to IPv4 before the checks.
 // A nil ip is treated as private (fail-closed).
 func isPrivateHost(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return true
+	}
+	return isSharedAddressSpace(ip)
+}
+
+func isSharedAddressSpace(ip net.IP) bool {
+	if ip4 := ip.To4(); ip4 != nil {
+		// RFC 6598 CGNAT 100.64.0.0/10
+		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			return true
+		}
+		// RFC 2544 / RFC 5735 benchmark 198.18.0.0/15
+		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateResolvedHosts resolves host via A/AAAA and rejects if any returned

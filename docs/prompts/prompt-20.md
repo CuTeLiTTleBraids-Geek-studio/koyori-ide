@@ -317,3 +317,46 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - alpha2.111 的 `InsecureSkipVerify: true` 仍在上游；同源校验只在中间件层。Wails 升级前不得删该中间件。
 - CI `on.push` 的 Packaged desktop E2E job 在部分 push run 上是 skipped（非 PR gate）；不能用 push CI success 声称 packaged E2E 绿。
 - vitest 4.x teardown 仍有 EnvironmentTeardownError 噪声；G-CI-15/17（forks + `dangerouslyIgnoreUnhandledErrors`）保持，不视为产品失败。
+
+### 执行日志（CI/OSS 补强轮，基线 HEAD `30930ac`）
+
+本段只追加本轮证据，不改写上文 U 项。Linux packaged desktop E2E 仍 `U`。
+
+**本轮目标**
+
+1. 尝试降低 Linux GHA WebKitGTK SIGTRAP（bubblewrap / credentials portal），job 仍 `workflow_dispatch` only。
+2. 去掉 leftover `actions/setup-node@v4.4.0`（Node 20 action runtime 弃用）。
+3. 对齐开源文档：Go 1.26 / Node 20.19 / Wails `v3.0.0-alpha2.111`。
+4. 收口相邻安全残留：marketplace JSON SSRF、CGNAT/`198.18/15`、ListModels 密钥同源、IM 占位符不清密钥、终端路径伪装 shell、pprof 输入沙箱。
+
+**实现要点**
+
+- `ci.yml` packaged-e2e：`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`、`GTK_A11Y=none`、`LIBGL_ALWAYS_SOFTWARE=1`、`dbus-x11`/`at-spi2-core`、`XDG_RUNTIME_DIR` + `dbus-run-session -- node scripts/packaged-e2e.mjs`。`if: github.event_name == 'workflow_dispatch'` 未改。
+- `scripts/packaged-e2e.mjs` Linux spawn 同步上述环境变量。
+- `httpGet` / `httpGetJSON` 与 `httpGetBytes` 对齐：`validateDownloadURL` + `marketplaceTransport` + `noRedirectPolicy`。
+- `isPrivateHost` 拒绝 CGNAT `100.64/10` 与 benchmark `198.18/15`（含 IPv4-mapped）。
+- `ListModels` 空 key 仅在 `sameAIOrigin(baseURL, storedBase)` 时附加存储密钥。
+- IM：`(configured —edit to overwrite)` 与空字段均 keep-existing。
+- `isAllowedShell` 拒绝 `/\`、绝对路径、以及 `filepath.Base != trimmed`。
+- `AnalyzeProfile` 对 renderer 路径走 `ValidateMutatingPathWithinRoot`；`AnalyzeTrace` 的 toolchain 临时文件走内部 `analyzeProfileFile`，避免 temp 被沙箱误拒。
+- 文档：README / CONTRIBUTING / ARCHITECTURE / RELEASING / E2E / SECURITY / wsl-install-toolchain / `engines.node >=20.19`。
+
+**本地证据（`T`）**
+
+- `go test ./services -count=1 -run 'TestHTTPGetJSON_|TestGetExtensionReadme_RejectsPrivateReadmeURL|TestDownloadAndInstallExtension_RejectsPrivateDownloadURL|TestIsPrivateHost_C1|TestValidateNonPrivateURL_C1|TestAIService_ListModels_DoesNotAttachStoredKeyToForeignOrigin|TestIMService_UpdateConfig_PreservesSecretsOnPlaceholderAndEmpty|TestIsAllowedShell|TestTerminalService_StartSession_RejectsPathDisguisedAsWhitelistedShell|TestProfileService_AnalyzeProfileRejectsInputOutsideWorkspaceRoot|TestMarketplaceService_H3_SetRegistryURL_AcceptsValidURLs'` → ok。
+- `go test ./internal/repo -run TestG18` → ok。
+- `node scripts/check-wails-pin.mjs` → OK（`v3.0.0-alpha2.111`）。
+- `node scripts/check-personal-paths.mjs` → OK。
+- `node --test scripts/packaged-e2e-driver.test.mjs` → 75 pass / 1 skip（Windows 无法创建 file symlink）。
+
+**仍 `U`（不改写）**
+
+- Linux packaged E2E：历史 dispatch `34027036181`（commit `2c72d7d`）fixture 1–6 通过，fixture 7 `terminal-reconnect-package` WebKitGTK SIGTRAP（`bwrap: loopback Failed RTM_NEWADDR` / credentials portal）。本轮改动尚未经新的 dispatch 验证；一次绿也不等于三次 consecutive qualification。
+- Dependabot Updates 422 / alerts API 403：GitHub 侧，仓内无法单独修完。
+- 真实 UI smoke、外部 provider、跨平台 packaged/release、Wails beta / TS7 / jsdom 30 / eslint-plugin-vue 10：保持 `U` 或 #52。
+
+**开源可用性（审查结论，非完成声明）**
+
+- 贡献者按 README 从源码构建：Go 1.26.0+ / Node 20.19+ / `wails3@v3.0.0-alpha2.111` / `DEV=false` 文档已对齐（`T` 于文档与守卫脚本）。
+- GitHub About 描述/topics/homepage 仍空；无正式 `v0.2.0` tag（仅 `beta0.2.0`）；Release 资产与 README 矩阵不对齐。陌生人不能把 GitHub Releases 当产品安装包。`U`。
+- 不要把本轮安全补丁宣传成「已 hardening 的远程 IDE」：session/gateway 模型未在本轮覆盖。

@@ -3131,14 +3131,20 @@ func (a *AIService) ListModels(baseURL, apiKey string) ([]string, error) {
 	// TestAIService_ListModels_NoAPIKey.
 	if apiKey == "" {
 		a.mu.RLock()
-		if a.config.APIKey != "" {
-			apiKey = a.config.APIKey
-		} else if a.config.ConfigID != "" && a.settingsService != nil {
-			if key, kerr := a.settingsService.getAPIKeyForConfig(a.config.ConfigID); kerr == nil && key != "" {
-				apiKey = key
+		storedKey := a.config.APIKey
+		storedBase := a.config.BaseURL
+		configID := a.config.ConfigID
+		a.mu.RUnlock()
+		if storedKey == "" && configID != "" && a.settingsService != nil {
+			if key, kerr := a.settingsService.getAPIKeyForConfig(configID); kerr == nil && key != "" {
+				storedKey = key
 			}
 		}
-		a.mu.RUnlock()
+		// G-SEC-07: never attach the stored key to a caller-chosen host
+		// that is not the configured provider origin.
+		if storedKey != "" && sameAIOrigin(baseURL, storedBase) {
+			apiKey = storedKey
+		}
 	}
 	req, err := http.NewRequest("GET", JoinAIEndpoint(baseURL, "/v1/models"), nil)
 	if err != nil {

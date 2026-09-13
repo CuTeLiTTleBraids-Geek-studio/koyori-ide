@@ -170,8 +170,17 @@ func TestIsPrivateHost_C1(t *testing.T) {
 		// Unspecified
 		{"unspecified v4", "0.0.0.0", true},
 		{"unspecified v6", "::", true},
+		// CGNAT / shared address space — Alibaba-style metadata 100.100.100.200
+		{"cgnat 100.64.0.1", "100.64.0.1", true},
+		{"cgnat metadata", "100.100.100.200", true},
+		{"cgnat 100.127.255.255", "100.127.255.255", true},
+		{"benchmark 198.18.0.1", "198.18.0.1", true},
+		{"ipv4-mapped cgnat", "::ffff:100.100.100.200", true},
+		{"ipv4-mapped rfc1918", "::ffff:10.0.0.1", true},
 		// Public (allowed)
 		{"public 8.8.8.8", "8.8.8.8", false},
+		{"public 100.63.255.255", "100.63.255.255", false},
+		{"public 100.128.0.1", "100.128.0.1", false},
 		{"public TEST-NET-3", "203.0.113.1", false},
 		{"public v6", "2606:4700:4700::1111", false},
 		// nil → fail-closed
@@ -227,6 +236,11 @@ func TestValidateNonPrivateURL_C1(t *testing.T) {
 
 		// Rejected: unspecified
 		{"unspecified https", "https://0.0.0.0", true, "private"},
+
+		// Rejected: CGNAT / shared address space (cloud metadata 100.100.100.200)
+		{"cgnat https", "https://100.100.100.200/latest/meta-data", true, "private"},
+		{"cgnat 100.64", "https://100.64.0.1/", true, "private"},
+		{"benchmark 198.18", "https://198.18.0.1/", true, "private"},
 
 		// Rejected: embedded credentials
 		{"embedded creds", "https://user:pass@203.0.113.1", true, "credentials"},

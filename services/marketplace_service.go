@@ -1963,11 +1963,18 @@ func httpGetBody(resp *http.Response, err error) ([]byte, error) {
 }
 
 func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
+	// Search/browse/detail JSON used the shared 60s client with default
+	// redirects. Align it with httpGetBytes: URL gate + no-redirect +
+	// dial-time SSRF transport so a custom registry cannot 302 into
+	// private/link-local/CGNAT space.
+	if _, err := validateDownloadURL(url); err != nil {
+		return nil, fmt.Errorf("registry fetch URL %q rejected: %w", url, err)
+	}
 	s.mu.Lock()
-	client := s.httpClient
+	sharedClient := s.httpClient
 	s.mu.Unlock()
-	if client == nil {
-		client = http.DefaultClient
+	if sharedClient == nil {
+		sharedClient = http.DefaultClient
 	}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
@@ -1977,8 +1984,16 @@ func (s *MarketplaceService) httpGet(url, accept string) ([]byte, error) {
 		req.Header.Set("Accept", accept)
 	}
 	req.Header.Set("User-Agent", "koyori-ide-marketplace/1.0")
-	resp, err := client.Do(req)
-	return httpGetBody(resp, err)
+	transport := sharedClient.Transport
+	if transport == nil {
+		transport = marketplaceTransport()
+	}
+	client := &http.Client{
+		Timeout:       sharedClient.Timeout,
+		Transport:     transport,
+		CheckRedirect: noRedirectPolicy,
+	}
+	return httpGetBody(client.Do(req))
 }
 
 // extractVSIXEntries extracts zip entries from an on-disk VSIX reader.
