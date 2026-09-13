@@ -6,13 +6,13 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 ## Source Digests
 
-- `go.mod`: `ebcf55c7046776e9e2022ef295c4f9cc65afee6833ab91c03fad6e0f7addfb35`
-- `go.sum`: `06d461c712fd503b6474539a22d9d8c39d68838b97e6a4c25454799983d9aeb8`
+- `go.mod`: `ab3c07d72f4e3d727b4044465c34b17e5587f7e9039367798fb54965882945ae`
+- `go.sum`: `46830783b4a1d3eb1757c1791d57c4ca678c6ea387b254730697eaff5ceedcd6`
 - `frontend/package-lock.json`: `fcc1d8bd4d832b8247aa16f591bef9ec180d21c040cad95e5a3cde9e6714d93a`
 
 ## Review Summary
 
-- Go modules: 53
+- Go modules: 52
 - Distinct npm package/version pairs: 407
 - Unknown or unclassified licenses: 0
 - Strong-copyleft identifiers detected by the generator: 0
@@ -77,12 +77,12 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/UserExistsError/conpty | v0.1.4 | MIT | LICENSE |
 | github.com/adrg/xdg | v0.5.3 | MIT | LICENSE |
 | github.com/cloudflare/circl | v1.6.3 | BSD-3-Clause | LICENSE |
-| github.com/coder/websocket | v1.8.14 | ISC | LICENSE.txt |
+| github.com/coder/websocket | v1.8.15 | ISC | LICENSE.txt |
 | github.com/creack/pty | v1.1.24 | MIT | LICENSE |
 | github.com/cyphar/filepath-securejoin | v0.6.1 | BSD-3-Clause; BSD-3-Clause AND MPL-2.0; MPL-2.0 | COPYING.md, LICENSE.BSD, LICENSE.MPL-2.0 |
 | github.com/dustin/go-humanize | v1.0.1 | MIT | LICENSE |
 | github.com/emirpasic/gods | v1.18.1 | ISC | LICENSE |
-| github.com/fsnotify/fsnotify | v1.9.0 | BSD-3-Clause | LICENSE |
+| github.com/fsnotify/fsnotify | v1.10.1 | BSD-3-Clause | LICENSE |
 | github.com/go-git/gcfg | v1.5.1-0.20230307220236-3a3c6141e376 | BSD-3-Clause | LICENSE |
 | github.com/go-git/go-billy/v5 | v5.9.0 | Apache-2.0 | LICENSE |
 | github.com/go-git/go-git/v5 | v5.19.2 | Apache-2.0 | LICENSE |
@@ -101,7 +101,7 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/kevinburke/ssh_config | v1.4.0 | MIT | LICENSE |
 | github.com/klauspost/cpuid/v2 | v2.3.0 | MIT | LICENSE |
 | github.com/kr/fs | v0.1.0 | BSD-3-Clause | LICENSE |
-| github.com/mattn/go-isatty | v0.0.20 | MIT | LICENSE |
+| github.com/mattn/go-isatty | v0.0.24 | MIT | LICENSE |
 | github.com/ncruces/go-strftime | v1.0.0 | MIT | LICENSE |
 | github.com/pjbgf/sha1cd | v0.6.0 | Apache-2.0 | LICENSE |
 | github.com/pkg/sftp | v1.13.11 | BSD-2-Clause | LICENSE |
@@ -112,17 +112,16 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/wailsapp/wails/webview2 | v1.0.27 | MIT | LICENSE |
 | github.com/xanzy/ssh-agent | v0.3.3 | Apache-2.0 | LICENSE |
 | golang.org/x/crypto | v0.56.0 | BSD-3-Clause | LICENSE |
-| golang.org/x/exp | v0.0.0-20260410095643-746e56fc9e2f | BSD-3-Clause | LICENSE |
 | golang.org/x/net | v0.57.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sync | v0.22.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sys | v0.47.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/text | v0.41.0 | BSD-3-Clause | LICENSE |
 | gopkg.in/warnings.v0 | v0.1.2 | BSD-2-Clause | LICENSE |
 | gopkg.in/yaml.v3 | v3.0.1 | Apache-2.0 | LICENSE |
-| modernc.org/libc | v1.67.6 | BSD-2-Clause | LICENSE |
+| modernc.org/libc | v1.74.4 | BSD-2-Clause | LICENSE |
 | modernc.org/mathutil | v1.7.1 | BSD-2-Clause | LICENSE |
 | modernc.org/memory | v1.11.0 | BSD-2-Clause | LICENSE |
-| modernc.org/sqlite | v1.44.3 | BSD-3-Clause | LICENSE |
+| modernc.org/sqlite | v1.57.0 | BSD-3-Clause | LICENSE |
 
 ## npm Packages
 
