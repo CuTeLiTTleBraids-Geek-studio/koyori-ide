@@ -5,7 +5,8 @@
   "type": "module",
   "packageManager": "npm@11.16.0",
   "overrides": {
-    "nanoid": "^3.3.18"
+    "nanoid": "^3.3.18",
+    "js-yaml": "^4.3.2"
   },
   "scripts": {
     "bindings:generate": "node ../scripts/generate-bindings.mjs",
