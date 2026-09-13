@@ -215,7 +215,7 @@ jobs:
     env:
       KOYORI_IDE_E2E_DISPLAY: ':99'
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.quality-gate.outputs.commit_sha }}
           persist-credentials: false
@@ -293,7 +293,7 @@ jobs:
       GOARCH: ${{ matrix.arch }}
       ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.quality-gate.outputs.commit_sha }}
           fetch-depth: 0
@@ -759,7 +759,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.quality-gate.outputs.commit_sha }}
           persist-credentials: false
