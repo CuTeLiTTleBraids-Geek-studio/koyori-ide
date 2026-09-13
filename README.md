@@ -195,12 +195,14 @@ flowchart LR
 ### 📦 下载
 
 > 发布产物尚未全部验证，请以 [Releases](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/releases) 页面的 workflow run 与附件为准。发布证据清单见 [docs/RELEASING.md](docs/RELEASING.md)。
+>
+> 当前公开 Release 只有 `beta0.2.0`（GitHub 标为 Latest，**不是** prerelease，也**不是**正式 `v0.2.0` tag）。该次附件是安装包（Windows `msi`/`exe`，Linux AppImage/deb/rpm），**没有** macOS 资产，也**没有**下表规划的 portable zip/tar.gz。陌生人不要把该页当作已验证产品安装包。下表是 tag workflow 规划产物，不是已验证的下载清单。
 
-| 平台 | 产物 |
+| 平台 | 规划产物（tag workflow，尚未对 `v0.2.0` 验证） |
 |---|---|
-| Windows x64 | `koyori-ide-<version>-windows-amd64.zip`（需 WebView2，Win10/11 通常已内置） |
-| Linux x64 | `koyori-ide-<version>-linux-amd64.tar.gz`（需 WebKit2GTK） |
-| macOS x64 / ARM64 | `koyori-ide-<version>-darwin-amd64.zip` / `-darwin-arm64.zip` |
+| Windows x64 | `koyori-ide-v<version>-windows-amd64.zip`（需 WebView2，Win10/11 通常已内置） |
+| Linux x64 | `koyori-ide-v<version>-linux-amd64.tar.gz`（需 WebKit2GTK） |
+| macOS x64 / ARM64 | `koyori-ide-v<version>-darwin-amd64.zip` / `-darwin-arm64.zip` |
 
 <details>
 <summary><b>🖥️ Linux 依赖</b></summary>

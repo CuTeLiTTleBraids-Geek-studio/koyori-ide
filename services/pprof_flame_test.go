@@ -250,12 +250,17 @@ func TestTraceCommandTerminatesItsProcessTree(t *testing.T) {
 	}
 }
 
-func TestAnalyzeTraceRejectsNonRegularInput(t *testing.T) {
-	_, err := NewPProfService().AnalyzeTrace(t.TempDir(), "sched")
-	if err == nil || !strings.Contains(err.Error(), "regular file") {
-		t.Fatalf("AnalyzeTrace error = %v, want regular file rejection", err)
+	func TestAnalyzeTraceRejectsNonRegularInput(t *testing.T) {
+		svc := newTestPProfService(t)
+		dir := filepath.Join(svc.currentWorkspaceRoot(), "not-a-file")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, err := svc.AnalyzeTrace(dir, "sched")
+		if err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("AnalyzeTrace error = %v, want regular file rejection", err)
+		}
 	}
-}
 
 func TestPProfServiceTraceCaptureAndSchedAnalysis(t *testing.T) {
 	svc := newTestPProfService(t)

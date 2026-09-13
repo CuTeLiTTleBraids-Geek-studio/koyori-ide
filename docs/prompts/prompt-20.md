@@ -352,11 +352,19 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 **仍 `U`（不改写）**
 
 - Linux packaged E2E：历史 dispatch `34027036181`（commit `2c72d7d`）fixture 1–6 通过，fixture 7 `terminal-reconnect-package` WebKitGTK SIGTRAP（`bwrap: loopback Failed RTM_NEWADDR` / credentials portal）。本轮改动尚未经新的 dispatch 验证；一次绿也不等于三次 consecutive qualification。
-- Dependabot Updates 422 / alerts API 403：GitHub 侧，仓内无法单独修完。
+- Dependabot Updates 422：GitHub 侧，仓内无法单独修完。Dependabot alerts API 此前 403；本轮已尝试 `PUT /vulnerability-alerts`，alerts 仍可能受 GitHub 产品开关限制。
 - 真实 UI smoke、外部 provider、跨平台 packaged/release、Wails beta / TS7 / jsdom 30 / eslint-plugin-vue 10：保持 `U` 或 #52。
 
 **开源可用性（审查结论，非完成声明）**
 
 - 贡献者按 README 从源码构建：Go 1.26.0+ / Node 20.19+ / `wails3@v3.0.0-alpha2.111` / `DEV=false` 文档已对齐（`T` 于文档与守卫脚本）。
-- GitHub About 描述/topics/homepage 仍空；无正式 `v0.2.0` tag（仅 `beta0.2.0`）；Release 资产与 README 矩阵不对齐。陌生人不能把 GitHub Releases 当产品安装包。`U`。
+- GitHub About 描述/topics 已通过 API 写入（description + 7 topics）；homepage 指向仓库自身。无正式 `v0.2.0` tag（仅 `beta0.2.0` Latest，非 prerelease）。README 下载表改为「规划产物」并写明当前公开附件是安装包、无 macOS、无 portable zip/tar.gz。陌生人仍不能把 GitHub Releases 当已验证产品安装包。`U`。
+- 私密漏洞报告表单：`PUT .../private-vulnerability-reporting` 已调用；`GET` 仍可能显示 `enabled:false`（GitHub 产品开关，仓内无法单独保证）。
 - 不要把本轮安全补丁宣传成「已 hardening 的远程 IDE」：session/gateway 模型未在本轮覆盖。
+
+**CI 随访（commit `5582a72`，不改写 U）**
+
+- PR run [34757044555](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34757044555) 与 dispatch [34757057017](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34757057017) 的 Go Build & Test 三平台红。packaged-e2e 因 `needs` 失败被 skip，**不能**计为 qualification。
+- 失败 1：`TestAnalyzeTraceRejectsNonRegularInput` 在未设 workspace root 时被输入沙箱提前拒绝，未走到 `copyTraceInput` 的 regular-file 检查。已改为 `newTestPProfService` + 工作区内目录。
+- 失败 2：`TestReleaseMetadataSyncCheck`：`frontend/package.json` 的 `packageManager`/`engines` 混入 tab 缩进，`sync-release-metadata.mjs --check` 重序列化后不一致。已跑同步脚本。
+- JSON schema 生产客户端改为 `NewSSRFSafeTransport`（host 白名单仍在；补 DNS 重绑定）。测试继续注入自己的 Client。
