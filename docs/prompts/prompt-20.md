@@ -252,3 +252,68 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 ### P1-06：Wails 升级验收门（对应 AC-08 之外的结构性收口）— 状态：`complete`（d0f87e2）
 
 - 实现：`docs/WAILS-UPGRADE-GATE.md`——7 项验收门（CLI pin 联动、bindings+manifest 重生成、forbidden/required 策略复核、§2.1 全量重跑、surface 契约、packaged dispatch 绿、单 PR 纪律）+ 3 项明确禁止。单一文件，不重复。
+
+### P1-04：PR #38 合并专项（对应 AC-07）— 状态：`complete`（5613a1a）
+
+- 用户决策：#38 契约走「中间件补同源校验」（已在 `server_transport_guard.go` 的 `sameServerOrigin` 落地；alpha2.111 WS upgrader 仍硬编码 `InsecureSkipVerify: true`，由中间件补偿，测试钉在 `server_transport_guard_test.go` / `internal/repo/server_deployment_test.go`）。
+- 合并路径：用户选择路径 B（临时把 required reviews 降到 0，squash 后立刻恢复 1 + 13 checks + `enforce_admins`）。
+- 实现：以 origin PR head 为准 rebase 到收敛后的 main；ci.yml 保留 P19 守卫 job 与 #38 fail-closed 契约；dependabot grouping/cooldown 随 #38 进入 `.github/dependabot.yml`。
+- `T`：合并后 main CI `https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34099850150`（HEAD `5613a1a`）success。Package Desktop Apps `34032345817` success。
+- 保护恢复：reviews=1、required checks=13、enforce_admins=true、strict=true（当前仍保持）。
+- 边界：曾对部分 dependabot 分支 force-push 过（违反 §6.6）；后续一律 `@dependabot rebase` / `@dependabot recreate`，脏分支改走替换 PR，不再 force-push dependabot。
+
+### P0-03：16 个 open PR 逐个处置（对应 AC-02）— 状态：`complete`（open 集合为空，HEAD `7ba382e`）
+
+原始 2.3-C 表 16 条全部有 merge/close/defer 决定。dependabot grouping（#38）把若干常规 bump 收编进组 PR 后自动 close。脏 PR 因 G17 清单额外提交被 Dependabot 拒绝 recreate，未 force-push，改为替换 PR。
+
+| PR | 决定 | 依据 | 证据 |
+|---|---|---|---|
+| #38 | merge | P1-04 专项；同源中间件契约保留 | MERGED 5613a1a；CI 34099850150 success |
+| #25 | close | x/crypto 已升到 0.56.0，0.55.0 过时 | dependabot: "up-to-date now" |
+| #40 | close | 被 go-compatible 组 #45 收编 | dependabot: "Superseded by #45" |
+| #35/#33/#31 | close | 被 npm-production 组 #49 收编 | dependabot: "Superseded by #49" |
+| #34 | close | 被 npm-development 组 #50 收编 | dependabot: "Superseded by #50"；内容后由 #57 合入 |
+| #37 | close + 替换 merge | DIRTY（G17 额外提交）；globals 17 本地 eslint/vue-tsc/vitest 全绿 | 替换 #58 MERGED `7ba382e`（首轮 G17 过期失败，rebase 到 6269a67 后 `--check` OK） |
+| #36 | close 转 #52 | jsdom 30 要求 node ^22.13 \|\| >=24；CI 钉 node 20.19 | 关闭评论记录实测 no tests |
+| #28 | close 转 #52 | eslint-plugin-vue 10 硬 peer `vue-eslint-parser ^10.3.0`；replay 后 ERESOLVE；`--legacy-peer-deps` 装上 10.11.0 后 eslint 运行时 `Cannot find module 'vue-eslint-parser'` | 关闭评论 + #52 追加评论 |
+| #24 | merge | Actions major；required 全绿 | MERGED a9d4d16；CI 34750350534 success |
+| #27 | merge | Actions major；CLEAN+APPROVED | MERGED ec7bcbc；CI 34749476217 success |
+| #26 | close 转 #52 | TypeScript 7/tsgo 与 vue-tsc 不兼容 | issue #52 §3 |
+| #39 | close | 被后续 Wails bump 取代，再关 #46 转 #52 | dependabot: "Superseded by #42"；#46/#51 → #52 |
+| #30 | close | @types/dompurify 已从树删除（P1-06） | dependabot: "no longer a dependency"；#44 后自动关 |
+
+收敛后新开并处置的相关 PR：#43 被 #44 收编关闭；#44 merge（P0-02）；#45/#50 因 DIRTY 分别由 #56/#57 替换后关闭；#46/#47/#48/#49/#51 关转 #52；#53 attest-build-provenance merge；#55 js-yaml 4.3.2 override merge（GHSA-2883-xcg3-v3hh）。
+
+- `T`：#58 合入后 `gh pr list --state open` 为空；原始 16 条均已闭环。
+- 保护：合并 owner 自 PR 时按用户路径 B 临时 reviews=0，每次立即恢复 reviews=1 / 13 checks / enforce_admins。
+
+### 最终报告（对应 §7 / AC-01~09）
+
+**已完成能力**
+
+- **AC-01 main CI 绿**：收敛后多枚 main HEAD 的 ci.yml required job 全绿。代表 run：`095ec51` [34748968010](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34748968010)（含 NPM Audit success）；`ec7bcbc` 34749476217；`a9d4d16` 34750350534；`f57ac25` 34751349577；`6269a67` 34752177704；最终产品 HEAD `7ba382e`（#58）[34752642243](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34752642243) success，Package Desktop Apps 34752642213 success。NPM Audit 无 high/critical（js-yaml 由 #55 override 到 ^4.3.2；nanoid ^3.3.18）。
+- **AC-02 PR 清零**：上表 16 条均有决定+理由+证据；关闭转专项均指向 issue #52（#26/#39 及后续 #46/#51/#47/#48/#36/#28/#49）；#30 由 dependabot ignore 语义（包已不在树，未重开）。
+- **AC-03 分支唯一真线**：#44 把 release/v0.2.0 的 P16/P19 产品代码并入 main，依赖线决策为 **alpha2.111**。release/v0.2.0 未删除，仍停在 `ad93116`（落后 main 的文档/清单/bindings 注释修复，内容已在 main）。后续 dep/CI 工作只上 main。
+- **AC-04 隐私清零**：跟踪文件个人路径 0；三形态守卫+自测；历史残留样本 FAIL。`T`。
+- **AC-05 packaged-e2e 指纹**：指纹输入集改为 `build-inputs-v3`（豁免 wails 构建重写的 icns/ico/desktop）；driver 测试 75 pass。指纹门禁本身 `T`。Linux 启动后 WebKitGTK credentials SIGTRAP 仍 `U`（见未完成）。
+- **AC-06 SSRF + IM Type**：marketplace 三处 + IM 白名单 fail-closed，各有拒绝测试。`T`。
+- **AC-07 #38**：lint/rebase/契约共存/合并后 CI 绿。`T`。
+- **AC-08 recover**：8 个长生命周期站点 + 测试。`T`。
+- **AC-09 诚实边界**：P19 §2.3 的 U 项（MCP UI smoke、Git UI smoke、AC-08 真实运行、外部 provider、packaged/跨平台）未被改写为完成。
+
+**仍未完成能力**
+
+- Linux packaged desktop E2E 在指纹通过后仍于 WebKitGTK 启动阶段崩溃（credentials SIGTRAP）；contract-smoke 绿 ≠ packaged 绿。`U`。
+- 真实 UI smoke、外部 provider、跨平台 packaged/release 验证：本 Goal 范围外，保持 `U`。
+- eslint-plugin-vue 10 / jsdom 30 / TypeScript 7 / Wails beta / Docker node26+go1.27：转 #52，未合。
+- `release/v0.2.0` 分支未删除/归档（产品真线已是 main；release 仅历史快照）。
+- P2 未做（git.ts generation 守卫、README engines.node、v0.2.0 tag 等）。
+
+**本 Goal 新引入的已知限制**
+
+- owner 是唯一账号时，自 PR 无法自评；合入依赖路径 B 短暂放宽 reviews。每次已恢复，但该操作窗口是新的运营限制。
+- dependabot 分支一旦被非 bot 提交（G17 清单）污染，rebase/recreate 会永久拒绝；只能关旧 PR 开替换 PR，不能 force-push。
+- G17 清单必须随每一次 lockfile/go.sum 变更重生成，否则 `TestG17NoticeAndLicenseInventoryMatchDependencyDigests` 红（#58 首轮即因此失败）。
+- alpha2.111 的 `InsecureSkipVerify: true` 仍在上游；同源校验只在中间件层。Wails 升级前不得删该中间件。
+- CI `on.push` 的 Packaged desktop E2E job 在部分 push run 上是 skipped（非 PR gate）；不能用 push CI success 声称 packaged E2E 绿。
+- vitest 4.x teardown 仍有 EnvironmentTeardownError 噪声；G-CI-15/17（forks + `dangerouslyIgnoreUnhandledErrors`）保持，不视为产品失败。
