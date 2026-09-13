@@ -284,7 +284,7 @@ async function buildPackagedFrontend() {
   }
 }
 
-const SOURCE_FINGERPRINT_SCOPE = "build-inputs-v3";
+const SOURCE_FINGERPRINT_SCOPE = "build-inputs-v4";
 const SOURCE_FINGERPRINT_DIRECTORIES = Object.freeze([
   "services",
   "internal",
@@ -311,18 +311,20 @@ const SOURCE_FINGERPRINT_EXCLUDED_PATHS = Object.freeze([
   /^build\/android\/.*\/build(?:\/|$)/,
   /^build\/g03-manual-marker$/,
   /^build\/.*\.test(?:\.exe)?$/i,
-  // P20 P0-04: the wails3 build task pipeline regenerates these tracked
-  // derived artifacts from tracked canonical sources on every build
-  // (`linux:common:generate:icons` rewrites darwin/icons.icns and
-  // windows/icon.ico from appicon.icon/appicon.png;
-  // `linux:generate:dotdesktop` rewrites linux/koyori-ide.desktop from the
-  // CLI's bundled template). Their byte churn during the build does not bind
-  // build identity — the canonical inputs stay fingerprinted — so they are
-  // exempted instead of failing every Linux qualification run with
-  // "source fingerprint changed during build".
+  // P20 P0-04 / P20 CI follow-up: the wails3 build task pipeline regenerates
+  // these tracked derived artifacts from tracked canonical sources on every
+  // build (`common:generate:icons` rewrites darwin/icons.icns, darwin/Assets.car
+  // via -macassetdir, and windows/icon.ico from appicon.icon/appicon.png;
+  // `linux:generate:dotdesktop` rewrites linux/koyori-ide.desktop and may
+  // touch the sibling linux/desktop template). Their byte churn during the
+  // build does not bind build identity — the canonical inputs stay
+  // fingerprinted — so they are exempted instead of failing Linux
+  // qualification with "source fingerprint changed during build".
   /^build\/darwin\/icons\.icns$/,
+  /^build\/darwin\/Assets\.car$/,
   /^build\/windows\/icon\.ico$/,
   /^build\/linux\/koyori-ide\.desktop$/,
+  /^build\/linux\/desktop$/,
 ]);
 const SOURCE_FINGERPRINT_ROOT_FILE =
   /(?:\.(?:go|mod|sum|json|ya?ml|toml|mjs|cjs|ts|html)|^VERSION$)/i;
@@ -427,10 +429,44 @@ export async function sourceFingerprint(baseRoot = root, discoveredFiles) {
 
 async function captureSourceFingerprint(baseRoot = root) {
   const files = await collectSourceFingerprintFiles(baseRoot);
+  const digests = {};
+  const hash = createHash("sha256");
+  for (const relative of files) {
+    const digest = await sha256(path.join(baseRoot, relative));
+    digests[relative] = digest;
+    hash.update(relative);
+    hash.update("\0");
+    hash.update(digest);
+    hash.update("\n");
+  }
   return {
     files,
-    sha256: await sourceFingerprint(baseRoot, files),
+    sha256: hash.digest("hex"),
+    digests,
   };
+}
+
+function sourceFingerprintChangedPaths(expected, actual) {
+  const expectedDigests = expected?.digests ?? {};
+  const actualDigests = actual?.digests ?? {};
+  if (
+    Object.keys(expectedDigests).length === 0 &&
+    Object.keys(actualDigests).length === 0
+  ) {
+    return [];
+  }
+  const changed = [];
+  for (const relative of expected?.files ?? []) {
+    if (expectedDigests[relative] !== actualDigests[relative]) {
+      changed.push(relative);
+    }
+  }
+  for (const relative of actual?.files ?? []) {
+    if (!(relative in expectedDigests) && relative in actualDigests) {
+      changed.push(relative);
+    }
+  }
+  return changed;
 }
 
 export function assertSourceFingerprintUnchanged(expected, actual, stage) {
@@ -443,7 +479,11 @@ export function assertSourceFingerprintUnchanged(expected, actual, stage) {
     throw new Error(`source fingerprint file set changed during ${stage}`);
   }
   if (expected?.sha256 !== actual?.sha256) {
-    throw new Error(`source fingerprint changed during ${stage}`);
+    const changed = sourceFingerprintChangedPaths(expected, actual);
+    const detail = changed.length
+      ? `: ${changed.slice(0, 20).join(", ")}${changed.length > 20 ? ` (+${changed.length - 20} more)` : ""}`
+      : "";
+    throw new Error(`source fingerprint changed during ${stage}${detail}`);
   }
 }
 

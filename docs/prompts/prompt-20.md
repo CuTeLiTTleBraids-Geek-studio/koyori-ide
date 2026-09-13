@@ -368,3 +368,10 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - 失败 1：`TestAnalyzeTraceRejectsNonRegularInput` 在未设 workspace root 时被输入沙箱提前拒绝，未走到 `copyTraceInput` 的 regular-file 检查。已改为 `newTestPProfService` + 工作区内目录。
 - 失败 2：`TestReleaseMetadataSyncCheck`：`frontend/package.json` 的 `packageManager`/`engines` 混入 tab 缩进，`sync-release-metadata.mjs --check` 重序列化后不一致。已跑同步脚本。
 - JSON schema 生产客户端改为 `NewSSRFSafeTransport`（host 白名单仍在；补 DNS 重绑定）。测试继续注入自己的 Client。
+
+**CI 随访（commit `b6a3c78`，不改写 U）**
+
+- PR required CI [34758847972](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34758847972) success（packaged-e2e 在 PR 上仍 skip，符合 `workflow_dispatch` only）。
+- dispatch [34758848260](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34758848260) 其余 job 绿，packaged-e2e 红：`source fingerprint changed during build`，phase=`source-verification`，fixture 全部 `not-run`。**不是** WebKitGTK SIGTRAP；启动阶段未到达。
+- 证据：artifact `packaged-e2e-evidence` / `sourceFingerprintStableAfterBuild=false` / scope `build-inputs-v3` / fileCount 1090。错误未列出具体文件。
+- 处理：scope `build-inputs-v4`，豁免 `build/darwin/Assets.car`（`generate icons -macassetdir darwin`）与 `build/linux/desktop`；断言在有 per-file digest 时列出变更路径。一次绿仍不等于三次 consecutive qualification。
