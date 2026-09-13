@@ -890,6 +890,51 @@ func TestIMService_UpdateConfig_WebhookURLChangeRequiresReapproval(t *testing.T)
 	}
 }
 
+func TestIMService_UpdateConfig_PreservesSecretsOnPlaceholderAndEmpty(t *testing.T) {
+	svc := newTestIMService(t)
+	validateIMWebhookURL = ValidateNonPrivateURL
+	const urlA = "https://93.184.216.34/hook-a"
+	if err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "slack", Name: "dest", WebhookURL: urlA, BotToken: "xoxb-secret", Enabled: true},
+	}}); err != nil {
+		t.Fatalf("initial UpdateConfig: %v", err)
+	}
+
+	if err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "slack", Name: "dest", WebhookURL: imConfiguredSecretPlaceholder, BotToken: imConfiguredSecretPlaceholder, ChannelID: "C9", Enabled: true},
+	}}); err != nil {
+		t.Fatalf("placeholder UpdateConfig: %v", err)
+	}
+	svc.mu.Lock()
+	got := svc.config.Providers[0]
+	svc.mu.Unlock()
+	if got.WebhookURL != urlA {
+		t.Fatalf("placeholder must keep webhook, got %q", got.WebhookURL)
+	}
+	if got.BotToken != "xoxb-secret" {
+		t.Fatalf("placeholder must keep token, got %q", got.BotToken)
+	}
+	if got.ChannelID != "C9" {
+		t.Fatalf("channel edit lost: %q", got.ChannelID)
+	}
+
+	if err := svc.UpdateConfig(IMConfig{Providers: []IMProvider{
+		{Type: "slack", Name: "dest", WebhookURL: "", BotToken: "", ChannelID: "C10", Enabled: true},
+	}}); err != nil {
+		t.Fatalf("empty UpdateConfig: %v", err)
+	}
+	svc.mu.Lock()
+	got = svc.config.Providers[0]
+	svc.mu.Unlock()
+	if got.WebhookURL != urlA || got.BotToken != "xoxb-secret" {
+		t.Fatalf("empty fields must keep secrets, webhook=%q token=%q", got.WebhookURL, got.BotToken)
+	}
+	view := svc.LoadConfig()
+	if len(view.Providers) != 1 || !view.Providers[0].WebhookConfigured || !view.Providers[0].BotTokenConfigured {
+		t.Fatalf("LoadConfig should still report secrets configured: %+v", view.Providers)
+	}
+}
+
 func TestIMService_SendMessage_RedirectingWebhookRejected(t *testing.T) {
 	var hits int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

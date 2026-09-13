@@ -96,7 +96,7 @@ const (
 func NewJSONSchemaResolver(cacheDir string) *JSONSchemaResolver {
 	return newJSONSchemaResolver(jsonSchemaResolverOptions{
 		CacheDir:     cacheDir,
-		Client:       http.DefaultClient,
+		Client:       &http.Client{Transport: NewSSRFSafeTransport()},
 		AllowedHosts: []string{"json.schemastore.org"},
 		Timeout:      defaultJSONSchemaTimeout,
 		MaxBodyBytes: defaultJSONSchemaMaxBodyBytes,
@@ -118,7 +118,7 @@ func BuildJSONLSPInitializationOptions(workspaceRoot string) map[string]interfac
 
 func newJSONSchemaResolver(options jsonSchemaResolverOptions) *JSONSchemaResolver {
 	if options.Client == nil {
-		options.Client = http.DefaultClient
+		options.Client = &http.Client{Transport: NewSSRFSafeTransport()}
 	}
 	if options.Timeout <= 0 {
 		options.Timeout = defaultJSONSchemaTimeout

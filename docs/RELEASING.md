@@ -47,8 +47,8 @@ binding entry point bypasses the pinned generator.
 
 Other pins:
 
-- Go toolchain `1.26.6` (the module minimum remains Go `1.25`)
-- Node `20.19+` (or `22.12+`)
+- Go toolchain `1.26.6` (the module minimum is Go `1.26.0`)
+- Node `20.19+` (or `22.12+`; `frontend/package.json` `engines.node` is `>=20.19`)
 - Syft release image `anchore/syft:v1.29.0@sha256:e86b0ba0b1d2fe8a2e9f96ed9b22033df9781f43b9a7eb27c57e6c89234946bc`
 
 Release tags are intentionally stable `vX.Y.Z` tags. The workflow trigger

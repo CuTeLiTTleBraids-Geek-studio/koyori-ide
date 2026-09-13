@@ -211,6 +211,13 @@ test("build entry points cannot reuse unverified frontend assets", async () => {
   assert.match(taskBlock(commonTaskfile, "go:mod:verify"), /go list -mod=readonly \./);
   assert.match(taskBlock(commonTaskfile, "install:frontend:deps"), /- task: go:mod:verify/);
   assert.match(taskBlock(commonTaskfile, "generate:bindings"), /- task: go:mod:verify/);
+  const npmInstall = taskBlock(commonTaskfile, "install:frontend:deps:npm");
+  assert.match(npmInstall, /npm ci --registry=https:\/\/registry\.npmjs\.org/);
+  assert.doesNotMatch(
+    npmInstall,
+    /^\s+- npm install\s*$/m,
+    "Wails frontend install must not rewrite package-lock.json with npm install",
+  );
 
   const rootTaskfile = await readRepositoryFile("Taskfile.yml");
   const rootBuild = taskBlock(rootTaskfile, "build");

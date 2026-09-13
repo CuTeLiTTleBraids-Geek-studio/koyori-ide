@@ -123,15 +123,12 @@ jobs:
         with:
           go-version: "1.26.6"
 
-      - name: Set up Node.js for binding generation
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "20"
-
       # G-CI-01: `go build .` embeds all:frontend/dist, so the frontend must
       # be built before compiling. `npm run build` regenerates the Wails
       # bindings via its prebuild hook; on Linux the wails3 CLI needs the GUI
       # development headers to compile (same set as the wails-build job).
+      # A leftover actions/setup-node@v4.4.0 pin (Node 20 action runtime) was
+      # removed: v7.0.0 already installs Node 20.19 for the prebuild hook.
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -490,6 +487,15 @@ jobs:
     timeout-minutes: 30
     env:
       KOYORI_IDE_E2E_DISPLAY: ':99'
+      # GitHub-hosted runners refuse WebKitGTK's bubblewrap sandbox
+      # (bwrap RTM_NEWADDR / credentials portal → SIGTRAP). These are
+      # test-runner-only; they are not shipped in production artifacts.
+      WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
+      WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+      GTK_A11Y: "none"
+      NO_AT_BRIDGE: "1"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GSETTINGS_BACKEND: "memory"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -510,7 +516,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev \
-            pkg-config xvfb imagemagick
+            pkg-config xvfb imagemagick \
+            dbus-x11 at-spi2-core libgl1-mesa-dri libegl-mesa0 mesa-utils
 
       - name: Install frontend deps
         run: npm ci --registry=https://registry.npmjs.org
@@ -525,7 +532,11 @@ jobs:
         run: go install golang.org/x/tools/gopls@v0.21.1
 
       - name: Packaged E2E
-        run: node scripts/packaged-e2e.mjs
+        run: |
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$RUNNER_TEMP/xdg-runtime}"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          dbus-run-session -- node scripts/packaged-e2e.mjs
 
       # Execution point 6: artifact hash, logs, and screenshots must survive a
       # failure, otherwise a red run cannot be audited after the runner is gone.

@@ -18,8 +18,8 @@
 
 ## 2. 环境与工具规则
 
-- 正确工作区是 `D:\downloads\Gugacode-main`；每轮先用 `Get-Location` 或 `pwd` 确认。
-- DSH checkout 只用于检查 DSH 本身：`D:\dsh\node_modules\.pnpm\@deepseek-ai+dsh-web-app@0._095012c928fa32f746e6dd700e22b75b\`。
+- 正确工作区是仓库根目录（克隆后的 `koyori-ide` / 本机 checkout）；每轮先用 `Get-Location` 或 `pwd` 确认。
+- DSH checkout 只用于检查 DSH 本身，路径用本机 DSH 安装根，不把绝对个人路径写进仓库。
 - Windows 使用 `pnpm.cmd`、`npm.cmd`。已有文件必须先 read，再用 edit；新文件用 write。
 - Wails 固定 `v3.0.0-alpha2.111`，绑定必须由生成器产生并通过 manifest/ByName=0 检查。
 - 不放宽权限、路径安全、审批、CAS、Worker 配额或 fail-closed 行为来装绿。

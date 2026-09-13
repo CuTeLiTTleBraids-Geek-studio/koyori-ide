@@ -3,7 +3,6 @@ package services
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -305,16 +304,6 @@ func TestIsAllowedShell(t *testing.T) {
 		"bash", "sh", "zsh", "powershell", "pwsh", "cmd", "wsl",
 		"BASH", "PowerShell", "PWSH",
 		"bash.exe", "CMD.EXE", "powershell.exe",
-		"/usr/bin/bash", "/bin/sh", "/usr/local/bin/zsh",
-	}
-	// Windows absolute paths are only valid on Windows — the isAllowedShell
-	// implementation uses filepath.Base which treats backslash as a separator
-	// only on Windows.
-	if runtime.GOOS == "windows" {
-		accepted = append(accepted,
-			`C:\Windows\System32\cmd.exe`,
-			`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-		)
 	}
 	for _, s := range accepted {
 		if !isAllowedShell(s) {
@@ -325,6 +314,9 @@ func TestIsAllowedShell(t *testing.T) {
 		"fish", "tcsh", "csh", "ksh",
 		"bash2", "powershell2",
 		"/tmp/malicious", "./evil",
+		"/usr/bin/bash", "/bin/sh", "/usr/local/bin/zsh",
+		"/tmp/koyori-workspace/bash", `.\bash`, `payload\bash.exe`,
+		`C:\Windows\System32\cmd.exe`,
 		"", "   ",
 	}
 	for _, s := range rejected {
@@ -346,6 +338,22 @@ func TestTerminalService_StartSession_RejectsNonWhitelistedShell(t *testing.T) {
 	err := ts.StartSession("session-high01", "", "fish")
 	if err == nil {
 		t.Fatal("expected error for non-whitelisted shell 'fish', got nil (HIGH-01)")
+	}
+	if !strings.Contains(err.Error(), "allowed list") {
+		t.Errorf("expected 'allowed list' error, got: %v", err)
+	}
+}
+
+func TestTerminalService_StartSession_RejectsPathDisguisedAsWhitelistedShell(t *testing.T) {
+	ts := NewTerminalService()
+	root := t.TempDir()
+	if err := ts.setWorkspaceRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	disguised := filepath.Join(root, "bash")
+	err := ts.StartSession("session-path-shell", "", disguised)
+	if err == nil {
+		t.Fatal("expected error for workspace-relative shell path, got nil")
 	}
 	if !strings.Contains(err.Error(), "allowed list") {
 		t.Errorf("expected 'allowed list' error, got: %v", err)

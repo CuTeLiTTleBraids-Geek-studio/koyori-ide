@@ -89,8 +89,10 @@ test("source fingerprint recursively covers untracked build inputs", async (t) =
     // run (icons from appicon sources, .desktop from the CLI template), so
     // they must stay outside the fingerprint input set.
     ["build/darwin/icons.icns", "regenerated icon container\n"],
+    ["build/darwin/Assets.car", "regenerated asset catalog\n"],
     ["build/windows/icon.ico", "regenerated icon container\n"],
     ["build/linux/koyori-ide.desktop", "regenerated desktop entry\n"],
+    ["build/linux/desktop", "regenerated desktop template\n"],
     ["build/e2e-evidence/packaged-e2e/manifest.json", "{}\n"],
   ]);
   for (const [relative, content] of files) {
@@ -111,8 +113,10 @@ test("source fingerprint recursively covers untracked build inputs", async (t) =
   assert(!discovered.includes("build/g03-manual-marker"));
   assert(!discovered.includes("build/overlay_windows.json"));
   assert(!discovered.includes("build/darwin/icons.icns"));
+  assert(!discovered.includes("build/darwin/Assets.car"));
   assert(!discovered.includes("build/windows/icon.ico"));
   assert(!discovered.includes("build/linux/koyori-ide.desktop"));
+  assert(!discovered.includes("build/linux/desktop"));
 
   const before = await sourceFingerprint(fixtureRoot);
   await writeFile(
@@ -243,12 +247,35 @@ test("source fingerprint must remain stable through artifact construction", () =
         "build",
       ),
     /source fingerprint file set changed during build/,
-  );
-});
+      );
+      assert.throws(
+        () =>
+          assertSourceFingerprintUnchanged(
+            {
+              files: ["main.go", "build/darwin/Assets.car"],
+              sha256: "source-a",
+              digests: {
+                "main.go": "aaa",
+                "build/darwin/Assets.car": "old-car",
+              },
+            },
+            {
+              files: ["main.go", "build/darwin/Assets.car"],
+              sha256: "source-b",
+              digests: {
+                "main.go": "aaa",
+                "build/darwin/Assets.car": "new-car",
+              },
+            },
+            "build",
+          ),
+        /source fingerprint changed during build: build\/darwin\/Assets\.car/,
+      );
+    });
 
 test("skip-build requires a manifest-bound matching source and artifact", () => {
   const current = {
-    sourceFingerprintScope: "build-inputs-v3",
+    sourceFingerprintScope: "build-inputs-v4",
     sourceFingerprintSha256: "source-a",
     sourceFingerprintFileCount: 3,
     artifact: "bin/koyori-ide.exe",
@@ -347,7 +374,7 @@ async function createWindowsPackagedEvidenceFixture(t) {
     artifact: "bin\\koyori-ide.exe",
     sha256: createHash("sha256").update(artifact).digest("hex"),
     sourceFingerprintSha256: await sourceFingerprint(baseRoot, sourceFiles),
-    sourceFingerprintScope: "build-inputs-v3",
+    sourceFingerprintScope: "build-inputs-v4",
     sourceFingerprintFileCount: sourceFiles.length,
     sourceFingerprintStableAfterBuild: true,
     sourceFingerprintVerifiedAt: "2026-08-25T01:02:00.000Z",

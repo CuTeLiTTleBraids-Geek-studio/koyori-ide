@@ -57,6 +57,15 @@ type imPersistedConfig struct {
 
 const imApprovalMarker = "koyori-ide-im-approved-v1"
 
+// Frontend seeds this placeholder when a secret is already stored
+// (G-SEC-07: LoadConfig never returns plaintext). Empty and this
+// placeholder both mean "keep the previously stored secret".
+const imConfiguredSecretPlaceholder = "(configured —edit to overwrite)"
+
+func isIMSecretKeepExisting(value string) bool {
+	return value == "" || value == imConfiguredSecretPlaceholder
+}
+
 func cloneIMConfig(cfg IMConfig) IMConfig {
 	cloned := cfg
 	cloned.Providers = append([]IMProvider(nil), cfg.Providers...)
@@ -284,9 +293,36 @@ var imProviderTypes = map[string]bool{
 func (s *IMService) UpdateConfig(cfg IMConfig) error {
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
-		if p.WebhookURL != "" {
+		if !isIMSecretKeepExisting(p.WebhookURL) {
 			if _, err := validateIMWebhookURL(p.WebhookURL); err != nil {
 				return fmt.Errorf("provider %s webhook url rejected: %w", p.Name, err)
+			}
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous := cloneIMConfig(s.config)
+	previousProof := s.approvalProof
+	merged := cloneIMConfig(cfg)
+	prevByName := make(map[string]IMProvider, len(previous.Providers))
+	for _, p := range previous.Providers {
+		prevByName[p.Name] = p
+	}
+	for i := range merged.Providers {
+		p := &merged.Providers[i]
+		old, ok := prevByName[p.Name]
+		if isIMSecretKeepExisting(p.WebhookURL) {
+			if ok {
+				p.WebhookURL = old.WebhookURL
+			} else {
+				p.WebhookURL = ""
+			}
+		}
+		if isIMSecretKeepExisting(p.BotToken) {
+			if ok {
+				p.BotToken = old.BotToken
+			} else {
+				p.BotToken = ""
 			}
 		}
 		// P20 P1-03: reject unknown provider types at save time so a
@@ -298,16 +334,12 @@ func (s *IMService) UpdateConfig(cfg IMConfig) error {
 	}
 	// Approval is a backend-owned capability. Renderer DTOs cannot grant it by
 	// setting Approved=true; the dedicated Approve flow is the only grant path.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	previous := cloneIMConfig(s.config)
-	previousProof := s.approvalProof
-	cfg.Approved = s.config.Approved
-	if imWebhookDestinationsChanged(previous.Providers, cfg.Providers) {
-		cfg.Approved = false
+	merged.Approved = s.config.Approved
+	if imWebhookDestinationsChanged(previous.Providers, merged.Providers) {
+		merged.Approved = false
 		s.approvalProof = ""
 	}
-	s.config = cloneIMConfig(cfg)
+	s.config = cloneIMConfig(merged)
 	if err := s.saveConfigLocked(); err != nil {
 		s.config = previous
 		s.approvalProof = previousProof
