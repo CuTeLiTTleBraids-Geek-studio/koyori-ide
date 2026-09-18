@@ -423,3 +423,10 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 
 - `cd frontend && npx vitest run src/stores/agentTimeline.test.ts src/stores/agent.test.ts src/e2e/agentToolRoundProbe.test.ts` → 150 passed。
 - Linux packaged E2E 仍 `U`。
+
+**CI 随访（commit `4fc6681` dispatch [35359227376](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35359227376)，不改写 U）**
+
+- packaged-e2e skipped：`Go Build & Test (ubuntu-latest)` 红。失败点 `TestConnectDeleteRace`：`ConnectServer 应失败（server 在连接期间被删除），但返回 nil`。
+- 根因：测试用 `Sleep(100ms)` 假设已进入 `StartServer`；CI 上 Connect 可能在 Delete 之后才真正 handshake，配置仍在，于是 Connect 成功。
+- 处理（本轮源码，尚未经新 dispatch）：`MCPService.testConnectStarted` 测试钩子在 `StartServer` 前握手；测试 Delete 完成后再放行 StartServer。生产路径钩子为 nil。
+- `go test ./services -count=1 -timeout 60s -run 'TestConnectDeleteRace$'` → ok（`T` 本地）。Linux packaged E2E 仍 `U`。

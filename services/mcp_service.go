@@ -68,6 +68,9 @@ type MCPService struct {
 	approvals           map[string]mcpToolApproval
 	approveTool         func(server, tool, args string, risk RiskLevel) bool
 	approveServer       func(MCPServerConfig) bool
+	// testConnectStarted is a test-only handshake: ConnectServer calls it after
+	// constructing the client and before StartServer. Production stays nil.
+	testConnectStarted func(name string)
 }
 
 // MCPServiceRootSetter is the narrow internal capability ProjectService uses
@@ -433,6 +436,9 @@ func (s *MCPService) ConnectServer(ctx context.Context, name string) error {
 	// MCPClient stores cfg by value, so constructing it earlier would execute
 	// the untrusted pre-resolution command even though the local cfg was fixed.
 	client := newMCPClient(cfg)
+	if hook := s.testConnectStarted; hook != nil {
+		hook(name)
+	}
 	// The controlled roots/list response may only return the workspace root
 	// this connection was opened under; stamp it before the transport starts.
 	client.setRootsWorkspaceRoot(root)
