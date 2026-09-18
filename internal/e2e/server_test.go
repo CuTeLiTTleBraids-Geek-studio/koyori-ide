@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -345,9 +346,15 @@ func TestNativeWindowCloseProbeInvokesInjectedWindowClose(t *testing.T) {
 }
 
 func validAgentToolRoundRendererEvidence(spec agentToolRoundSpec, marker string) map[string]interface{} {
+	sessionMode := "always-ask"
+	if spec.ApprovalMode == "auto-approve" {
+		sessionMode = "assist"
+	}
 	return map[string]interface{}{
 		"ok": true, "rendererSubmitted": true, "agentModeConfigured": true,
-		"storedProviderLoaded": true, "nativeToolCallObserved": true,
+		"agentPermissionModeConfigured": true,
+		"sessionPermissionMode":         sessionMode,
+		"storedProviderLoaded":          true, "nativeToolCallObserved": true,
 		"decisionObserved": true, "approvalMode": spec.ApprovalMode,
 		"expectedDecision": spec.ExpectedDecision, "outcome": spec.ExpectedOutcome,
 		"approvalObserved": true, "approvalPrecededExecution": true,
@@ -450,6 +457,8 @@ func TestValidateAgentToolRoundRendererRequiresTerminalUsageAndOrderedApproval(t
 		{name: "missing marker", field: "observation", value: "other file", wantError: "result marker"},
 		{name: "missing second completion", field: "assistantContent", value: "", wantError: "second provider completion"},
 		{name: "wrong tool kind", field: "toolKind", value: "search", wantError: "unexpected tool call ID"},
+		{name: "permission mode not configured", field: "agentPermissionModeConfigured", value: false, wantError: "agentPermissionModeConfigured"},
+		{name: "wrong session permission mode", field: "sessionPermissionMode", value: "always-ask", wantError: "session permission mode"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -614,6 +623,50 @@ func TestValidateAgentNativeApprovalProbeFailsClosed(t *testing.T) {
 	}
 }
 
+func TestWrapAgentToolRoundNativeOrRendererFailureSurfacesRendererFirst(t *testing.T) {
+	snapshot := &services.AgentNativeApprovalSnapshotForE2E{
+		Expected: 1, Consumed: 0, Remaining: 1, Complete: false, Restored: true,
+	}
+	nativeErr := fmt.Errorf("Agent native approval was not consumed exactly once: %+v", *snapshot)
+
+	t.Run("renderer failure hides empty native consumption", func(t *testing.T) {
+		err := wrapAgentToolRoundNativeOrRendererFailure(map[string]interface{}{
+			"ok": false, "error": "timed out waiting for manual Agent DOM control",
+			"sessionPermissionMode": "assist",
+		}, snapshot, nativeErr)
+		if err == nil || !strings.Contains(err.Error(), "timed out waiting for manual Agent DOM control") {
+			t.Fatalf("error = %v, want renderer timeout", err)
+		}
+		if !strings.Contains(err.Error(), "native approval:") {
+			t.Fatalf("error = %v, want native snapshot for diagnosis", err)
+		}
+		if strings.Contains(err.Error(), "not consumed exactly once") {
+			t.Fatalf("error = %v, renderer failure must not be hidden behind native consumption", err)
+		}
+	})
+
+	t.Run("native failure keeps renderer diagnostics", func(t *testing.T) {
+		err := wrapAgentToolRoundNativeOrRendererFailure(map[string]interface{}{
+			"ok": true, "error": nil, "sessionPermissionMode": "always-ask",
+		}, snapshot, nativeErr)
+		if err == nil || !strings.Contains(err.Error(), "not consumed exactly once") {
+			t.Fatalf("error = %v, want native consumption failure", err)
+		}
+		if !strings.Contains(err.Error(), "renderer ok=true") ||
+			!strings.Contains(err.Error(), "sessionPermissionMode=always-ask") {
+			t.Fatalf("error = %v, want renderer diagnostics", err)
+		}
+	})
+
+	t.Run("success is silent", func(t *testing.T) {
+		if err := wrapAgentToolRoundNativeOrRendererFailure(map[string]interface{}{
+			"ok": true, "sessionPermissionMode": "always-ask",
+		}, snapshot, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestValidateAgentToolRoundRendererRequiresIrreversibleRunReceipt(t *testing.T) {
 	const marker = "PACKAGED_AGENT_RUN_OUTPUT"
 	spec := runAgentToolRoundSpec("runManualApprove", "approve", "executed", "tool --check")
@@ -670,9 +723,10 @@ func TestValidateAgentToolRoundRendererRequiresManualRejectWithoutExecution(t *t
 		ExpectedDecision: "reject", ExpectedOutcome: "rejected",
 		ToolCallID: "call_packaged_agent_write_reject", FinalAssistant: "PACKAGED_AGENT_WRITE_REJECT_ROUND_COMPLETE",
 	}
-	valid := map[string]interface{}{
-		"ok": true, "rendererSubmitted": true, "agentModeConfigured": true,
-		"storedProviderLoaded": true, "nativeToolCallObserved": true, "decisionObserved": true,
+		valid := map[string]interface{}{
+			"ok": true, "rendererSubmitted": true, "agentModeConfigured": true,
+			"agentPermissionModeConfigured": true, "sessionPermissionMode": "always-ask",
+			"storedProviderLoaded": true, "nativeToolCallObserved": true, "decisionObserved": true,
 		"nativeProtocolResultSubmitted": true, "finalAssistantObserved": true,
 		"toolCallId": spec.ToolCallID, "toolKind": spec.ToolKind,
 		"approvalMode": spec.ApprovalMode, "expectedDecision": spec.ExpectedDecision, "outcome": spec.ExpectedOutcome,

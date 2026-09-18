@@ -141,6 +141,8 @@ bindAgentState(agentState);
 
 let backendAgentSessionId: string | null = null;
 let agentSessionPromise: Promise<string> | null = null;
+let agentSessionPromiseMode: AgentPermissionMode | null = null;
+let agentSessionPromiseWorkspace: number | null = null;
 let agentSessionGeneration = 0;
 let agentTurnGeneration = 0;
 let agentSessionPermissionMode: AgentPermissionMode = "always-ask";
@@ -230,27 +232,49 @@ function createAgentToolTurnBatch(calls: ToolCall[], generation: number): void {
 	agentToolTurnBatches.set(id, { id, generation, calls, submitting: false });
 }
 
+/** Permission mode captured with the current backend Agent session, or the requested mode. */
+export function getAgentPermissionMode(): AgentPermissionMode {
+  return backendAgentSessionId
+    ? agentSessionPermissionMode
+    : normalizePermissionMode(appState.agentPermissionMode);
+}
+
 /** Ensures all renderer tool calls reuse one backend-owned chat session. */
 export function ensureAgentSession(): string | Promise<string> {
   const workspaceGeneration = Number.isSafeInteger(appState.workspaceGeneration)
     ? appState.workspaceGeneration
     : 0;
-  if (backendAgentSessionId && backendAgentWorkspaceGeneration === workspaceGeneration) {
+  const requestedPermissionMode = normalizePermissionMode(appState.agentPermissionMode);
+  if (
+    backendAgentSessionId &&
+    backendAgentWorkspaceGeneration === workspaceGeneration &&
+    agentSessionPermissionMode === requestedPermissionMode
+  ) {
     return backendAgentSessionId;
   }
   if (backendAgentSessionId) resetAgentSession();
+  if (
+    agentSessionPromise &&
+    (agentSessionPromiseWorkspace !== workspaceGeneration ||
+      agentSessionPromiseMode !== requestedPermissionMode)
+  ) {
+    resetAgentSession();
+  }
   if (typeof agentService.createSession !== "function") {
-    agentSessionPermissionMode = normalizePermissionMode(appState.agentPermissionMode);
+    agentSessionPermissionMode = requestedPermissionMode;
     return agentState.sessionId;
   }
   if (!agentSessionPromise) {
     const generation = agentSessionGeneration;
     const requestedWorkspaceGeneration = workspaceGeneration;
+    agentSessionPromiseMode = requestedPermissionMode;
+    agentSessionPromiseWorkspace = requestedWorkspaceGeneration;
     const creating = agentService.createSession("chat").then((sessionId) => {
       const normalized = sessionId.trim();
       if (!normalized) throw new Error("backend returned an empty Agent session ID");
       if (generation !== agentSessionGeneration
-        || backendWorkspaceGeneration() !== requestedWorkspaceGeneration) {
+        || backendWorkspaceGeneration() !== requestedWorkspaceGeneration
+        || normalizePermissionMode(appState.agentPermissionMode) !== requestedPermissionMode) {
         if (typeof agentService.closeSession === "function") {
           void agentService.closeSession(normalized).catch(() => undefined);
         }
@@ -258,12 +282,16 @@ export function ensureAgentSession(): string | Promise<string> {
       }
       backendAgentSessionId = normalized;
       backendAgentWorkspaceGeneration = requestedWorkspaceGeneration;
-      agentSessionPermissionMode = normalizePermissionMode(appState.agentPermissionMode);
+      agentSessionPermissionMode = requestedPermissionMode;
       agentState.sessionId = normalized;
       return normalized;
     });
     const tracked = creating.finally(() => {
-      if (agentSessionPromise === tracked) agentSessionPromise = null;
+      if (agentSessionPromise === tracked) {
+        agentSessionPromise = null;
+        agentSessionPromiseMode = null;
+        agentSessionPromiseWorkspace = null;
+      }
     });
     agentSessionPromise = tracked;
   }
@@ -279,6 +307,8 @@ export function resetAgentSession(): void {
   backendAgentWorkspaceGeneration = null;
   agentSessionPermissionMode = "always-ask";
   agentSessionPromise = null;
+  agentSessionPromiseMode = null;
+  agentSessionPromiseWorkspace = null;
   agentToolTurnBatches.clear();
   nativeToolCallIdentities.clear();
   agentState.sessionId = `chat-${Date.now().toString(36)}`;
@@ -950,20 +980,15 @@ export async function getAgentSystemPrompt(): Promise<string> {
  * Resets the agent system prompt cache. Exposed for test isolation only.
  * @internal
  */
-export function __resetAgentPromptCacheForTests(): void {
-  agentSystemPromptCache = null;
-}
+	export function __resetAgentPromptCacheForTests(): void {
+	  agentSystemPromptCache = null;
+	}
 
-/** Returns the permission mode captured when the active backend session began. */
-export function getAgentPermissionMode(): AgentPermissionMode {
-  return agentSessionPermissionMode;
-}
-
-/**
- * buildNativeToolDefs returns OpenAI-compatible tool definitions for every
- * registered agent tool (prompt-5 Task H). Passed to AIService.SetConfig so
- * the model can use native function calling; fence parsing remains as fallback.
- */
+	/**
+	 * buildNativeToolDefs returns OpenAI-compatible tool definitions for every
+	 * registered agent tool (prompt-5 Task H). Passed to AIService.SetConfig so
+	 * the model can use native function calling; fence parsing remains as fallback.
+	 */
 
 export function buildNativeToolDefs(): Array<{
   type: "function";

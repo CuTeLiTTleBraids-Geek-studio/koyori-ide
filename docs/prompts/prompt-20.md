@@ -382,3 +382,18 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - dispatch [34759946812](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34759946812) packaged-e2e 红：`source fingerprint changed during build: frontend/package-lock.json`。指纹已过图标豁免，启动阶段仍未到达。
 - 原因：`wails3 build` → `common:install:frontend:deps:npm` 跑 `npm install`，npm 11 会改写已提交的 lockfile。CI 其它 job 用 `npm ci`。
 - 处理：Taskfile 改为 `npm ci --registry=https://registry.npmjs.org`；`wails-bindings.test.mjs` 钉死不得回退到 `npm install`。
+
+**CI 随访（commit `5ad7351`，不改写 U）**
+
+- PR required CI [34760806837](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34760806837) success（packaged-e2e 在 PR 上仍 skip）。
+- dispatch [34760808412](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34760808412) packaged-e2e 红于 Agent write native approval。指纹门禁已过：`sourceFingerprintStableAfterBuild=true`，scope `build-inputs-v4`，fileCount 1088。Linux 启动到达 fixture 1–14，含 `terminal-reconnect-package`；本 run 未再现历史 WebKitGTK SIGTRAP。一次绿仍不等于三次 consecutive qualification。
+- 失败点：`ai-request-context-package` write native approval，`Expected:1 Consumed:0 Remaining:1 Complete:false Restored:true Calls:[]`。`Calls:[]` 表示 `approveWrite` 从未被调用，不是 identity mismatch。截图可见 AI companion 上两条「other window」pending toast；MAIN 探针约 1s 内失败，不是 45s click timeout。
+- 诊断（不改写 U）：read/search auto-approve 轮把 renderer session 留在 assist；write ask 轮只改了 `appState.agentPermissionMode`，`ensureAgentSession` 按 workspace generation 复用旧 session。enqueue 在 assist 下对 pending 再发一次 `agent:pending-updated`，解释双 toast。write 在 assist 仍应走 native prompt，但探针把 renderer `ok:false` 藏在 native `Consumed:0` 之后。
+- 处理（本轮源码，尚未经新 dispatch）：`ensureAgentSession` 把 permission mode 纳入 reuse key；in-flight create 仅在 workspace/mode 不匹配时 abort，同 mode 仍 coalesce；探针 persist + flush + reload 后再 `ensureAgentSession()` 并断言 `sessionPermissionMode`；Go 侧 renderer `ok:false` 先于 native consumption 报错。job 仍 `workflow_dispatch` only。
+
+**本地证据（session/native 诊断修复，`T`）**
+
+- `cd frontend && npx vitest run src/stores/agent.test.ts` → 109 passed。覆盖 permission-mode 轮换、in-flight abort、同 mode coalesce、unchanged reuse。
+- `cd frontend && npx vitest run src/e2e` → 31 passed。
+- `go test -tags e2e ./internal/e2e -count=1` → ok。覆盖 renderer-first wrap、ask 轮 `sessionPermissionMode=always-ask`、reject 证据补 `agentPermissionModeConfigured`。
+- Linux packaged E2E 仍 `U`：尚未有三次 consecutive 绿 dispatch；本修复未计为 packaged 完成。
