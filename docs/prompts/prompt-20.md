@@ -397,3 +397,16 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - `cd frontend && npx vitest run src/e2e` → 31 passed。
 - `go test -tags e2e ./internal/e2e -count=1` → ok。覆盖 renderer-first wrap、ask 轮 `sessionPermissionMode=always-ask`、reject 证据补 `agentPermissionModeConfigured`。
 - Linux packaged E2E 仍 `U`：尚未有三次 consecutive 绿 dispatch；本修复未计为 packaged 完成。
+
+**CI 随访（commit `6cdcd2f` dispatch [35349089516](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35349089516)，不改写 U）**
+
+- required jobs success，含 LSP matrix。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- 失败点（verbatim）：`ai-request-context-probe failed (422): packaged Agent tool round: write manual approve round: Agent tool-round renderer failed: manual Agent DOM control kind was undefined; expected write (native approval: {Expected:1 Consumed:0 Remaining:1 Complete:false Restored:true Calls:[]})`。
+- renderer-first wrap 生效：错误不再被 native `Consumed:0` 单独掩盖。`Calls:[]` 仍表示 `approveWrite` 未被点击，native stub 未消耗。
+- 根因：write 卡片的 `apply-selected` 按钮有 `data-agent-tool-action` 与 call id，但当时没有 `data-agent-tool-kind`；探针把同 call 的全部 action 按钮纳入 kind 校验，于是 `dataset.agentToolKind === undefined` 即 fail-closed。
+- 处理（本轮源码，尚未经新 dispatch）：`AgentToolCalls.vue` 给 `apply-selected` 补 `:data-agent-tool-kind="call.kind"`；探针 kind 校验只看 `approve`/`reject`。一次绿仍不等于三次 consecutive qualification。
+
+**本地证据（apply-selected kind / 探针过滤，`T`）**
+
+- `cd frontend && npx vitest run src/e2e/agentToolRoundProbe.test.ts src/components/ai-assistant/AgentToolCalls.test.ts` → 31 passed。含 write 卡片 `apply-selected` 无 kind 时仍点击 matching approve，以及组件断言 `apply-selected` 带 `data-agent-tool-kind=write`。
+- Linux packaged E2E 仍 `U`。
