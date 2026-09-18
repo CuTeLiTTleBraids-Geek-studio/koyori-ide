@@ -430,3 +430,10 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - 根因：测试用 `Sleep(100ms)` 假设已进入 `StartServer`；CI 上 Connect 可能在 Delete 之后才真正 handshake，配置仍在，于是 Connect 成功。
 - 处理（本轮源码，尚未经新 dispatch）：`MCPService.testConnectStarted` 测试钩子在 `StartServer` 前握手；测试 Delete 完成后再放行 StartServer。生产路径钩子为 nil。
 - `go test ./services -count=1 -timeout 60s -run 'TestConnectDeleteRace$'` → ok（`T` 本地）。Linux packaged E2E 仍 `U`。
+
+**CI 随访（commit `826d7f2` dispatch [35360901720](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35360901720)，不改写 U）**
+
+- required jobs success，含 LSP matrix 与 Ubuntu Go tests。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- 失败点（verbatim）：`AssertionError [ERR_ASSERTION]: saveAllNoBridge=true inputBox=true quickPick=true bridge=true notify=true output=false config=true view=true`。
+- Agent write approve/reject 轮未再作为本 run 失败点出现。当前阻塞是 G13 extension API probe：`createOutputChannel` 在无 `onOutput` 且 descriptor 仅 `fs.write` 时 fail-closed（`extensionHost.ts` 要求 host Output panel；`apiSurface` 要求 `ui.notifications`）。探针未接线/未授权，不能把 packaged E2E 计绿。
+- Linux packaged E2E 仍 `U`。一次绿仍不等于三次 consecutive qualification。不把 packaged-e2e 改成 required。
