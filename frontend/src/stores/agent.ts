@@ -1166,13 +1166,16 @@ export function enqueueToolCalls(calls: ToolCall[]): number {
   }
   createAgentToolTurnBatch(reactiveCalls, expectedGeneration);
   for (const tc of reactiveCalls) {
-		recordToolRequested(tc.id, tc.kind, tc.target);
+    recordToolRequested(tc.id, tc.kind, tc.target);
+    if (tc.status === "pending") {
+      recordToolStage(tc.id, tc.kind, "waiting-approval");
+    }
     if (tc.kind === "run" && tc.status === "pending") {
       void checkRunRisk(tc);
     }
-		if (tc.kind === "write" && tc.status === "pending") {
-			void previewWriteDiff(tc);
-		}
+    if (tc.kind === "write" && tc.status === "pending") {
+      void previewWriteDiff(tc);
+    }
   }
   pushOutput(
     "agent",

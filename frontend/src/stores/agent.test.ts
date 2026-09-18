@@ -101,6 +101,7 @@ import { fileService, searchService, agentService, aiService } from "@/api/servi
 import { appState } from "@/stores/app";
 import { pushOutput } from "@/stores/output";
 import { notifyError, notifyWarning } from "@/lib/notifications";
+import { agentTimelineState } from "@/stores/agentTimeline";
 
 function builtinCatalog(revision = 1): AgentToolCatalog {
 	return {
@@ -1428,6 +1429,30 @@ describe("agent store", () => {
         expect(agentState.pendingToolCalls).toHaveLength(1);
         expect(agentState.pendingToolCalls[0].kind).toBe("search");
         expect(agentState.toolCallCount).toBe(1);
+      });
+
+      it("records waiting-approval when a native write is enqueued for manual reject", () => {
+        agentState.mode = "agent";
+        expect(onNativeToolCalls([
+          { id: "call_packaged_agent_write_reject", name: "write", arguments: JSON.stringify({ path: "note.txt", content: "x" }) },
+        ])).toBe(1);
+        expect(agentTimelineState.entries).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            toolCallId: "call_packaged_agent_write_reject",
+            stage: "requested",
+            status: "pending",
+          }),
+          expect.objectContaining({
+            toolCallId: "call_packaged_agent_write_reject",
+            stage: "approval",
+            status: "waiting-approval",
+          }),
+        ]));
+        expect(
+          agentTimelineState.entries.filter((entry) =>
+            entry.toolCallId === "call_packaged_agent_write_reject" && entry.stage === "approval",
+          ),
+        ).toHaveLength(1);
       });
 
       it("treats an exact native event replay as idempotent", () => {

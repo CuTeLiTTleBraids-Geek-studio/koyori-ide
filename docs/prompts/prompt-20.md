@@ -410,3 +410,16 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 
 - `cd frontend && npx vitest run src/e2e/agentToolRoundProbe.test.ts src/components/ai-assistant/AgentToolCalls.test.ts` → 31 passed。含 write 卡片 `apply-selected` 无 kind 时仍点击 matching approve，以及组件断言 `apply-selected` 带 `data-agent-tool-kind=write`。
 - Linux packaged E2E 仍 `U`。
+
+**CI 随访（commit `2fedcde` dispatch [35356361184](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35356361184)，不改写 U）**
+
+- required jobs success，含 LSP matrix。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- 失败点（verbatim）：`ai-request-context-probe failed (422): packaged Agent tool round: write manual reject round: Agent tool-round renderer failed: timed out waiting for packaged Agent tool round: renderer timeline did not record waiting-approval -> rejected -> observation without execution (native approval: {Expected:1 Consumed:0 Remaining:1 Complete:false Restored:true Calls:[]})`。
+- write approve 轮已越过上一轮 `kind was undefined`；本 run 到达 write reject。`Calls:[]` 对 reject 是期望（`ExpectCall: false`），native stub 未消耗。
+- 根因：enqueue/`bindAgentState` 把 pending 审批记成 `status=pending`；探针契约要 `approval` + `waiting-approval`。`recordToolRequested` 在审批已写入后再次调用会把 lastStage 冲回 `requested`，watcher 再记第二条 approval。
+- 处理（本轮源码，尚未经新 dispatch）：`recordToolStage("pending")` 规范化为 `waiting-approval`；`recordToolRequested` 对已见 call id 幂等；enqueue 显式记 waiting-approval。一次绿仍不等于三次 consecutive qualification。
+
+**本地证据（waiting-approval 时间线，`T`）**
+
+- `cd frontend && npx vitest run src/stores/agentTimeline.test.ts src/stores/agent.test.ts src/e2e/agentToolRoundProbe.test.ts` → 150 passed。
+- Linux packaged E2E 仍 `U`。
