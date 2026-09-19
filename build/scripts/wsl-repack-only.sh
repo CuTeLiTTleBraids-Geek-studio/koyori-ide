@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# One-shot historical WSL repack record. SRC below is the original host path.
 # Re-run packaging from existing WSL worktree binary with correct version.
 set -euo pipefail
 export PATH="/usr/local/go/bin:/usr/local/lib/nodejs/bin:${HOME}/go/bin:${PATH}"

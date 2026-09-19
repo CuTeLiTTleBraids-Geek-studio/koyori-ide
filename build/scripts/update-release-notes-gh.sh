@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# One-shot historical GitHub release-notes update. ROOT below is the original host path.
 set -euo pipefail
 ROOT=/mnt/e/koyori-ide/Koyori IDE-main
 python3 "$ROOT/build/scripts/write-release-notes-v0.2.0.py"

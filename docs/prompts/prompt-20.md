@@ -469,3 +469,9 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - G24 已过。verbatim：`ai-diff-receipt-recovery-probe failed (422): load durable commit receipt after restart: /tmp/.../config/launch-2/koyori-ide/diff-receipts/...json: no commit receipt`。
 - 根因：Linux `os.UserConfigDir()` = `XDG_CONFIG_HOME`。harness 把 XDG 按 launch-1/launch-2 隔离，收据写在 launch-1，重启后读 launch-2。Windows 走共享 `APPDATA`，所以本机历史 24/24 看不到这个问题。
 - 处理（本轮源码，尚未经新 dispatch）：同一 fixture 的 XDG_CONFIG_HOME 与 APPDATA 共享 `user-config/`。实例锁靠 PID liveness 清过期文件。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `45af0c0` dispatch [35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565)，不改写三次资格）**
+
+- required jobs success。packaged-e2e job success，仍 `workflow_dispatch` only。
+- 证据（artifact `packaged-e2e-evidence`）：`status=passed`，`phase=complete`，24/24 fixtures passed（含 G13/G14/G23/G24 与 `kill-restart-recovery`），`artifactReused=false`，`sourceFingerprintStableAfterBuild=true`，scope `build-inputs-v4`，fileCount 1090，Wails `v3.0.0-alpha2.111`，`runId=e5ebe1dd491c25a347ac66642a4b42604e5cac3846359f263435b7db30111618`。截图 `window.png` 仅 295 bytes，不当成窗口视觉证据。
+- 这是 **1/3** consecutive distinct-commit greens。不把 job 改成 required，不把 Linux packaged 从 `U` 改写成完成。

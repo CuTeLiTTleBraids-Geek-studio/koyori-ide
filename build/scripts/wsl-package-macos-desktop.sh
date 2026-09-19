@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# One-shot historical macOS pack record. OUT below is the original host path.
 # Package already-built koyori-ide-darwin-{arm64,amd64} into offline .app installers.
 set -euo pipefail
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"

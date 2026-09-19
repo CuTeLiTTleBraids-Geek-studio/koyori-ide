@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# One-shot historical record of the v0.2.0 finalize copy. It is not a
+# reusable release entrypoint. OUT below is the original host path.
 set -euo pipefail
 OUT=/mnt/e/koyori-ide/Koyori IDE-main/bin/release-v0.2.0
 L="$HOME"/koyori-ide-pkg-build/bin

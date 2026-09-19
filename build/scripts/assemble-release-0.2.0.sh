@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# One-shot historical record of the v0.2.0 assemble procedure. It is not a
+# reusable release entrypoint. SRC/OUT below are the original host paths;
+# override them if you re-run. Formal packaging is docs/RELEASING.md.
 # Assemble v0.2.0 release artifacts from existing/cross-built binaries.
 set -euo pipefail
 export PATH="/usr/local/go/bin:/usr/local/lib/nodejs/bin:${HOME}/go/bin:/usr/bin:/bin:${PATH}"
