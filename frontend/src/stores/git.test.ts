@@ -34,6 +34,8 @@ vi.mock("@/api/services", () => ({
     pushTags: vi.fn().mockResolvedValue(undefined),
     amendCommit: vi.fn().mockResolvedValue(undefined),
     submoduleList: vi.fn().mockResolvedValue([]),
+    listBranches: vi.fn().mockResolvedValue([]),
+    isRebaseInProgress: vi.fn().mockResolvedValue(false),
   },
   fileService: {
     writeFile: vi.fn().mockResolvedValue(undefined),
@@ -68,6 +70,10 @@ import {
   loadConflicts,
   submoduleState,
   loadSubmodules,
+  loadBranches,
+  checkRebaseStatus,
+  branchState,
+  rebaseState,
 } from "./git";
 import type { MergeConflict } from "@/types";
 
@@ -533,5 +539,49 @@ describe("P1-01: stale 竞态守卫", () => {
     expect(submoduleState.submodules[0].path).toBe("libs/new");
     expect(submoduleState.loading).toBe(false);
     submoduleState.submodules = [];
+  });
+
+  it("loadBranches 迟到的旧响应不回写分支列表", async () => {
+    const { gitService } = await import("@/api/services");
+    let resolveOld!: (v: unknown) => void;
+    (gitService.listBranches as any)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce([{ name: "feature", isHead: true }]);
+
+    const stale = loadBranches("/old/repo");
+    await loadBranches("/new/repo");
+    expect(branchState.branches).toHaveLength(1);
+    expect(branchState.branches[0].name).toBe("feature");
+
+    resolveOld([{ name: "stale-main", isHead: true }]);
+    await stale;
+
+    expect(branchState.branches).toHaveLength(1);
+    expect(branchState.branches[0].name).toBe("feature");
+    expect(branchState.loadingBranches).toBe(false);
+    branchState.branches = [];
+  });
+
+  it("checkRebaseStatus 迟到的旧响应不回写 inProgress", async () => {
+    const { gitService } = await import("@/api/services");
+    let resolveOld!: (v: unknown) => void;
+    (gitService.isRebaseInProgress as any)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce(false);
+
+    rebaseState.inProgress = false;
+    rebaseState.error = null;
+    const stale = checkRebaseStatus();
+    await checkRebaseStatus();
+    expect(rebaseState.inProgress).toBe(false);
+
+    resolveOld(true);
+    await stale;
+
+    expect(rebaseState.inProgress).toBe(false);
   });
 });

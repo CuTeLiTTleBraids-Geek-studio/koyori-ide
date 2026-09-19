@@ -437,3 +437,14 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - 失败点（verbatim）：`AssertionError [ERR_ASSERTION]: saveAllNoBridge=true inputBox=true quickPick=true bridge=true notify=true output=false config=true view=true`。
 - Agent write approve/reject 轮未再作为本 run 失败点出现。当前阻塞是 G13 extension API probe：`createOutputChannel` 在无 `onOutput` 且 descriptor 仅 `fs.write` 时 fail-closed（`extensionHost.ts` 要求 host Output panel；`apiSurface` 要求 `ui.notifications`）。探针未接线/未授权，不能把 packaged E2E 计绿。
 - Linux packaged E2E 仍 `U`。一次绿仍不等于三次 consecutive qualification。不把 packaged-e2e 改成 required。
+
+**本轮（G13 output 接线 + 真实 LSP/SSH/Delve 证据 + PR 治理，不改写 packaged 绿）**
+
+- G13：`extensionApiProbe.ts` 给 `createOutputChannel` 接 `onOutput` + `ui.notifications`，并断言 host 收到 appendLine/show/clear/dispose。无面板时 fail-closed 保持（`extensionHost.ts:2602`）。`T`：`node vitest.mjs run src/e2e/extensionApiProbe.test.ts` 1 passed。
+- P2 竞态：`loadBranches` / `checkRebaseStatus` generation 守卫；MCP unsupported 家族写 state 前查 seq。`T`：git.test 35 passed，mcp.test 21 passed。
+- 真实外部环境（本机 Windows，2026-09-19，`T`，不是 packaged UI）：
+  - LSP：`KOYORI_IDE_LSP_INTEGRATION=1` `TestG10RealGoplsCompletionAndHover` 9 completions + hover；matrix `gopls` initialize pass，`typescript-language-server` initialize pass，`vtsls` skip 未安装。
+  - Remote：`TestRemoteService_HostIdentityConnectAndReconnectScope` 对 127.0.0.1 真实 SSH+SFTP 测试服务器 Connect/reconnect/known_hosts pass。无外部 SSH 主机。
+  - Debug：`TestDebugService_G14_RealDelveNestedVariables` 真实 `dlv dap` pass。
+  - AI：`TestAIServiceNativeToolStreamingRoundTripHTTP` OpenAI/Anthropic fixture pass；`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`ollama` 均无，外部 provider 仍 `U`。
+- README / RELEASING / G18 测试已按上述证据改写；禁止句「真实 gopls 集成路径已验证」未使用。Linux packaged E2E 在新 dispatch 前仍 `U`。

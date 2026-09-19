@@ -481,11 +481,12 @@ services. Record only what was actually exercised on the verifying machine.
 
 | Service | Local verification status |
 |---|---|
-| `gopls` (Go) | **Not installed on the verifying machine.** Availability detection and mock protocol paths are covered, but no real server session or transcript exists. |
-| `typescript-language-server` / `vtsls` (TypeScript) | **Not installed on the verifying machine.** Initialization options are covered by `TestLSP_A4_TypeScriptInitializationOptions`, which asserts the wire shape against an in-memory peer. That is a contract test, not evidence of a real server session. |
+| `gopls` (Go) | **Local Windows session, 2026-09-19:** `TestG10RealGoplsCompletionAndHover` returned 9 completion items and a non-empty hover; `TestLSPRealServerCompatibilityMatrix/gopls` initialized. This is not a packaged editor session. |
+| `typescript-language-server` (TypeScript) | **Local Windows session, 2026-09-19:** `TestLSPRealServerCompatibilityMatrix/typescript-language-server` initialized against the real binary from `frontend/node_modules/.bin`. Hover/completion against tsserver were not part of that matrix. |
+| `vtsls` (TypeScript) | **Not installed on the verifying machine** (matrix subtest skipped). |
 | `basedpyright` / `pyright` (Python) | Detection only. No real session verified. |
 | `rust-analyzer` (Rust) | Detection only. No real session verified. |
-| Delve DAP (Go) | Built-in adapter present. Coverage is unit-level; a real debug session was not exercised in this verification pass. |
+| Delve DAP (Go) | **Local Windows session, 2026-09-19:** `TestDebugService_G14_RealDelveNestedVariables` launched real `dlv dap` on 127.0.0.1, hit a breakpoint, and expanded nested variables. Packaged debug UI remains unverified. |
 | Node CDP | Narrower built-in path. Generic extension-contributed DAP adapters are unsupported. |
 
 A mock-backed unit test proves the protocol shape we send. It does not prove the

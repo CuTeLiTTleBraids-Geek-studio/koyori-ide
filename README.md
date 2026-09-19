@@ -29,7 +29,7 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 - 🧰 **本地工具链**：`go build/test/vet`、`gofmt`、`golangci-lint`、`tsc`、`eslint`、`prettier`、`vitest` 一键调用，无需联网。
 - 🔌 **离线 LSP**：自动发现 `gopls` / `typescript-language-server` / `vtsls`；能力取决于本机真实安装的语言服务器，缺失时明确降级，**绝不把 mock 当可用服务**（诚实喵！）。
 - 🤖 **AI 增强**：OpenAI Chat Completions 风格 + Anthropic Messages 双协议 SSE 流式对话，支持 Ollama / LM Studio 等本地端点。
-- 🐾 **自治 Agent**：读文件、写文件、运行命令、搜索、只读 Git status/diff——**所有命令强制人工审批**，没有 Safe 自动批准旁路，安全喵！
+- 🐾 **自治 Agent**：读文件、写文件、运行命令、搜索、只读 Git status/diff。非空 `run` 命令不再标成 Safe；会话三档为 Always Ask / Assist（只读工具可跳过提示）/ Allow All（结构校验后可跳过提示）。危险命令 denylist、路径沙箱与 workspace generation 仍是后端硬边界。
 - 🧩 **可扩展**：原生插件（Web Worker 沙箱）+ Open VSX 插件市场（SHA-256 校验、权限分级）。
 
 > ⚠️ **诚实声明**：Koyori IDE 当前为 **0.x 实验版本**，构建在 Wails v3 **alpha** 之上。它不是 VS Code、Cursor 或 IntelliJ 的替代品，**不宣称生产级或企业就绪**。固定 SHA 第三方 VSIX 已在一条 production installer -> installed files -> real Worker 链路中验证三类宿主可见贡献：Catppuccin 安装主题实际定义并切换、Material Icon Theme 命令可见、Rainbow CSV 打开真实宿主 InputBox 并完成编辑器 reveal/selection；YAML 对未知 API 精确 fail-closed。这些证据不等于 packaged Windows 或完整 VS Code API 兼容。远程开发、调试适配器和发布供应链仍有明确的未验证边界。详见下方[验证边界](#当前能力与验证边界vsu)。
@@ -61,7 +61,7 @@ Koyori IDE（こより IDE）是一个**离线优先**的桌面 AI IDE，专为 
 ### 🐾 自治 Agent
 
 - 工具调用：读/写文件、运行命令、搜索代码、`@codebase` 文本检索（**不是向量数据库**）、只读 Git status/diff（不自动 commit）
-- **命令强制人工审批**，风险分级 Safe / Elevated / Dangerous 逐工具审批
+- 风险分级 Safe / Elevated / Dangerous；Always Ask 下非空命令都要人工确认，Assist 可自动批准只读工具，Allow All 在结构校验后跳过交互提示（不能绕过 denylist / 路径沙箱）
 - 审计日志全程记录；单轮上限 **20 次工具** 调用（`MAX_TOOL_CALLS`），防无限循环
 
 ### 🔌 离线 LSP（G-FEAT-02）
@@ -115,12 +115,12 @@ Go/TS 的开箱工作流依赖本机安装并在 PATH 中可见的 Go、Node、`
 | 搜索替换 | 全文搜索 + 正则 + 替换 |
 | 快照 / 恢复 | 快照与本地历史；异常退出后脏缓冲恢复 |
 | 更新 / 崩溃 | E2 更新流（检查 + SHA-256 校验，手动安装）；崩溃报告 |
-| 个性化 | 三套设计语言（Material You / Apple HIG / Claude）、8 种强调色、明暗模式、i18n（en/zh/ja） |
+| 个性化 | 两套设计语言（Apple HIG / Claude）、8 种强调色、明暗模式、i18n（en/zh/ja） |
 | 其他 | PProf 性能分析、Skills 注册表、MCP 客户端、出站 IM 通知、项目脚手架模板 |
 
 ### 🏗️ 项目脚手架（G-FEAT-01）
 
-命令面板 `koyoriIde: New Project` 向导，模板内嵌（`go:embed`）离线可用：Go / TypeScript / JavaScript / Monorepo / 全栈。
+命令面板 `new-project` 向导，模板内嵌（`go:embed`）离线可用：Go / TypeScript / JavaScript / Monorepo / 全栈。
 
 ---
 
@@ -132,12 +132,12 @@ Go/TS 的开箱工作流依赖本机安装并在 PATH 中可见的 Go、Node、`
 |---|---|---|
 | 本地编辑与保存 | **V / U** | [事务/冲突测试](services/recovery_service_test.go) 与 [E2E 边界](docs/E2E.md)通过；真实打包 WebView 工作流仍 U |
 | Git | **V / U** | [真实临时仓库测试](services/git_service_test.go) + [前端入口测试](frontend/src/api/gitService.test.ts)通过；打包应用内人工流程未运行 |
-| LSP | **S / U** | [协议/契约测试](services/lsp_service_test.go)覆盖；本机 `gopls`、`typescript-language-server`、`vtsls` 均未安装，无真实语言服务器会话，边界见 [RELEASING](docs/RELEASING.md#lsp-and-debugger-release-claims) |
+| LSP | **V / S / U** | 本机 `gopls` 真实 initialize + completion/hover 通过；`typescript-language-server` 真实 initialize 通过；`vtsls` 未安装 skip。packaged 会话与完整编辑器 LSP UI 仍 U。边界见 [RELEASING](docs/RELEASING.md#lsp-and-debugger-release-claims) |
 | AI | **V / U** | [SSE/双协议测试](services/ai_service_test.go)与 [provider 边界](docs/RELEASING.md#lsp-and-debugger-release-claims)通过；未调用真实 provider |
 | Agent | **V / U** | [审批/预算/写事务测试](services/agent_service_test.go)通过；无真实模型端到端会话 |
 | Recovery | **V / U** | [恢复测试](services/recovery_service_test.go)通过；真实 SIGKILL/restart 证据以 [E2E 状态](docs/E2E.md#platform-status)为准 |
-| 最小 Remote | **S / U** | [RemoteService 测试](services/remote_service_test.go)覆盖；无真实 SSH 服务器，无远端 PTY/Agent/端口转发 |
-| Debug / Test | **V / S / U** | [Debug/Test 测试](services/debug_service_test.go)与 [真实会话边界](docs/RELEASING.md#lsp-and-debugger-release-claims)；无真实 Delve/Node 会话 |
+| 最小 Remote | **V / U** | [RemoteService](services/remote_service_test.go) 对 127.0.0.1 真实 SSH+SFTP 测试服务器完成 Connect / known_hosts / reconnect；无外部 SSH 主机，无远端 PTY / Agent / 端口转发 |
+| Debug / Test | **V / S / U** | 本机真实 Delve DAP 嵌套变量会话通过（`TestDebugService_G14_RealDelveNestedVariables`）；Node CDP 与 packaged 调试 UI 仍 U。见 [RELEASING](docs/RELEASING.md#lsp-and-debugger-release-claims) |
 | 插件 / VSIX | **T / I / U** | 四个固定 SHA 第三方 VSIX 经过生产 installer 落盘；Catppuccin、Material Icon Theme、Rainbow CSV 从 installed files 进入 real Worker active，YAML 以 `KOYORI_IDE_EXT_API_UNSUPPORTED: vscode.CompletionItem` 精确失败且不 active。同一生产测试实际定义/切换 Catppuccin Mocha editor theme、暴露 Material 命令、执行 Rainbow `GoToColumn` 并驱动真实 Element Plus InputBox 与 reveal/selection；packaged 激活仍 U |
 | 发布供应链 | **V / S / U** | [RELEASING](docs/RELEASING.md)、[依赖清单](docs/THIRD_PARTY_LICENSES.md)与 [资产清单](docs/RELEASE_ASSET_LICENSES.md)源码契约通过；真实四平台产物、签名、公证、packaged E2E 均 U |
 

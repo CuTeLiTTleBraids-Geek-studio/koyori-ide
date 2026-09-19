@@ -696,6 +696,7 @@ async function refreshContextFamily(
 ): Promise<void> {
   const capability = ctx.capabilities?.capabilities[family];
   if (!capability || capability.state !== "supported") {
+    if (contextRefreshSeqs.get(name) !== seq) return;
     if (family === "resources") {
       ctx.resources = [];
       ctx.resourcesStatus = "unsupported";

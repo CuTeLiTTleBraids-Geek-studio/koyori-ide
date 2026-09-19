@@ -17,7 +17,9 @@ func TestG18ReadmeCapabilityMatrixAndBoundaries(t *testing.T) {
 		"`V` = 本机实际命令通过",
 		"本地编辑与保存", "Git", "LSP", "AI", "Agent", "Recovery",
 		"最小 Remote", "Debug / Test", "插件 / VSIX", "发布供应链",
-		"gopls`、`typescript-language-server`、`vtsls` 均未安装",
+		"`vtsls` 未安装",
+		"无外部 SSH 主机",
+		"未调用真实 provider",
 		"不是 VS Code、Cursor 或 IntelliJ 的替代品",
 		"不宣称生产级或企业就绪",
 	} {
