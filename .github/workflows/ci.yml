@@ -517,7 +517,8 @@ jobs:
           sudo apt-get install -y \
             libgtk-4-dev libwebkitgtk-6.0-dev libgcc-12-dev libstdc++-12-dev \
             pkg-config xvfb imagemagick \
-            dbus-x11 at-spi2-core libgl1-mesa-dri libegl-mesa0 mesa-utils
+            dbus-x11 at-spi2-core libgl1-mesa-dri libegl-mesa0 mesa-utils \
+            python3 python-is-python3 cargo
 
       - name: Install frontend deps
         run: npm ci --registry=https://registry.npmjs.org
@@ -528,8 +529,18 @@ jobs:
       - name: Install wails3 CLI
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111
 
-      - name: Install real Go language server fixture dependency
-        run: go install golang.org/x/tools/gopls@v0.21.1
+      # G14 packaged probe fail-closes without dlv on PATH (dispatch 35421042065:
+      # "dlv not found; real Delve adapter probe skipped"). Pin matches docs/E2E.md.
+      # python/cargo are for G23 language-pack toolchain fixtures later in the
+      # same 24-goal run; TypeScript tools come from frontend/node_modules/.bin.
+      - name: Install real language-server and debugger fixture dependencies
+        run: |
+          go install golang.org/x/tools/gopls@v0.21.1
+          go install github.com/go-delve/delve/cmd/dlv@v1.27.1
+          gopls version
+          dlv version
+          python --version
+          cargo --version
 
       - name: Packaged E2E
         run: |

@@ -448,3 +448,10 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
   - Debug：`TestDebugService_G14_RealDelveNestedVariables` 真实 `dlv dap` pass。
   - AI：`TestAIServiceNativeToolStreamingRoundTripHTTP` OpenAI/Anthropic fixture pass；`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`ollama` 均无，外部 provider 仍 `U`。
 - README / RELEASING / G18 测试已按上述证据改写；禁止句「真实 gopls 集成路径已验证」未使用。Linux packaged E2E 在新 dispatch 前仍 `U`。
+
+**CI 随访（commit `69018b3` dispatch [35421042065](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35421042065)，不改写 U）**
+
+- required jobs success。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- G13 已过：失败点不再是 `output=false`。verbatim：`debug-g14-probe failed (422): dlv not found; real Delve adapter probe skipped`。
+- 根因：Linux qualification job 只 `go install gopls@v0.21.1`，未安装 `dlv`；探针 `LookPath("dlv")` fail-closed，不是 adapter 协议回归。
+- 处理（本轮源码，尚未经新 dispatch）：job 安装 `dlv@v1.27.1`（与 `docs/E2E.md` 清单一致）并预装 `python-is-python3` + `cargo`（G23 toolchain fixture）。`TestPackagedE2EWorkflowStaysManualUntilThreeRealRuns` 钉死这些字符串。一次绿仍不等于三次 consecutive qualification。
