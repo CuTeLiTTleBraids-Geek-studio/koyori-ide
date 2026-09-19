@@ -455,3 +455,10 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - G13 已过：失败点不再是 `output=false`。verbatim：`debug-g14-probe failed (422): dlv not found; real Delve adapter probe skipped`。
 - 根因：Linux qualification job 只 `go install gopls@v0.21.1`，未安装 `dlv`；探针 `LookPath("dlv")` fail-closed，不是 adapter 协议回归。
 - 处理（本轮源码，尚未经新 dispatch）：job 安装 `dlv@v1.27.1`（与 `docs/E2E.md` 清单一致）并预装 `python-is-python3` + `cargo`（G23 toolchain fixture）。`TestPackagedE2EWorkflowStaysManualUntilThreeRealRuns` 钉死这些字符串。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `2d31f2d` dispatch [35434631005](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35434631005)，不改写 U）**
+
+- required jobs success，含 LSP matrix。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- G13/G14 已过：失败点不再是 `output=false` 或 `dlv not found`。verbatim：`extension-host-g24-probe failed (422): install G24 v1: fetch extension metadata: registry fetch URL "http://127.0.0.1:42557/koyori-e2e-g24/runtime-lifecycle" rejected: url host 127.0.0.1 is a private/loopback/link-local address`。
+- 根因：P20 marketplace JSON SSRF（`httpGet`/`httpGetJSON` 走 `ValidateNonPrivateURL`）拒绝 G24 探针的环回 httptest 注册表。`SetRegistryURLForE2E` 只改了 registry base，没有放行随后的 metadata/VSIX fetch。
+- 处理（本轮源码，尚未经新 dispatch）：e2e-only `AllowLoopbackMarketplaceFetchesForE2E` 仅放行该 registry host；其他私网/环回仍走生产门；probe 结束 restore。生产 `ValidateNonPrivateURL` 未放宽。一次绿仍不等于三次 consecutive qualification。
