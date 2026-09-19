@@ -493,3 +493,4 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - 吸收 #61 go-compatible 到本分支：`mysql v1.10.1`、`pgx/v5 v5.11.0`、`golang.org/x/sys v0.48.0`、`modernc.org/sqlite v1.58.0`，并 `node scripts/generate-license-inventory.mjs`。`T`：`TestG17NoticeAndLicenseInventoryMatchDependencyDigests`、`TestDatabaseService*` 绿。#61 对 `main` 仍红，等 #60 合入后再关。
 - #60 仍 `BLOCKED` / `REVIEW_REQUIRED`（CODEOWNERS 单人，不能自审）。不 merge。#62 等 #60 合入后关。#63–#68（含 Wails beta）已于 2026-09-19 关闭，未走 `docs/WAILS-UPGRADE-GATE.md` 故不得合。
 - 外部 AI provider / 打包 GUI / 外部 SSH 主机仍 `U`。`Snapshot()` 返回 `(root, generation)` 不是 error；`executeApprovedToolLegacy` 仍是测试桩。
+- 命令面板补 `koyoriIde.view.remote` / `profile` / `plugins`（原先只有 `/debug` `/test` 等；Activity Bar 仍无 Remote）。CoC 联系方式改为已核验维护者邮箱，不再把未核验的 `security@koyori-ide.dev` 当举报入口。`T`：MainLayout + i18n + `TestG18*`。

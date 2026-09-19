@@ -456,6 +456,27 @@ const commands = computed<Command[]>(() => {
         if (route.path !== "/editor") void router.push("/editor");
       },
     },
+    {
+      id: "koyoriIde.view.remote",
+      label: t("mainLayout.commandOpenRemoteView"),
+      action: () => {
+        void router.push("/remote");
+      },
+    },
+    {
+      id: "koyoriIde.view.profile",
+      label: t("mainLayout.commandOpenProfileView"),
+      action: () => {
+        void router.push("/profile");
+      },
+    },
+    {
+      id: "koyoriIde.view.plugins",
+      label: t("mainLayout.commandOpenPluginsView"),
+      action: () => {
+        void router.push("/plugins");
+      },
+    },
   ];
   // G-FEAT-03: surface toolchain commands (go build / eslint / ...) grouped
   // by language. toolchainState.commands is refreshed when a project opens.

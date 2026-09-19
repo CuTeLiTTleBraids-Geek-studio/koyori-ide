@@ -285,6 +285,9 @@ const ja: MessageDict = {
   "mainLayout.commandOpenHttpClient": "表示: HTTP クライアント",
   "mainLayout.commandOpenInspections": "表示: インスペクション",
   "mainLayout.commandOpenCallHierarchy": "表示: 呼び出し階層",
+  "mainLayout.commandOpenRemoteView": "表示: リモート",
+  "mainLayout.commandOpenProfileView": "表示: プロファイラ",
+  "mainLayout.commandOpenPluginsView": "表示: プラグイン",
   // 優先度 10：自動更新 + クラッシュレポート
   "mainLayout.commandCheckUpdates": "更新を確認",
   "mainLayout.commandViewCrashReports": "クラッシュレポートを表示",

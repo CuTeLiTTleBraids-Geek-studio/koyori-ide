@@ -313,6 +313,23 @@ describe("MainLayout active-file commands", () => {
     expect(routerPushMock).toHaveBeenCalledWith("/test");
   });
 
+  it("opens Remote, Profiler, and Plugins views from palette command ids", async () => {
+    const palette = wrapper!.findComponent({ name: "CommandPalette" });
+    const commands = palette.props("commands") as Array<{ id: string; action: () => void }>;
+    const remote = commands.find((command) => command.id === "koyoriIde.view.remote");
+    const profile = commands.find((command) => command.id === "koyoriIde.view.profile");
+    const plugins = commands.find((command) => command.id === "koyoriIde.view.plugins");
+    expect(remote).toBeTruthy();
+    expect(profile).toBeTruthy();
+    expect(plugins).toBeTruthy();
+    remote!.action();
+    profile!.action();
+    plugins!.action();
+    expect(routerPushMock).toHaveBeenCalledWith("/remote");
+    expect(routerPushMock).toHaveBeenCalledWith("/profile");
+    expect(routerPushMock).toHaveBeenCalledWith("/plugins");
+  });
+
   it("opens advanced side panels from palette command ids", async () => {
     const { setPanelTab } = await import("@/stores/app");
     const palette = wrapper!.findComponent({ name: "CommandPalette" });

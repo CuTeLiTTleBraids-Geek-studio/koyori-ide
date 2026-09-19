@@ -37,12 +37,14 @@ This Code of Conduct applies within all community spaces and when an individual 
 ## 举报 / Enforcement
 
 若遭遇辱骂、骚扰或其他不可接受行为，请向社区领导者报告：
-- 安全相关：**security@koyori-ide.dev**
-- 或通过 GitHub 私密渠道报告（可使用 conduct 相关标签）
+- GitHub 私密渠道（Issue 不公开细节；安全漏洞走 [私密 advisory](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/security/advisories/new)）
+- 或 README / SECURITY 中的公开维护者邮箱 **dianasoylu423@gmail.com**（主题注明 `[Koyori IDE Conduct]`）
+
+仓库没有已核验的 `security@koyori-ide.dev` 邮箱；不要向未公开的域名地址发报告。
 
 所有投诉将得到及时、公正的审查。领导者必须尊重举报人隐私与安全。
 
-Report abusive, harassing, or otherwise unacceptable behavior to community leaders at **security@koyori-ide.dev** or via private GitHub channels. All complaints will be reviewed promptly and fairly. Leaders must respect the privacy and security of the reporter.
+Report abusive, harassing, or otherwise unacceptable behavior to community leaders via private GitHub channels or the public maintainer address **dianasoylu423@gmail.com** with subject `[Koyori IDE Conduct]`. There is no verified `security@koyori-ide.dev` mailbox. All complaints will be reviewed promptly and fairly. Leaders must respect the privacy and security of the reporter.
 
 ## 处理阶梯 / Enforcement Guidelines
 

@@ -100,7 +100,7 @@ Include: description, steps to reproduce, affected components, potential impact,
 | go vet / golangci-lint | 三平台 vet；Ubuntu golangci-lint |
 | Frontend coverage | Ubuntu Vitest 四项 50% 门禁；报告作为 artifact |
 | Wails build | 仅 Ubuntu 配置 `wails3 build -tags desktop,production`；不是三平台 artifact 验证 |
-| Packaged E2E | 仅 `workflow_dispatch` Linux qualification；尚非 required，真实运行 U |
+| Packaged E2E | 仅 `workflow_dispatch` Linux qualification；Linux 三次连续 24/24 已保留，尚非 required；Windows/macOS 与 tag-release packaged 仍 U |
 | Release supply chain | tag workflow 源码强制 NOTICE/许可证、SPDX SBOM、未签名 provenance 与最终校验和；真实 tag run U |
 
 Go 与前端 matrix 覆盖 Ubuntu / Windows / macOS；Wails build、coverage、govulncheck 与 packaged qualification 的平台范围如上。没有 workflow run URL 时，不得把配置写成 CI 已通过。
@@ -112,7 +112,7 @@ Go 与前端 matrix 覆盖 Ubuntu / Windows / macOS；Wails build、coverage、g
 | G-SEC-01 | AI BaseURL 校验，防 SSRF / 禁 userinfo；非回环强制 HTTPS | BaseURL validation; SSRF / credential-leak prevention |
 | G-SEC-02 | Agent 命令强制人工审批，无 run 自动批准 | All agent shell commands require manual approval |
 | G-SEC-03 | 项目级工作流不可信，启动类不自动执行 | Untrusted workflows never auto-run on load |
-| G-SEC-04 | CI 配置 race + govulncheck；required run 已绿；packaged E2E 仍 U | Race + govulncheck required-run green; packaged E2E still U |
+| G-SEC-04 | CI 配置 race + govulncheck；required run 已绿；Linux packaged qualification 24/24 已保留但仍非 required；Windows/macOS packaged 仍 U | Race + govulncheck required-run green; Linux packaged qualification retained but not required; Windows/macOS packaged still U |
 | G-SEC-05 | iframe `sandbox="allow-scripts"`，无 allow-same-origin | Extension iframes without same-origin |
 | G-SEC-06 | 路径双侧 EvalSymlinks，防符号链接逃逸 | Symlink-aware path sandbox |
 | G-SEC-07 | API Key 加密存储且不回传前端明文 | Encrypted API keys; never returned to frontend |

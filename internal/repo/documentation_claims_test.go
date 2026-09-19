@@ -40,6 +40,20 @@ func TestG18ReadmeCapabilityMatrixAndBoundaries(t *testing.T) {
 	}
 }
 
+func TestG18CodeOfConductUsesVerifiedMaintainerContact(t *testing.T) {
+	raw, err := os.ReadFile("../../.github/CODE_OF_CONDUCT.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(raw)
+	if !strings.Contains(doc, "dianasoylu423@gmail.com") {
+		t.Error("CODE_OF_CONDUCT.md must use the verified public maintainer email")
+	}
+	if strings.Contains(doc, "at **security@koyori-ide.dev**") {
+		t.Error("CODE_OF_CONDUCT.md must not advertise an unverified koyori-ide.dev mailbox as the report address")
+	}
+}
+
 func TestG18SecurityPolicyHasNoUnverifiedSLOOrAuditClaim(t *testing.T) {
 	raw, err := os.ReadFile("../../.github/SECURITY.md")
 	if err != nil {
