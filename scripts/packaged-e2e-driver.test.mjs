@@ -27,12 +27,21 @@ import {
   createPackagedE2EManifest,
   markPackagedE2EManifestFailed,
   packagedE2EFixtureResultPatch,
+  packagedLaunchUserConfigDir,
   runPackagedE2EManifestLifecycle,
   sourceFingerprint,
   validateReusableArtifactEvidence,
   verifyFrontendE2EProbeMarkers,
   verifyWindowsPackagedE2EEvidence,
 } from "./packaged-e2e.mjs";
+
+test("packaged launches share UserConfigDir so Linux receipts survive restart", () => {
+  const configDir = path.join(os.tmpdir(), "koyori-e2e-config");
+  const first = packagedLaunchUserConfigDir(configDir);
+  const second = packagedLaunchUserConfigDir(configDir);
+  assert.equal(first, path.join(configDir, "user-config"));
+  assert.equal(second, first);
+});
 
 test("source fingerprint recursively covers untracked build inputs", async (t) => {
   const fixtureRoot = await mkdtemp(

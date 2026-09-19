@@ -462,3 +462,10 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - G13/G14 已过：失败点不再是 `output=false` 或 `dlv not found`。verbatim：`extension-host-g24-probe failed (422): install G24 v1: fetch extension metadata: registry fetch URL "http://127.0.0.1:42557/koyori-e2e-g24/runtime-lifecycle" rejected: url host 127.0.0.1 is a private/loopback/link-local address`。
 - 根因：P20 marketplace JSON SSRF（`httpGet`/`httpGetJSON` 走 `ValidateNonPrivateURL`）拒绝 G24 探针的环回 httptest 注册表。`SetRegistryURLForE2E` 只改了 registry base，没有放行随后的 metadata/VSIX fetch。
 - 处理（本轮源码，尚未经新 dispatch）：e2e-only `AllowLoopbackMarketplaceFetchesForE2E` 仅放行该 registry host；其他私网/环回仍走生产门；probe 结束 restore。生产 `ValidateNonPrivateURL` 未放宽。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `41ca1d4` dispatch [35435703941](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35435703941)，不改写 U）**
+
+- required jobs success。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- G24 已过。verbatim：`ai-diff-receipt-recovery-probe failed (422): load durable commit receipt after restart: /tmp/.../config/launch-2/koyori-ide/diff-receipts/...json: no commit receipt`。
+- 根因：Linux `os.UserConfigDir()` = `XDG_CONFIG_HOME`。harness 把 XDG 按 launch-1/launch-2 隔离，收据写在 launch-1，重启后读 launch-2。Windows 走共享 `APPDATA`，所以本机历史 24/24 看不到这个问题。
+- 处理（本轮源码，尚未经新 dispatch）：同一 fixture 的 XDG_CONFIG_HOME 与 APPDATA 共享 `user-config/`。实例锁靠 PID liveness 清过期文件。一次绿仍不等于三次 consecutive qualification。

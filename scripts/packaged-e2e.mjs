@@ -1183,6 +1183,10 @@ async function createFixtureWorkspace() {
   };
 }
 
+export function packagedLaunchUserConfigDir(configDir) {
+  return path.join(configDir, "user-config");
+}
+
 async function launchArtifact({ artifact, fixture, display, index, runId }) {
   const token = randomBytes(32).toString("hex");
   assert.match(runId, /^[0-9a-f]{64}$/);
@@ -1191,7 +1195,8 @@ async function launchArtifact({ artifact, fixture, display, index, runId }) {
   await rm(handshakePath, { force: true });
 
   let output = "";
-  await mkdir(path.join(fixture.configDir, `launch-${index}`), {
+  const userConfigDir = packagedLaunchUserConfigDir(fixture.configDir);
+  await mkdir(userConfigDir, {
     recursive: true,
   });
   const child = spawn(artifact, [], {
@@ -1214,14 +1219,15 @@ async function launchArtifact({ artifact, fixture, display, index, runId }) {
             GSETTINGS_BACKEND: "memory",
           }
         : {}),
-      XDG_CONFIG_HOME: path.join(fixture.configDir, `launch-${index}`),
-      // Isolate the instance lock and UserConfigDir-backed state (profiles,
-      // settings path resolution) per launch, so a packaged artifact never
-      // collides with a real user instance or another E2E launch.
-      // APPDATA is shared across restarts of the same fixture so the recovery
-      // journal (UserConfigDir-backed) survives a kill+restart cycle; the
-      // instance lock serializes the single artifact process.
-      APPDATA: path.join(fixture.configDir, "appdata"),
+      // os.UserConfigDir() is XDG_CONFIG_HOME on Unix and APPDATA on
+      // Windows. Share one fixture-local directory across sequential
+      // launches so diff receipts and the recovery journal survive
+      // SIGKILL+restart. Isolation from the real user is the fixture
+      // configDir, not a per-launch subdirectory. Handshake logs stay
+      // per-launch under evidenceDir. Stale instance locks are cleared
+      // by PID liveness in services.InstanceLock.
+      XDG_CONFIG_HOME: userConfigDir,
+      APPDATA: userConfigDir,
       KOYORI_IDE_E2E: "1",
       KOYORI_IDE_E2E_TOKEN: token,
       KOYORI_IDE_E2E_HANDSHAKE: handshakePath,
