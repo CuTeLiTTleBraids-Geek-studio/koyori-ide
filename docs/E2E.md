@@ -304,14 +304,15 @@ has produced activation evidence.
 
 ## CI qualification and platform status
 
-The Linux job remains `workflow_dispatch`-only until three consecutive runs on
-three distinct commits pass and retain manifests. Source tests and `--dry-run`
-do not count. One retained Linux dispatch is not qualification.
+The Linux job remains `workflow_dispatch`-only. Three consecutive real
+packaged runs on three distinct commits have passed and retained manifests.
+Source tests and `--dry-run` do not count. Making the job required is a
+separate default-branch policy change; it is not implied by these three runs.
 
 | Platform    | Status                                                                                |
 | ----------- | ------------------------------------------------------------------------------------- |
 | Windows x64 | current authoritative manifest is partial (11/24); refreshed packaged evidence is `U` |
-| Linux       | two retained consecutive 24/24 dispatches: [35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565) on `45af0c0`, [35437538679](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35437538679) on `0f44373` (both `status=passed` / `phase=complete` / `sourceFingerprintStableAfterBuild=true`; screenshots 295 bytes). Still `U` until a third consecutive green on a distinct commit. |
+| Linux       | three consecutive 24/24 dispatches retained: [35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565) `45af0c0`, [35437538679](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35437538679) `0f44373`, [35438391717](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35438391717) `993ba08` (each `status=passed` / `phase=complete` / `sourceFingerprintStableAfterBuild=true`; screenshots 295 bytes, not visual proof). Job still dispatch-only. Windows/macOS remain `U`. |
 | macOS       | source and CI configuration exist; real packaged run `U`                              |
 
 Linux CI starts a dedicated loopback-only virtual display before the artifact:

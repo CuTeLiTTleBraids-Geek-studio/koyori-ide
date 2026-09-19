@@ -6,8 +6,8 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 
 ## Source Digests
 
-- `go.mod`: `ab3c07d72f4e3d727b4044465c34b17e5587f7e9039367798fb54965882945ae`
-- `go.sum`: `46830783b4a1d3eb1757c1791d57c4ca678c6ea387b254730697eaff5ceedcd6`
+- `go.mod`: `86bd5d9b55a129d704a0bc79fbd954d7cb1250a67ba5e12dd37d01b80b68e958`
+- `go.sum`: `2f0159ce59b6ce9970a6053c4f645ca059f207d1dcb1689e6715a09500d032ae`
 - `frontend/package-lock.json`: `dc03dcab8f784db1d651de5a33d63eac5118cfae5cbbca5af00afdcd56c07f4e`
 
 ## Review Summary
@@ -87,14 +87,14 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | github.com/go-git/go-billy/v5 | v5.9.0 | Apache-2.0 | LICENSE |
 | github.com/go-git/go-git/v5 | v5.19.2 | Apache-2.0 | LICENSE |
 | github.com/go-ole/go-ole | v1.3.0 | MIT | LICENSE |
-| github.com/go-sql-driver/mysql | v1.10.0 | MPL-2.0 | LICENSE |
+| github.com/go-sql-driver/mysql | v1.10.1 | MPL-2.0 | LICENSE |
 | github.com/godbus/dbus/v5 | v5.2.2 | BSD-2-Clause | LICENSE |
 | github.com/golang/groupcache | v0.0.0-20241129210726-2c02b8208cf8 | Apache-2.0 | LICENSE |
 | github.com/google/shlex | v0.0.0-20191202100458-e7afc7fbc510 | Apache-2.0 | COPYING |
 | github.com/google/uuid | v1.6.0 | BSD-3-Clause | LICENSE |
 | github.com/jackc/pgpassfile | v1.0.0 | MIT | LICENSE |
 | github.com/jackc/pgservicefile | v0.0.0-20240606120523-5a60cdf6a761 | MIT | LICENSE |
-| github.com/jackc/pgx/v5 | v5.10.0 | MIT | LICENSE |
+| github.com/jackc/pgx/v5 | v5.11.0 | MIT | LICENSE |
 | github.com/jackc/puddle/v2 | v2.2.2 | MIT | LICENSE |
 | github.com/jbenet/go-context | v0.0.0-20150711004518-d14ea06fba99 | MIT | LICENSE |
 | github.com/jmoiron/sqlx | v1.4.0 | MIT | LICENSE |
@@ -114,14 +114,14 @@ This is an engineering inventory, not legal advice. It covers the union of the f
 | golang.org/x/crypto | v0.56.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/net | v0.57.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/sync | v0.22.0 | BSD-3-Clause | LICENSE |
-| golang.org/x/sys | v0.47.0 | BSD-3-Clause | LICENSE |
+| golang.org/x/sys | v0.48.0 | BSD-3-Clause | LICENSE |
 | golang.org/x/text | v0.41.0 | BSD-3-Clause | LICENSE |
 | gopkg.in/warnings.v0 | v0.1.2 | BSD-2-Clause | LICENSE |
 | gopkg.in/yaml.v3 | v3.0.1 | Apache-2.0 | LICENSE |
-| modernc.org/libc | v1.74.4 | BSD-2-Clause | LICENSE |
+| modernc.org/libc | v1.75.6 | BSD-2-Clause | LICENSE |
 | modernc.org/mathutil | v1.7.1 | BSD-2-Clause | LICENSE |
-| modernc.org/memory | v1.11.0 | BSD-2-Clause | LICENSE |
-| modernc.org/sqlite | v1.57.0 | BSD-3-Clause | LICENSE |
+| modernc.org/memory | v1.12.1 | BSD-2-Clause | LICENSE |
+| modernc.org/sqlite | v1.58.0 | BSD-3-Clause | LICENSE |
 
 ## npm Packages
 

@@ -359,13 +359,19 @@ workspace open, file open/edit/save, terminal, LSP hover/completion, and
 SIGKILL/restart recovery, but source coverage and `--dry-run` are not artifact
 execution evidence.
 
+Linux packaged 24/24 now has three consecutive successful manual runs on three
+distinct commits, with retained manifests:
+[35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565) `45af0c0`,
+[35437538679](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35437538679) `0f44373`,
+[35438391717](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35438391717) `993ba08`.
+Making the job a required GitHub check is a separate default-branch policy
+change; these three runs do not authorize that promotion.
+
 An older 2026-08-03 harness record stopped at toolchain setup while the project
 still used the pre-release `wails3` pin; that record predates the current
 the pre-convergence beta.8-line toolchain and is not evidence for this release. No hosted tag
 release artifact run is retained here, so packaged execution remains `U` for
-release qualification. Promote the job to required only after three consecutive
-successful manual runs on three distinct commits, each with its manifest and
-launch evidence retained. Windows and macOS packaged execution remain `U`
+release qualification. Windows and macOS packaged execution remains `U`
 independently of a Linux result.
 
 The current tag workflow can publish without that qualification job because it

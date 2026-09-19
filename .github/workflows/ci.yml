@@ -472,11 +472,12 @@ jobs:
   # artifact is only built and driven after the same commit has passed them.
   # A release must not reach this job by skipping those checks.
   #
-  # QUALIFICATION GATE: the test-only loopback driver is implemented, but real
-  # packaged execution is still U. Keep this workflow_dispatch-only until it
-  # has passed three consecutive manual runs on three distinct commits, with
-  # each run's manifest retained. Only then remove the `if:` gate, rename the
-  # job without the qualification suffix, and configure it as a required check.
+  # QUALIFICATION GATE: Linux packaged 24/24 has passed three consecutive manual runs on three distinct commits, with
+  # retained manifests (35436654565/45af0c0, 35437538679/0f44373, 35438391717/993ba08).
+  # Windows/macOS packaged runs remain U. Keep this workflow_dispatch-only
+  # until the default branch accepts making it a required check. Only then
+  # remove the `if:` gate, rename the job without the qualification suffix,
+  # and configure it as a required check.
   #
   # A source-level test or dry-run does not count toward those three runs.
   packaged-e2e:

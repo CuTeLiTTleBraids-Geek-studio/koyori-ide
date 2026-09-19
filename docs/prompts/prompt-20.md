@@ -480,3 +480,16 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 
 - packaged-e2e job success。manifest `status=passed` / `phase=complete` / 24/24 / `artifactReused=false` / `sourceFingerprintStableAfterBuild=true` / `runId=20997a8d55375b9dd352912499f6d9d25bafca15f91c4f1d11cf1ee5cebae3b7`。截图仍 295 bytes。
 - 这是 **2/3** consecutive distinct-commit greens。第三次尚未跑。job 仍 `workflow_dispatch` only。
+
+**CI 随访（commit `993ba08` dispatch [35438391717](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35438391717)）**
+
+- packaged-e2e job success。manifest `status=passed` / `phase=complete` / 24/24 / `artifactReused=false` / `sourceFingerprintStableAfterBuild=true`。截图仍 295 bytes。
+- 三次 consecutive distinct-commit 24/24 已齐：`45af0c0` / `0f44373` / `993ba08`。**不**自动把 job 改成 required（Windows/macOS 仍 `U`；required 是默认分支策略，约 15–20 分钟额外成本）。job 仍 `workflow_dispatch` only。
+
+**本轮随访（资格记账 + PR 治理，不改 required）**
+
+- 把三次 24/24 写入 `ci.yml` 注释、`docs/E2E.md`、`docs/RELEASING.md`、README 发布供应链行。`if:` 仍 `github.event_name == 'workflow_dispatch'`。`T`：`TestPackagedE2EWorkflowStaysManualUntilThreeRealRuns`、`TestG18*` 绿。
+- GitHub 补 Dependabot 缺失标签：`dependencies` / `go` / `javascript` / `ci` / `docker`（先前每条 Dependabot PR 都报 labels could not be found）。#61 打 `dependencies,go`，#62 打 `dependencies,ci`。
+- 吸收 #61 go-compatible 到本分支：`mysql v1.10.1`、`pgx/v5 v5.11.0`、`golang.org/x/sys v0.48.0`、`modernc.org/sqlite v1.58.0`，并 `node scripts/generate-license-inventory.mjs`。`T`：`TestG17NoticeAndLicenseInventoryMatchDependencyDigests`、`TestDatabaseService*` 绿。#61 对 `main` 仍红，等 #60 合入后再关。
+- #60 仍 `BLOCKED` / `REVIEW_REQUIRED`（CODEOWNERS 单人，不能自审）。不 merge。#62 等 #60 合入后关。#63–#68（含 Wails beta）已于 2026-09-19 关闭，未走 `docs/WAILS-UPGRADE-GATE.md` 故不得合。
+- 外部 AI provider / 打包 GUI / 外部 SSH 主机仍 `U`。`Snapshot()` 返回 `(root, generation)` 不是 error；`executeApprovedToolLegacy` 仍是测试桩。
