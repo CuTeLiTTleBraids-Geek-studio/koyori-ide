@@ -311,7 +311,7 @@ do not count. One retained Linux dispatch is not qualification.
 | Platform    | Status                                                                                |
 | ----------- | ------------------------------------------------------------------------------------- |
 | Windows x64 | current authoritative manifest is partial (11/24); refreshed packaged evidence is `U` |
-| Linux       | one retained 24/24 dispatch: [35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565) on `45af0c0` (manifest `status=passed`, `phase=complete`, `sourceFingerprintStableAfterBuild=true`, screenshot 295 bytes). Still `U` until two more consecutive greens on distinct commits. |
+| Linux       | two retained consecutive 24/24 dispatches: [35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565) on `45af0c0`, [35437538679](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35437538679) on `0f44373` (both `status=passed` / `phase=complete` / `sourceFingerprintStableAfterBuild=true`; screenshots 295 bytes). Still `U` until a third consecutive green on a distinct commit. |
 | macOS       | source and CI configuration exist; real packaged run `U`                              |
 
 Linux CI starts a dedicated loopback-only virtual display before the artifact:

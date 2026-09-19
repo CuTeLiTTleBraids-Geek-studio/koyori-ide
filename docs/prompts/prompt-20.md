@@ -475,3 +475,8 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - required jobs success。packaged-e2e job success，仍 `workflow_dispatch` only。
 - 证据（artifact `packaged-e2e-evidence`）：`status=passed`，`phase=complete`，24/24 fixtures passed（含 G13/G14/G23/G24 与 `kill-restart-recovery`），`artifactReused=false`，`sourceFingerprintStableAfterBuild=true`，scope `build-inputs-v4`，fileCount 1090，Wails `v3.0.0-alpha2.111`，`runId=e5ebe1dd491c25a347ac66642a4b42604e5cac3846359f263435b7db30111618`。截图 `window.png` 仅 295 bytes，不当成窗口视觉证据。
 - 这是 **1/3** consecutive distinct-commit greens。不把 job 改成 required，不把 Linux packaged 从 `U` 改写成完成。
+
+**CI 随访（commit `0f44373` dispatch [35437538679](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35437538679)，不改写三次资格）**
+
+- packaged-e2e job success。manifest `status=passed` / `phase=complete` / 24/24 / `artifactReused=false` / `sourceFingerprintStableAfterBuild=true` / `runId=20997a8d55375b9dd352912499f6d9d25bafca15f91c4f1d11cf1ee5cebae3b7`。截图仍 295 bytes。
+- 这是 **2/3** consecutive distinct-commit greens。第三次尚未跑。job 仍 `workflow_dispatch` only。
