@@ -73,8 +73,9 @@ import {
   approveToolCall,
   rejectToolCall,
   clearPendingToolCalls,
-	ensureAgentSession,
-	resetAgentSession,
+		ensureAgentSession,
+		resetAgentSession,
+		getAgentPermissionMode,
   onAssistantFinished,
   getAgentSystemPrompt,
   approveAndFeed,
@@ -100,6 +101,7 @@ import { fileService, searchService, agentService, aiService } from "@/api/servi
 import { appState } from "@/stores/app";
 import { pushOutput } from "@/stores/output";
 import { notifyError, notifyWarning } from "@/lib/notifications";
+import { agentTimelineState } from "@/stores/agentTimeline";
 
 function builtinCatalog(revision = 1): AgentToolCatalog {
 	return {
@@ -276,16 +278,79 @@ describe("agent store", () => {
 			expect(agentService.closeSession).toHaveBeenCalledWith("chat:stale");
 		});
 
-		it("reset clears the backend authority cache", async () => {
-			(agentService as any).createSession = vi.fn();
-			(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
-			const createSession = vi.mocked((agentService as any).createSession);
-			createSession.mockResolvedValueOnce("chat:reset-a").mockResolvedValueOnce("chat:reset-b");
-			expect(await ensureAgentSession()).toBe("chat:reset-a");
-			resetAgentSession();
-			expect(await ensureAgentSession()).toBe("chat:reset-b");
+			it("reset clears the backend authority cache", async () => {
+				(agentService as any).createSession = vi.fn();
+				(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+				const createSession = vi.mocked((agentService as any).createSession);
+				createSession.mockResolvedValueOnce("chat:reset-a").mockResolvedValueOnce("chat:reset-b");
+				expect(await ensureAgentSession()).toBe("chat:reset-a");
+				resetAgentSession();
+				expect(await ensureAgentSession()).toBe("chat:reset-b");
+			});
+
+			it("rotates the cached chat session when permission mode changes", async () => {
+				(agentService as any).createSession = vi.fn();
+				(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+				const createSession = vi.mocked((agentService as any).createSession);
+				createSession
+					.mockResolvedValueOnce("chat:assist")
+					.mockResolvedValueOnce("chat:always-ask");
+				appState.agentPermissionMode = "assist";
+				expect(await ensureAgentSession()).toBe("chat:assist");
+				expect(getAgentPermissionMode()).toBe("assist");
+				appState.agentPermissionMode = "always-ask";
+				expect(await ensureAgentSession()).toBe("chat:always-ask");
+				expect(getAgentPermissionMode()).toBe("always-ask");
+				expect(agentService.closeSession).toHaveBeenCalledWith("chat:assist");
+			});
+
+			it("does not publish a session created across a permission-mode change", async () => {
+				(agentService as any).createSession = vi.fn();
+				(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+				const createSession = vi.mocked((agentService as any).createSession);
+				let resolve!: (id: string) => void;
+				createSession
+					.mockReturnValueOnce(new Promise<string>((done) => { resolve = done; }))
+					.mockResolvedValueOnce("chat:always-ask");
+				appState.agentPermissionMode = "assist";
+				const pending = ensureAgentSession();
+				appState.agentPermissionMode = "always-ask";
+				const rotated = ensureAgentSession();
+				resolve("chat:stale-assist");
+				await expect(pending).rejects.toThrow(/session changed/);
+				expect(agentService.closeSession).toHaveBeenCalledWith("chat:stale-assist");
+				expect(await rotated).toBe("chat:always-ask");
+				expect(getAgentPermissionMode()).toBe("always-ask");
+				expect(createSession).toHaveBeenCalledTimes(2);
+			});
+
+			it("coalesces concurrent creates for the same permission mode", async () => {
+				(agentService as any).createSession = vi.fn();
+				(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+				const createSession = vi.mocked((agentService as any).createSession);
+				let resolve!: (id: string) => void;
+				createSession.mockReturnValueOnce(new Promise<string>((done) => { resolve = done; }));
+				appState.agentPermissionMode = "always-ask";
+				const first = ensureAgentSession();
+				const second = ensureAgentSession();
+				expect(createSession).toHaveBeenCalledTimes(1);
+				resolve("chat:shared");
+				expect(await first).toBe("chat:shared");
+				expect(await second).toBe("chat:shared");
+			});
+
+			it("reuses the cached session when permission mode is unchanged", async () => {
+				(agentService as any).createSession = vi.fn();
+				(agentService as any).closeSession = vi.fn().mockResolvedValue(undefined);
+				const createSession = vi.mocked((agentService as any).createSession);
+				createSession.mockResolvedValueOnce("chat:reuse");
+				appState.agentPermissionMode = "always-ask";
+				expect(await ensureAgentSession()).toBe("chat:reuse");
+				expect(await ensureAgentSession()).toBe("chat:reuse");
+				expect(createSession).toHaveBeenCalledTimes(1);
+				expect(agentService.closeSession).not.toHaveBeenCalled();
+			});
 		});
-	});
 
   describe("hasPendingToolCalls computed", () => {
     it("is false when no pending calls", () => {
@@ -1364,6 +1429,30 @@ describe("agent store", () => {
         expect(agentState.pendingToolCalls).toHaveLength(1);
         expect(agentState.pendingToolCalls[0].kind).toBe("search");
         expect(agentState.toolCallCount).toBe(1);
+      });
+
+      it("records waiting-approval when a native write is enqueued for manual reject", () => {
+        agentState.mode = "agent";
+        expect(onNativeToolCalls([
+          { id: "call_packaged_agent_write_reject", name: "write", arguments: JSON.stringify({ path: "note.txt", content: "x" }) },
+        ])).toBe(1);
+        expect(agentTimelineState.entries).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            toolCallId: "call_packaged_agent_write_reject",
+            stage: "requested",
+            status: "pending",
+          }),
+          expect.objectContaining({
+            toolCallId: "call_packaged_agent_write_reject",
+            stage: "approval",
+            status: "waiting-approval",
+          }),
+        ]));
+        expect(
+          agentTimelineState.entries.filter((entry) =>
+            entry.toolCallId === "call_packaged_agent_write_reject" && entry.stage === "approval",
+          ),
+        ).toHaveLength(1);
       });
 
       it("treats an exact native event replay as idempotent", () => {

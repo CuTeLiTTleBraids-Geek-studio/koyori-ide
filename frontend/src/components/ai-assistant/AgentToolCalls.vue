@@ -191,6 +191,7 @@ function handleClear(): void {
           class="agent-tool-call__button agent-tool-call__button--approve"
           data-agent-tool-action="apply-selected"
           :data-agent-tool-call-id="call.id"
+          :data-agent-tool-kind="call.kind"
           :disabled="agentTurnBusy || !!call.blockReason || !(call.selectedHunks && call.selectedHunks.length)"
           @click="handleApprove(call)"
         >

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# One-shot historical WSL packaging record. The /mnt/e/... example is the
+# original host path, not a portable default.
 # Build Linux desktop packages (deb/rpm/arch/apk/tar.gz/AppImage/.run) in WSL,
 # plus cross-compile pure-Go server binaries for macOS offline .run installers.
 #

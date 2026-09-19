@@ -198,26 +198,32 @@ export function restoreAgentTimelineFromMessages(messages: PersistedTimelineMess
 export function recordToolRequested(toolCallId: string, tool: string, target?: string): AgentTimelineEntry | null {
   if (!toolCallId) return null;
   closeProviderReasoningAggregation();
-  if (lastStages.get(toolCallId) === "requested") return null;
+  if (lastStages.has(toolCallId)) return null;
   lastStages.set(toolCallId, "requested");
   lastStatuses.set(toolCallId, "pending");
   return appendEntry({ kind: "tool", stage: "requested", toolCallId, tool, target, status: "pending" });
 }
 
+function canonicalToolStatus(stage: string): string {
+  return stage === "pending" ? "waiting-approval" : stage;
+}
+
 function stageForToolStatus(stage: string): AgentTimelineStage {
-  if (stage === "executing") return "executing";
-  if (stage === "executed" || stage === "rejected" || stage === "error") return "result";
+  const canonical = canonicalToolStatus(stage);
+  if (canonical === "executing") return "executing";
+  if (canonical === "executed" || canonical === "rejected" || canonical === "error") return "result";
   return "approval";
 }
 
 export function recordToolStage(toolCallId: string, tool: string, stage: string, detail?: string): AgentTimelineEntry | null {
   if (!toolCallId) return null;
   closeProviderReasoningAggregation();
-  const mapped = stageForToolStatus(stage);
-  if (lastStages.get(toolCallId) === mapped && lastStatuses.get(toolCallId) === stage) return null;
+  const canonical = canonicalToolStatus(stage);
+  const mapped = stageForToolStatus(canonical);
+  if (lastStages.get(toolCallId) === mapped && lastStatuses.get(toolCallId) === canonical) return null;
   lastStages.set(toolCallId, mapped);
-  lastStatuses.set(toolCallId, stage);
-  return appendEntry({ kind: "tool", stage: mapped, toolCallId, tool, detail: trimDetail(detail), status: stage });
+  lastStatuses.set(toolCallId, canonical);
+  return appendEntry({ kind: "tool", stage: mapped, toolCallId, tool, detail: trimDetail(detail), status: canonical });
 }
 
 export function recordToolObservation(toolCallId: string, tool: string, detail: string): AgentTimelineEntry | null {
@@ -240,7 +246,7 @@ export function bindAgentState(state: { pendingToolCalls: Array<{ id: string; ki
       const current = new Map(state.pendingToolCalls.map((call) => [call.id, call]));
       for (const call of state.pendingToolCalls) {
         const before = previous.get(call.id);
-        if (!before) { recordToolRequested(call.id, call.kind, call.target); recordToolStage(call.id, call.kind, "pending"); }
+        if (!before) { recordToolRequested(call.id, call.kind, call.target); recordToolStage(call.id, call.kind, "waiting-approval"); }
         else if (before.status !== call.status) {
           if (call.status === "approved") { recordToolStage(call.id, call.kind, "approved"); recordToolStage(call.id, call.kind, "executing"); }
           else if (call.status === "executed" || call.status === "error") { recordToolStage(call.id, call.kind, call.status, call.error); if (call.result) recordToolObservation(call.id, call.kind, call.result); }

@@ -44,6 +44,29 @@ describe("agent execution timeline", () => {
     });
   });
 
+  it("maps pending enqueue to waiting-approval without a second approval row", () => {
+    recordToolRequested("call-pending", "write", "note.txt");
+    recordToolStage("call-pending", "write", "pending");
+    recordToolStage("call-pending", "write", "waiting-approval");
+    expect(agentTimelineState.entries.filter((entry) => entry.stage === "approval")).toEqual([
+      expect.objectContaining({
+        toolCallId: "call-pending",
+        stage: "approval",
+        status: "waiting-approval",
+      }),
+    ]);
+  });
+
+  it("does not rewind a waiting-approval call back to requested", () => {
+    recordToolRequested("call-pending", "write", "note.txt");
+    recordToolStage("call-pending", "write", "waiting-approval");
+    expect(recordToolRequested("call-pending", "write", "note.txt")).toBeNull();
+    expect(agentTimelineState.entries.map((entry) => `${entry.stage}:${entry.status}`)).toEqual([
+      "requested:pending",
+      "approval:waiting-approval",
+    ]);
+  });
+
   it("records only explicit, non-empty provider summaries as reasoning", () => {
     recordProviderReasoningSummary(" ");
     expect(agentTimelineState.entries).toHaveLength(0);

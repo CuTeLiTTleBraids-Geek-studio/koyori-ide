@@ -1856,6 +1856,7 @@ func validateAgentToolRoundRenderer(
 		"ok",
 		"rendererSubmitted",
 		"agentModeConfigured",
+		"agentPermissionModeConfigured",
 		"storedProviderLoaded",
 		"nativeToolCallObserved",
 		"decisionObserved",
@@ -1865,6 +1866,17 @@ func validateAgentToolRoundRenderer(
 		if renderer[field] != true {
 			return "", "", fmt.Errorf("Agent tool-round renderer did not prove %s: %v", field, renderer["error"])
 		}
+	}
+	expectedSessionMode := "always-ask"
+	if spec.ApprovalMode == "auto-approve" {
+		expectedSessionMode = "assist"
+	}
+	if renderer["sessionPermissionMode"] != expectedSessionMode {
+		return "", "", fmt.Errorf(
+			"Agent tool-round renderer session permission mode was %v; expected %s",
+			renderer["sessionPermissionMode"],
+			expectedSessionMode,
+		)
 	}
 	if renderer["toolCallId"] != spec.ToolCallID || renderer["toolKind"] != spec.ToolKind {
 		return "", "", fmt.Errorf("Agent tool-round renderer reported unexpected tool call ID %v", renderer["toolCallId"])
@@ -2447,25 +2459,33 @@ func (s *server) runSingleAgentToolRoundProbe(
 	if err != nil {
 		return nil, err
 	}
+	renderer, ok := rendererRaw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Agent tool-round renderer returned %T", rendererRaw)
+	}
+	var nativeSnapshot *services.AgentNativeApprovalSnapshotForE2E
+	if approvalProbe != nil {
+		restoreApproval()
+		restoreApproval = nil
+		snapshot := approvalProbe.Snapshot()
+		nativeSnapshot = &snapshot
+	}
+	if err := wrapAgentToolRoundNativeOrRendererFailure(renderer, nativeSnapshot, nil); err != nil {
+		return nil, err
+	}
 	nativeApprovalEvidence := map[string]interface{}{
 		"backendNativeApprovalObserved":  false,
 		"backendNativeApprovalCallCount": 0,
 	}
-	if approvalProbe != nil {
-		restoreApproval()
-		restoreApproval = nil
+	if approvalProbe != nil && nativeSnapshot != nil {
 		nativeApprovalEvidence, err = validateAgentNativeApprovalProbe(
-			approvalProbe.Snapshot(),
+			*nativeSnapshot,
 			nativeApproval.Expectation,
 			nativeApproval.ExpectCall,
 		)
 		if err != nil {
-			return nil, err
+			return nil, wrapAgentToolRoundNativeOrRendererFailure(renderer, nativeSnapshot, err)
 		}
-	}
-	renderer, ok := rendererRaw.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("Agent tool-round renderer returned %T", rendererRaw)
 	}
 	usageUnitID, usageSessionID, err := validateAgentToolRoundRenderer(
 		renderer,
@@ -2577,6 +2597,37 @@ func validateAgentToolRoundCatalog(agent *services.AgentService, spec agentToolR
 		return true, nil
 	}
 	return false, fmt.Errorf("Agent catalog did not contain %s", spec.ToolKind)
+}
+
+func formatAgentNativeApprovalSnapshot(snapshot *services.AgentNativeApprovalSnapshotForE2E) string {
+	if snapshot == nil {
+		return "not-installed"
+	}
+	return fmt.Sprintf("%+v", *snapshot)
+}
+
+func wrapAgentToolRoundNativeOrRendererFailure(
+	renderer map[string]interface{},
+	nativeSnapshot *services.AgentNativeApprovalSnapshotForE2E,
+	nativeErr error,
+) error {
+	if renderer["ok"] != true {
+		return fmt.Errorf(
+			"Agent tool-round renderer failed: %v (native approval: %s)",
+			renderer["error"],
+			formatAgentNativeApprovalSnapshot(nativeSnapshot),
+		)
+	}
+	if nativeErr != nil {
+		return fmt.Errorf(
+			"%w (renderer ok=%v error=%v sessionPermissionMode=%v)",
+			nativeErr,
+			renderer["ok"],
+			renderer["error"],
+			renderer["sessionPermissionMode"],
+		)
+	}
+	return nil
 }
 
 func validateAgentNativeApprovalProbe(

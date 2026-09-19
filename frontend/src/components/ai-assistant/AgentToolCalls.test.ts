@@ -176,7 +176,9 @@ describe("AgentToolCalls", () => {
     const wrapper = mount(AgentToolCalls);
     expect(wrapper.find("[data-agent-write-diff]").exists()).toBe(true);
     expect(wrapper.find(".agent-tool-call__hunk").text()).toContain("+world");
-    expect(wrapper.find("[data-agent-tool-action='apply-selected']").exists()).toBe(true);
+    const applySelected = wrapper.get("[data-agent-tool-action='apply-selected']");
+    expect(applySelected.attributes("data-agent-tool-call-id")).toBe("write-1");
+    expect(applySelected.attributes("data-agent-tool-kind")).toBe("write");
     await wrapper.find("[data-agent-tool-action='approve']").trigger("click");
     expect(approveAndFeedMock).toHaveBeenCalled();
     await wrapper.find("[data-agent-tool-action='reject']").trigger("click");

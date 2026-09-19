@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# One-shot historical AppImage pack record. OUT below is the original host path.
 set -euo pipefail
 export PATH="/usr/local/go/bin:/usr/local/lib/nodejs/bin:${HOME}/go/bin:${PATH}"
 export APPIMAGE_EXTRACT_AND_RUN=1

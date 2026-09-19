@@ -83,6 +83,17 @@ func (s *PProfService) resolveProfileOutputPath(outputPath string) (string, erro
 	return resolved, nil
 }
 
+func (s *PProfService) resolveProfileInputPath(inputPath string) (string, error) {
+	s.rootMu.RLock()
+	root := s.workspaceRoot
+	s.rootMu.RUnlock()
+	resolved, err := ValidateMutatingPathWithinRoot(root, inputPath)
+	if err != nil {
+		return "", fmt.Errorf("profile input %q rejected by workspace sandbox: %w", inputPath, err)
+	}
+	return resolved, nil
+}
+
 // StartCPUProfile 开始 runtime/pprof CPU 采样，输出写入 outputPath。
 // 若已在采样则返回错误。outputPath 必须位于工作区沙箱内（P19 P1-02），
 // 其父目录需已存在。
@@ -406,6 +417,18 @@ var errProfileOutputLimit = errors.New("profile output exceeds 256 MiB limit")
 // 环境无法联网获取 github.com/google/pprof，这里使用标准库实现一个
 // 最小化的 protobuf wire-format 解码器，仅提取分析所需的字段。
 func (s *PProfService) AnalyzeProfile(profilePath string) (*ProfileAnalysis, error) {
+	profilePath, err := s.resolveProfileInputPath(profilePath)
+	if err != nil {
+		return nil, err
+	}
+	return analyzeProfileFile(profilePath)
+}
+
+// analyzeProfileFile parses a pprof file that the caller has already
+// authorised. AnalyzeProfile sandboxes renderer-supplied paths; AnalyzeTrace
+// uses this helper for the toolchain temp file, which lives outside the
+// workspace root by design.
+func analyzeProfileFile(profilePath string) (*ProfileAnalysis, error) {
 	f, err := os.Open(profilePath)
 	if err != nil {
 		return nil, fmt.Errorf("open profile file: %w", err)
@@ -461,6 +484,10 @@ func (s *PProfService) AnalyzeTrace(tracePath, view string) (*ProfileAnalysis, e
 	default:
 		return nil, fmt.Errorf("unsupported trace profile view %q", view)
 	}
+	tracePath, err := s.resolveProfileInputPath(tracePath)
+	if err != nil {
+		return nil, err
+	}
 	traceInput, err := copyTraceInput(tracePath)
 	if err != nil {
 		return nil, err
@@ -506,7 +533,7 @@ func (s *PProfService) AnalyzeTrace(tracePath, view string) (*ProfileAnalysis, e
 	if closeErr != nil {
 		return nil, fmt.Errorf("close trace profile temp file: %w", closeErr)
 	}
-	return s.AnalyzeProfile(tmpPath)
+	return analyzeProfileFile(tmpPath)
 }
 
 func copyTraceInput(tracePath string) (string, error) {

@@ -114,7 +114,8 @@ func TestPackagedE2EWorkflowStaysManualUntilThreeRealRuns(t *testing.T) {
 	}
 	runs := allRuns.String()
 	for _, required := range []string{
-		"xvfb", "imagemagick", "gopls@v0.21.1", "node scripts/packaged-e2e.mjs",
+		"xvfb", "imagemagick", "gopls@v0.21.1", "dlv@v1.27.1",
+		"python-is-python3", "cargo", "node scripts/packaged-e2e.mjs",
 	} {
 		if !strings.Contains(runs, required) {
 			t.Errorf("packaged-e2e steps do not contain %q", required)

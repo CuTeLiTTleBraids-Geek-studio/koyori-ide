@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+
+	"github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/services"
 )
 
 const (
@@ -66,6 +68,11 @@ func (s *server) runExtensionHostG24Probe(_ command) (interface{}, error) {
 		}
 	}))
 	defer registry.Close()
+	restoreLoopback, err := services.AllowLoopbackMarketplaceFetchesForE2E(registry.URL)
+	if err != nil {
+		return nil, fmt.Errorf("admit G24 loopback registry fetches: %w", err)
+	}
+	defer restoreLoopback()
 	if err := marketplace.SetRegistryURLForE2E(registry.URL); err != nil {
 		return nil, fmt.Errorf("configure G24 loopback registry: %w", err)
 	}

@@ -224,6 +224,39 @@ describe("refreshMcpServerContext", () => {
     expect(backend.listPrompts).not.toHaveBeenCalled();
   });
 
+  it("does not let a stale unsupported snapshot overwrite a later loaded family", async () => {
+    const backend = createBackend();
+    let resolveOld!: (value: MCPCapabilitySnapshot) => void;
+    backend.serverCapabilities = vi.fn()
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveOld = resolve; }),
+      )
+      .mockResolvedValueOnce(fixtureCapabilities());
+    backend.listResources = vi.fn().mockResolvedValue([{ uri: "file:///ws/new.txt", name: "new.txt" }]);
+    setMcpBackend(backend);
+
+    const stale = refreshMcpServerContext("fs");
+    await refreshMcpServerContext("fs");
+    expect(mcpState.serverContexts.fs.resourcesStatus).toBe("loaded");
+    expect(mcpState.serverContexts.fs.resources).toEqual([{ uri: "file:///ws/new.txt", name: "new.txt" }]);
+
+    resolveOld(fixtureCapabilities({
+      capabilities: {
+        tools: { state: "supported", declared: true },
+        resources: { state: "missing", declared: false },
+        prompts: { state: "missing", declared: false },
+        sampling: { state: "unsupported", declared: false },
+        elicitation: { state: "unsupported", declared: false },
+        logging: { state: "unsupported", declared: false },
+      },
+    }));
+    await stale;
+
+    expect(mcpState.serverContexts.fs.resourcesStatus).toBe("loaded");
+    expect(mcpState.serverContexts.fs.resources).toEqual([{ uri: "file:///ws/new.txt", name: "new.txt" }]);
+    expect(mcpState.serverContexts.fs.promptsStatus).not.toBe("unsupported");
+  });
+
   it("keeps a diagnosable error instead of faking an empty success", async () => {
     const backend = createBackend();
     backend.listResources = vi.fn().mockRejectedValue(new Error("rpc error -32000: boom"));

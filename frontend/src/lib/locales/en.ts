@@ -284,6 +284,9 @@ const en: MessageDict = {
   "mainLayout.commandOpenHttpClient": "View: HTTP Client",
   "mainLayout.commandOpenInspections": "View: Inspections",
   "mainLayout.commandOpenCallHierarchy": "View: Call Hierarchy",
+  "mainLayout.commandOpenRemoteView": "View: Remote",
+  "mainLayout.commandOpenProfileView": "View: Profiler",
+  "mainLayout.commandOpenPluginsView": "View: Plugins",
   // Priority 10: auto-update + crash reporting
   "mainLayout.commandCheckUpdates": "Check for Updates",
   "mainLayout.commandViewCrashReports": "View Crash Reports",

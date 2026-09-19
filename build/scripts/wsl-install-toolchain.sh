@@ -8,11 +8,11 @@ exec > >(tee "$LOG") 2>&1
 DOWNLOAD_DIR="$(mktemp -d)"
 trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
 
-echo "=== install Go 1.25 ==="
+echo "=== install Go 1.26.6 ==="
 if [ ! -x /usr/local/go/bin/go ]; then
-  readonly GO_VERSION="1.25.0"
+  readonly GO_VERSION="1.26.6"
   readonly GO_ARCHIVE="go${GO_VERSION}.linux-amd64.tar.gz"
-  readonly GO_SHA256="2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613"
+  readonly GO_SHA256="708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89"
   curl -fsSL "https://go.dev/dl/${GO_ARCHIVE}" -o "${DOWNLOAD_DIR}/${GO_ARCHIVE}"
   echo "${GO_SHA256}  ${DOWNLOAD_DIR}/${GO_ARCHIVE}" | sha256sum -c -
   sudo rm -rf /usr/local/go
@@ -40,7 +40,7 @@ go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.44.1
 nfpm --version
 
 echo "=== install wails3 ==="
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.8 || true
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.111 || true
 command -v wails3 && wails3 version || echo "wails3 optional"
 
 echo "TOOLCHAIN_OK"

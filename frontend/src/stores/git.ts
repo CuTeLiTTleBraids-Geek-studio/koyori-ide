@@ -33,6 +33,8 @@ let _conflictsGeneration = 0;
 let _stashGeneration = 0;
 let _tagGeneration = 0;
 let _submoduleGeneration = 0;
+let _branchGeneration = 0;
+let _rebaseGeneration = 0;
 
 /** currentRepoPath 返回最近一次 refreshGit 使用的仓库路径。 */
 function currentRepoPath(): string {
@@ -211,14 +213,20 @@ export function clearGitState(): void {
 
 export async function loadBranches(repoPath: string) {
   if (!repoPath) return;
+  const generation = ++_branchGeneration;
   branchState.loadingBranches = true;
   try {
-    branchState.branches = await gitService.listBranches(repoPath);
+    const branches = await gitService.listBranches(repoPath);
+    if (generation !== _branchGeneration) return;
+    branchState.branches = branches;
   } catch (e) {
+    if (generation !== _branchGeneration) return;
     console.error("Failed to load branches:", e);
     branchState.branches = [];
   } finally {
-    branchState.loadingBranches = false;
+    if (generation === _branchGeneration) {
+      branchState.loadingBranches = false;
+    }
   }
 }
 
@@ -345,9 +353,13 @@ export async function markConflictResolved(repoPath: string, file: string): Prom
 // ---------------------------------------------------------------------------
 
 export async function checkRebaseStatus(): Promise<void> {
+  const generation = ++_rebaseGeneration;
   try {
-    rebaseState.inProgress = await gitService.isRebaseInProgress();
+    const inProgress = await gitService.isRebaseInProgress();
+    if (generation !== _rebaseGeneration) return;
+    rebaseState.inProgress = inProgress;
   } catch (e: unknown) {
+    if (generation !== _rebaseGeneration) return;
     rebaseState.error = errorMessage(e);
   }
 }

@@ -293,3 +293,37 @@ func TestAIService_ListModels_CRIT01_FallsBackToSettingsService(t *testing.T) {
 		t.Fatalf("unexpected models: %v", models)
 	}
 }
+
+// TestAIService_ListModels_DoesNotAttachStoredKeyToForeignOrigin verifies
+// that an empty apiKey plus a caller-chosen baseURL that is not the
+// configured provider origin does not send the stored key (G-SEC-07).
+func TestAIService_ListModels_DoesNotAttachStoredKeyToForeignOrigin(t *testing.T) {
+	var sawAuth string
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{{"id": "stolen"}},
+		})
+	}))
+	defer attacker.Close()
+
+	configured := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("configured provider must not be contacted")
+	}))
+	defer configured.Close()
+
+	svc := NewAIService()
+	svc.mu.Lock()
+	svc.config = AIConfig{
+		APIKey:  "stored-test-key",
+		BaseURL: configured.URL,
+	}
+	svc.mu.Unlock()
+
+	if _, err := svc.ListModels(attacker.URL, ""); err != nil {
+		t.Fatalf("ListModels foreign origin: %v", err)
+	}
+	if sawAuth != "" {
+		t.Fatalf("stored API key leaked to foreign origin, Authorization=%q", sawAuth)
+	}
+}

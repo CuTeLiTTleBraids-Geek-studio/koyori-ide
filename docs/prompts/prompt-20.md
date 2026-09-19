@@ -317,3 +317,180 @@ P1-04 已收口 downloadUrl 主漏斗，但同源残留三处：① `resolveSha2
 - alpha2.111 的 `InsecureSkipVerify: true` 仍在上游；同源校验只在中间件层。Wails 升级前不得删该中间件。
 - CI `on.push` 的 Packaged desktop E2E job 在部分 push run 上是 skipped（非 PR gate）；不能用 push CI success 声称 packaged E2E 绿。
 - vitest 4.x teardown 仍有 EnvironmentTeardownError 噪声；G-CI-15/17（forks + `dangerouslyIgnoreUnhandledErrors`）保持，不视为产品失败。
+
+### 执行日志（CI/OSS 补强轮，基线 HEAD `30930ac`）
+
+本段只追加本轮证据，不改写上文 U 项。Linux packaged desktop E2E 仍 `U`。
+
+**本轮目标**
+
+1. 尝试降低 Linux GHA WebKitGTK SIGTRAP（bubblewrap / credentials portal），job 仍 `workflow_dispatch` only。
+2. 去掉 leftover `actions/setup-node@v4.4.0`（Node 20 action runtime 弃用）。
+3. 对齐开源文档：Go 1.26 / Node 20.19 / Wails `v3.0.0-alpha2.111`。
+4. 收口相邻安全残留：marketplace JSON SSRF、CGNAT/`198.18/15`、ListModels 密钥同源、IM 占位符不清密钥、终端路径伪装 shell、pprof 输入沙箱。
+
+**实现要点**
+
+- `ci.yml` packaged-e2e：`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`、`GTK_A11Y=none`、`LIBGL_ALWAYS_SOFTWARE=1`、`dbus-x11`/`at-spi2-core`、`XDG_RUNTIME_DIR` + `dbus-run-session -- node scripts/packaged-e2e.mjs`。`if: github.event_name == 'workflow_dispatch'` 未改。
+- `scripts/packaged-e2e.mjs` Linux spawn 同步上述环境变量。
+- `httpGet` / `httpGetJSON` 与 `httpGetBytes` 对齐：`validateDownloadURL` + `marketplaceTransport` + `noRedirectPolicy`。
+- `isPrivateHost` 拒绝 CGNAT `100.64/10` 与 benchmark `198.18/15`（含 IPv4-mapped）。
+- `ListModels` 空 key 仅在 `sameAIOrigin(baseURL, storedBase)` 时附加存储密钥。
+- IM：`(configured —edit to overwrite)` 与空字段均 keep-existing。
+- `isAllowedShell` 拒绝 `/\`、绝对路径、以及 `filepath.Base != trimmed`。
+- `AnalyzeProfile` 对 renderer 路径走 `ValidateMutatingPathWithinRoot`；`AnalyzeTrace` 的 toolchain 临时文件走内部 `analyzeProfileFile`，避免 temp 被沙箱误拒。
+- 文档：README / CONTRIBUTING / ARCHITECTURE / RELEASING / E2E / SECURITY / wsl-install-toolchain / `engines.node >=20.19`。
+
+**本地证据（`T`）**
+
+- `go test ./services -count=1 -run 'TestHTTPGetJSON_|TestGetExtensionReadme_RejectsPrivateReadmeURL|TestDownloadAndInstallExtension_RejectsPrivateDownloadURL|TestIsPrivateHost_C1|TestValidateNonPrivateURL_C1|TestAIService_ListModels_DoesNotAttachStoredKeyToForeignOrigin|TestIMService_UpdateConfig_PreservesSecretsOnPlaceholderAndEmpty|TestIsAllowedShell|TestTerminalService_StartSession_RejectsPathDisguisedAsWhitelistedShell|TestProfileService_AnalyzeProfileRejectsInputOutsideWorkspaceRoot|TestMarketplaceService_H3_SetRegistryURL_AcceptsValidURLs'` → ok。
+- `go test ./internal/repo -run TestG18` → ok。
+- `node scripts/check-wails-pin.mjs` → OK（`v3.0.0-alpha2.111`）。
+- `node scripts/check-personal-paths.mjs` → OK。
+- `node --test scripts/packaged-e2e-driver.test.mjs` → 75 pass / 1 skip（Windows 无法创建 file symlink）。
+
+**仍 `U`（不改写）**
+
+- Linux packaged E2E：历史 dispatch `34027036181`（commit `2c72d7d`）fixture 1–6 通过，fixture 7 `terminal-reconnect-package` WebKitGTK SIGTRAP（`bwrap: loopback Failed RTM_NEWADDR` / credentials portal）。本轮改动尚未经新的 dispatch 验证；一次绿也不等于三次 consecutive qualification。
+- Dependabot Updates 422：GitHub 侧，仓内无法单独修完。Dependabot alerts API 此前 403；本轮已尝试 `PUT /vulnerability-alerts`，alerts 仍可能受 GitHub 产品开关限制。
+- 真实 UI smoke、外部 provider、跨平台 packaged/release、Wails beta / TS7 / jsdom 30 / eslint-plugin-vue 10：保持 `U` 或 #52。
+
+**开源可用性（审查结论，非完成声明）**
+
+- 贡献者按 README 从源码构建：Go 1.26.0+ / Node 20.19+ / `wails3@v3.0.0-alpha2.111` / `DEV=false` 文档已对齐（`T` 于文档与守卫脚本）。
+- GitHub About 描述/topics 已通过 API 写入（description + 7 topics）；homepage 指向仓库自身。无正式 `v0.2.0` tag（仅 `beta0.2.0` Latest，非 prerelease）。README 下载表改为「规划产物」并写明当前公开附件是安装包、无 macOS、无 portable zip/tar.gz。陌生人仍不能把 GitHub Releases 当已验证产品安装包。`U`。
+- 私密漏洞报告表单：`PUT .../private-vulnerability-reporting` 已调用；`GET` 仍可能显示 `enabled:false`（GitHub 产品开关，仓内无法单独保证）。
+- 不要把本轮安全补丁宣传成「已 hardening 的远程 IDE」：session/gateway 模型未在本轮覆盖。
+
+**CI 随访（commit `5582a72`，不改写 U）**
+
+- PR run [34757044555](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34757044555) 与 dispatch [34757057017](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34757057017) 的 Go Build & Test 三平台红。packaged-e2e 因 `needs` 失败被 skip，**不能**计为 qualification。
+- 失败 1：`TestAnalyzeTraceRejectsNonRegularInput` 在未设 workspace root 时被输入沙箱提前拒绝，未走到 `copyTraceInput` 的 regular-file 检查。已改为 `newTestPProfService` + 工作区内目录。
+- 失败 2：`TestReleaseMetadataSyncCheck`：`frontend/package.json` 的 `packageManager`/`engines` 混入 tab 缩进，`sync-release-metadata.mjs --check` 重序列化后不一致。已跑同步脚本。
+- JSON schema 生产客户端改为 `NewSSRFSafeTransport`（host 白名单仍在；补 DNS 重绑定）。测试继续注入自己的 Client。
+
+**CI 随访（commit `b6a3c78`，不改写 U）**
+
+- PR required CI [34758847972](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34758847972) success（packaged-e2e 在 PR 上仍 skip，符合 `workflow_dispatch` only）。
+- dispatch [34758848260](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34758848260) 其余 job 绿，packaged-e2e 红：`source fingerprint changed during build`，phase=`source-verification`，fixture 全部 `not-run`。**不是** WebKitGTK SIGTRAP；启动阶段未到达。
+- 证据：artifact `packaged-e2e-evidence` / `sourceFingerprintStableAfterBuild=false` / scope `build-inputs-v3` / fileCount 1090。错误未列出具体文件。
+- 处理：scope `build-inputs-v4`，豁免 `build/darwin/Assets.car`（`generate icons -macassetdir darwin`）与 `build/linux/desktop`；断言在有 per-file digest 时列出变更路径。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `e143a54`，不改写 U）**
+
+- PR required CI [34759945595](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34759945595) success。
+- dispatch [34759946812](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34759946812) packaged-e2e 红：`source fingerprint changed during build: frontend/package-lock.json`。指纹已过图标豁免，启动阶段仍未到达。
+- 原因：`wails3 build` → `common:install:frontend:deps:npm` 跑 `npm install`，npm 11 会改写已提交的 lockfile。CI 其它 job 用 `npm ci`。
+- 处理：Taskfile 改为 `npm ci --registry=https://registry.npmjs.org`；`wails-bindings.test.mjs` 钉死不得回退到 `npm install`。
+
+**CI 随访（commit `5ad7351`，不改写 U）**
+
+- PR required CI [34760806837](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34760806837) success（packaged-e2e 在 PR 上仍 skip）。
+- dispatch [34760808412](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/34760808412) packaged-e2e 红于 Agent write native approval。指纹门禁已过：`sourceFingerprintStableAfterBuild=true`，scope `build-inputs-v4`，fileCount 1088。Linux 启动到达 fixture 1–14，含 `terminal-reconnect-package`；本 run 未再现历史 WebKitGTK SIGTRAP。一次绿仍不等于三次 consecutive qualification。
+- 失败点：`ai-request-context-package` write native approval，`Expected:1 Consumed:0 Remaining:1 Complete:false Restored:true Calls:[]`。`Calls:[]` 表示 `approveWrite` 从未被调用，不是 identity mismatch。截图可见 AI companion 上两条「other window」pending toast；MAIN 探针约 1s 内失败，不是 45s click timeout。
+- 诊断（不改写 U）：read/search auto-approve 轮把 renderer session 留在 assist；write ask 轮只改了 `appState.agentPermissionMode`，`ensureAgentSession` 按 workspace generation 复用旧 session。enqueue 在 assist 下对 pending 再发一次 `agent:pending-updated`，解释双 toast。write 在 assist 仍应走 native prompt，但探针把 renderer `ok:false` 藏在 native `Consumed:0` 之后。
+- 处理（本轮源码，尚未经新 dispatch）：`ensureAgentSession` 把 permission mode 纳入 reuse key；in-flight create 仅在 workspace/mode 不匹配时 abort，同 mode 仍 coalesce；探针 persist + flush + reload 后再 `ensureAgentSession()` 并断言 `sessionPermissionMode`；Go 侧 renderer `ok:false` 先于 native consumption 报错。job 仍 `workflow_dispatch` only。
+
+**本地证据（session/native 诊断修复，`T`）**
+
+- `cd frontend && npx vitest run src/stores/agent.test.ts` → 109 passed。覆盖 permission-mode 轮换、in-flight abort、同 mode coalesce、unchanged reuse。
+- `cd frontend && npx vitest run src/e2e` → 31 passed。
+- `go test -tags e2e ./internal/e2e -count=1` → ok。覆盖 renderer-first wrap、ask 轮 `sessionPermissionMode=always-ask`、reject 证据补 `agentPermissionModeConfigured`。
+- Linux packaged E2E 仍 `U`：尚未有三次 consecutive 绿 dispatch；本修复未计为 packaged 完成。
+
+**CI 随访（commit `6cdcd2f` dispatch [35349089516](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35349089516)，不改写 U）**
+
+- required jobs success，含 LSP matrix。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- 失败点（verbatim）：`ai-request-context-probe failed (422): packaged Agent tool round: write manual approve round: Agent tool-round renderer failed: manual Agent DOM control kind was undefined; expected write (native approval: {Expected:1 Consumed:0 Remaining:1 Complete:false Restored:true Calls:[]})`。
+- renderer-first wrap 生效：错误不再被 native `Consumed:0` 单独掩盖。`Calls:[]` 仍表示 `approveWrite` 未被点击，native stub 未消耗。
+- 根因：write 卡片的 `apply-selected` 按钮有 `data-agent-tool-action` 与 call id，但当时没有 `data-agent-tool-kind`；探针把同 call 的全部 action 按钮纳入 kind 校验，于是 `dataset.agentToolKind === undefined` 即 fail-closed。
+- 处理（本轮源码，尚未经新 dispatch）：`AgentToolCalls.vue` 给 `apply-selected` 补 `:data-agent-tool-kind="call.kind"`；探针 kind 校验只看 `approve`/`reject`。一次绿仍不等于三次 consecutive qualification。
+
+**本地证据（apply-selected kind / 探针过滤，`T`）**
+
+- `cd frontend && npx vitest run src/e2e/agentToolRoundProbe.test.ts src/components/ai-assistant/AgentToolCalls.test.ts` → 31 passed。含 write 卡片 `apply-selected` 无 kind 时仍点击 matching approve，以及组件断言 `apply-selected` 带 `data-agent-tool-kind=write`。
+- Linux packaged E2E 仍 `U`。
+
+**CI 随访（commit `2fedcde` dispatch [35356361184](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35356361184)，不改写 U）**
+
+- required jobs success，含 LSP matrix。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- 失败点（verbatim）：`ai-request-context-probe failed (422): packaged Agent tool round: write manual reject round: Agent tool-round renderer failed: timed out waiting for packaged Agent tool round: renderer timeline did not record waiting-approval -> rejected -> observation without execution (native approval: {Expected:1 Consumed:0 Remaining:1 Complete:false Restored:true Calls:[]})`。
+- write approve 轮已越过上一轮 `kind was undefined`；本 run 到达 write reject。`Calls:[]` 对 reject 是期望（`ExpectCall: false`），native stub 未消耗。
+- 根因：enqueue/`bindAgentState` 把 pending 审批记成 `status=pending`；探针契约要 `approval` + `waiting-approval`。`recordToolRequested` 在审批已写入后再次调用会把 lastStage 冲回 `requested`，watcher 再记第二条 approval。
+- 处理（本轮源码，尚未经新 dispatch）：`recordToolStage("pending")` 规范化为 `waiting-approval`；`recordToolRequested` 对已见 call id 幂等；enqueue 显式记 waiting-approval。一次绿仍不等于三次 consecutive qualification。
+
+**本地证据（waiting-approval 时间线，`T`）**
+
+- `cd frontend && npx vitest run src/stores/agentTimeline.test.ts src/stores/agent.test.ts src/e2e/agentToolRoundProbe.test.ts` → 150 passed。
+- Linux packaged E2E 仍 `U`。
+
+**CI 随访（commit `4fc6681` dispatch [35359227376](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35359227376)，不改写 U）**
+
+- packaged-e2e skipped：`Go Build & Test (ubuntu-latest)` 红。失败点 `TestConnectDeleteRace`：`ConnectServer 应失败（server 在连接期间被删除），但返回 nil`。
+- 根因：测试用 `Sleep(100ms)` 假设已进入 `StartServer`；CI 上 Connect 可能在 Delete 之后才真正 handshake，配置仍在，于是 Connect 成功。
+- 处理（本轮源码，尚未经新 dispatch）：`MCPService.testConnectStarted` 测试钩子在 `StartServer` 前握手；测试 Delete 完成后再放行 StartServer。生产路径钩子为 nil。
+- `go test ./services -count=1 -timeout 60s -run 'TestConnectDeleteRace$'` → ok（`T` 本地）。Linux packaged E2E 仍 `U`。
+
+**CI 随访（commit `826d7f2` dispatch [35360901720](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35360901720)，不改写 U）**
+
+- required jobs success，含 LSP matrix 与 Ubuntu Go tests。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- 失败点（verbatim）：`AssertionError [ERR_ASSERTION]: saveAllNoBridge=true inputBox=true quickPick=true bridge=true notify=true output=false config=true view=true`。
+- Agent write approve/reject 轮未再作为本 run 失败点出现。当前阻塞是 G13 extension API probe：`createOutputChannel` 在无 `onOutput` 且 descriptor 仅 `fs.write` 时 fail-closed（`extensionHost.ts` 要求 host Output panel；`apiSurface` 要求 `ui.notifications`）。探针未接线/未授权，不能把 packaged E2E 计绿。
+- Linux packaged E2E 仍 `U`。一次绿仍不等于三次 consecutive qualification。不把 packaged-e2e 改成 required。
+
+**本轮（G13 output 接线 + 真实 LSP/SSH/Delve 证据 + PR 治理，不改写 packaged 绿）**
+
+- G13：`extensionApiProbe.ts` 给 `createOutputChannel` 接 `onOutput` + `ui.notifications`，并断言 host 收到 appendLine/show/clear/dispose。无面板时 fail-closed 保持（`extensionHost.ts:2602`）。`T`：`node vitest.mjs run src/e2e/extensionApiProbe.test.ts` 1 passed。
+- P2 竞态：`loadBranches` / `checkRebaseStatus` generation 守卫；MCP unsupported 家族写 state 前查 seq。`T`：git.test 35 passed，mcp.test 21 passed。
+- 真实外部环境（本机 Windows，2026-09-19，`T`，不是 packaged UI）：
+  - LSP：`KOYORI_IDE_LSP_INTEGRATION=1` `TestG10RealGoplsCompletionAndHover` 9 completions + hover；matrix `gopls` initialize pass，`typescript-language-server` initialize pass，`vtsls` skip 未安装。
+  - Remote：`TestRemoteService_HostIdentityConnectAndReconnectScope` 对 127.0.0.1 真实 SSH+SFTP 测试服务器 Connect/reconnect/known_hosts pass。无外部 SSH 主机。
+  - Debug：`TestDebugService_G14_RealDelveNestedVariables` 真实 `dlv dap` pass。
+  - AI：`TestAIServiceNativeToolStreamingRoundTripHTTP` OpenAI/Anthropic fixture pass；`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`ollama` 均无，外部 provider 仍 `U`。
+- README / RELEASING / G18 测试已按上述证据改写；禁止句「真实 gopls 集成路径已验证」未使用。Linux packaged E2E 在新 dispatch 前仍 `U`。
+
+**CI 随访（commit `69018b3` dispatch [35421042065](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35421042065)，不改写 U）**
+
+- required jobs success。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- G13 已过：失败点不再是 `output=false`。verbatim：`debug-g14-probe failed (422): dlv not found; real Delve adapter probe skipped`。
+- 根因：Linux qualification job 只 `go install gopls@v0.21.1`，未安装 `dlv`；探针 `LookPath("dlv")` fail-closed，不是 adapter 协议回归。
+- 处理（本轮源码，尚未经新 dispatch）：job 安装 `dlv@v1.27.1`（与 `docs/E2E.md` 清单一致）并预装 `python-is-python3` + `cargo`（G23 toolchain fixture）。`TestPackagedE2EWorkflowStaysManualUntilThreeRealRuns` 钉死这些字符串。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `2d31f2d` dispatch [35434631005](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35434631005)，不改写 U）**
+
+- required jobs success，含 LSP matrix。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- G13/G14 已过：失败点不再是 `output=false` 或 `dlv not found`。verbatim：`extension-host-g24-probe failed (422): install G24 v1: fetch extension metadata: registry fetch URL "http://127.0.0.1:42557/koyori-e2e-g24/runtime-lifecycle" rejected: url host 127.0.0.1 is a private/loopback/link-local address`。
+- 根因：P20 marketplace JSON SSRF（`httpGet`/`httpGetJSON` 走 `ValidateNonPrivateURL`）拒绝 G24 探针的环回 httptest 注册表。`SetRegistryURLForE2E` 只改了 registry base，没有放行随后的 metadata/VSIX fetch。
+- 处理（本轮源码，尚未经新 dispatch）：e2e-only `AllowLoopbackMarketplaceFetchesForE2E` 仅放行该 registry host；其他私网/环回仍走生产门；probe 结束 restore。生产 `ValidateNonPrivateURL` 未放宽。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `41ca1d4` dispatch [35435703941](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35435703941)，不改写 U）**
+
+- required jobs success。packaged-e2e 仍红，job 仍 `workflow_dispatch` only。
+- G24 已过。verbatim：`ai-diff-receipt-recovery-probe failed (422): load durable commit receipt after restart: /tmp/.../config/launch-2/koyori-ide/diff-receipts/...json: no commit receipt`。
+- 根因：Linux `os.UserConfigDir()` = `XDG_CONFIG_HOME`。harness 把 XDG 按 launch-1/launch-2 隔离，收据写在 launch-1，重启后读 launch-2。Windows 走共享 `APPDATA`，所以本机历史 24/24 看不到这个问题。
+- 处理（本轮源码，尚未经新 dispatch）：同一 fixture 的 XDG_CONFIG_HOME 与 APPDATA 共享 `user-config/`。实例锁靠 PID liveness 清过期文件。一次绿仍不等于三次 consecutive qualification。
+
+**CI 随访（commit `45af0c0` dispatch [35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565)，不改写三次资格）**
+
+- required jobs success。packaged-e2e job success，仍 `workflow_dispatch` only。
+- 证据（artifact `packaged-e2e-evidence`）：`status=passed`，`phase=complete`，24/24 fixtures passed（含 G13/G14/G23/G24 与 `kill-restart-recovery`），`artifactReused=false`，`sourceFingerprintStableAfterBuild=true`，scope `build-inputs-v4`，fileCount 1090，Wails `v3.0.0-alpha2.111`，`runId=e5ebe1dd491c25a347ac66642a4b42604e5cac3846359f263435b7db30111618`。截图 `window.png` 仅 295 bytes，不当成窗口视觉证据。
+- 这是 **1/3** consecutive distinct-commit greens。不把 job 改成 required，不把 Linux packaged 从 `U` 改写成完成。
+
+**CI 随访（commit `0f44373` dispatch [35437538679](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35437538679)，不改写三次资格）**
+
+- packaged-e2e job success。manifest `status=passed` / `phase=complete` / 24/24 / `artifactReused=false` / `sourceFingerprintStableAfterBuild=true` / `runId=20997a8d55375b9dd352912499f6d9d25bafca15f91c4f1d11cf1ee5cebae3b7`。截图仍 295 bytes。
+- 这是 **2/3** consecutive distinct-commit greens。第三次尚未跑。job 仍 `workflow_dispatch` only。
+
+**CI 随访（commit `993ba08` dispatch [35438391717](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35438391717)）**
+
+- packaged-e2e job success。manifest `status=passed` / `phase=complete` / 24/24 / `artifactReused=false` / `sourceFingerprintStableAfterBuild=true`。截图仍 295 bytes。
+- 三次 consecutive distinct-commit 24/24 已齐：`45af0c0` / `0f44373` / `993ba08`。**不**自动把 job 改成 required（Windows/macOS 仍 `U`；required 是默认分支策略，约 15–20 分钟额外成本）。job 仍 `workflow_dispatch` only。
+
+**本轮随访（资格记账 + PR 治理，不改 required）**
+
+- 把三次 24/24 写入 `ci.yml` 注释、`docs/E2E.md`、`docs/RELEASING.md`、README 发布供应链行。`if:` 仍 `github.event_name == 'workflow_dispatch'`。`T`：`TestPackagedE2EWorkflowStaysManualUntilThreeRealRuns`、`TestG18*` 绿。
+- GitHub 补 Dependabot 缺失标签：`dependencies` / `go` / `javascript` / `ci` / `docker`（先前每条 Dependabot PR 都报 labels could not be found）。#61 打 `dependencies,go`，#62 打 `dependencies,ci`。
+- 吸收 #61 go-compatible 到本分支：`mysql v1.10.1`、`pgx/v5 v5.11.0`、`golang.org/x/sys v0.48.0`、`modernc.org/sqlite v1.58.0`，并 `node scripts/generate-license-inventory.mjs`。`T`：`TestG17NoticeAndLicenseInventoryMatchDependencyDigests`、`TestDatabaseService*` 绿。#61 对 `main` 仍红，等 #60 合入后再关。
+- #60 仍 `BLOCKED` / `REVIEW_REQUIRED`（CODEOWNERS 单人，不能自审）。不 merge。#62 等 #60 合入后关。#63–#68（含 Wails beta）已于 2026-09-19 关闭，未走 `docs/WAILS-UPGRADE-GATE.md` 故不得合。
+- 外部 AI provider / 打包 GUI / 外部 SSH 主机仍 `U`。`Snapshot()` 返回 `(root, generation)` 不是 error；`executeApprovedToolLegacy` 仍是测试桩。
+- 命令面板补 `koyoriIde.view.remote` / `profile` / `plugins`（原先只有 `/debug` `/test` 等；Activity Bar 仍无 Remote）。CoC 联系方式改为已核验维护者邮箱，不再把未核验的 `security@koyori-ide.dev` 当举报入口。`T`：MainLayout + i18n + `TestG18*`。

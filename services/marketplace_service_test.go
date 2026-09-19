@@ -170,6 +170,40 @@ func allowLoopbackDownloadURLs(t *testing.T) {
 	marketplaceTransport = func() http.RoundTripper { return nil }
 }
 
+// admitLoopbackRegistryOnly lets httptest act as the injected registry
+// origin while every other URL — including a private/loopback readme or
+// VSIX download on a different host/port — still goes through
+// ValidateNonPrivateURL. allowLoopbackDownloadURLs is too wide here:
+// ValidateBaseURL admits 127.0.0.1, which would make a private-sidecar
+// rejection test pass the production gate.
+func admitLoopbackRegistryOnly(t *testing.T, registryURL string) {
+	t.Helper()
+	original := validateDownloadURL
+	originalTransport := marketplaceTransport
+	t.Cleanup(func() {
+		validateDownloadURL = original
+		marketplaceTransport = originalTransport
+	})
+	registry, err := url.Parse(registryURL)
+	if err != nil || registry.Host == "" {
+		t.Fatalf("admitLoopbackRegistryOnly: invalid registry URL %q: %v", registryURL, err)
+	}
+	marketplaceTransport = func() http.RoundTripper { return nil }
+	validateDownloadURL = func(raw string) (*url.URL, error) {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(u.Scheme, registry.Scheme) && strings.EqualFold(u.Host, registry.Host) {
+			if err := ValidateBaseURL(raw); err != nil {
+				return nil, err
+			}
+			return u, nil
+		}
+		return ValidateNonPrivateURL(raw)
+	}
+}
+
 func configureUpdateRegistry(t *testing.T, svc *MarketplaceService, version string, vsix []byte, hash string) {
 	t.Helper()
 	allowLoopbackDownloadURLs(t)
@@ -1560,7 +1594,9 @@ func TestMarketplace_CheckForUpdates_DetectsNewVersion(t *testing.T) {
 		}
 	}))
 	// N-7: SetRegistryURL 现在拒绝 loopback（SSRF 校验）。测试直接设置
-	// registryURL 字段模拟公网 registry。
+	// registryURL 字段模拟公网 registry。JSON 漏斗与 VSIX 共用
+	// validateDownloadURL，环回夹具必须走同一接缝。
+	allowLoopbackDownloadURLs(t)
 	svc.mu.Lock()
 	svc.registryURL = server.URL + "/api"
 	svc.mu.Unlock()
@@ -1610,6 +1646,7 @@ func TestMarketplace_CheckForUpdates_EmptyWhenUpToDate(t *testing.T) {
 	}))
 	// N-7: SetRegistryURL 现在拒绝 loopback（SSRF 校验）。测试直接设置
 	// registryURL 字段模拟公网 registry。
+	allowLoopbackDownloadURLs(t)
 	svc.mu.Lock()
 	svc.registryURL = server.URL + "/api"
 	svc.mu.Unlock()
@@ -1655,6 +1692,7 @@ func TestMarketplaceService_H2_HTTPGet_RejectsOversizedResponse(t *testing.T) {
 // TestMarketplaceService_H2_HTTPGet_AcceptsNormalResponse verifies that
 // normal-sized responses are not rejected by the size limit (H-2).
 func TestMarketplaceService_H2_HTTPGet_AcceptsNormalResponse(t *testing.T) {
+	allowLoopbackDownloadURLs(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
@@ -1709,9 +1747,10 @@ func TestMarketplaceService_H3_SetRegistryURL_AcceptsValidURLs(t *testing.T) {
 		name string
 		url  string
 	}{
-		{"https public", "https://open-vsx.org/api"},
-		// N-7: TEST-NET-3 (203.0.113.0/24) 是公网测试 IP，不被 isPrivateHost 拒绝
+		// IP literals only: a live hostname would DNS-resolve and fail
+		// closed if the resolver returns CGNAT/benchmark space (198.18/15).
 		{"https public test-net-3", "https://203.0.113.2/api"},
+		{"https public test-net-1", "https://192.0.2.1/api"},
 	}
 
 	for _, tt := range tests {
@@ -2134,6 +2173,9 @@ func TestGetExtensionReadme_RejectsPrivateReadmeURL(t *testing.T) {
 		})
 	}))
 	defer reg.Close()
+	// Admit only this httptest origin. The private readme URL is a
+	// different host/port and must still hit ValidateNonPrivateURL.
+	admitLoopbackRegistryOnly(t, reg.URL)
 	svc.mu.Lock()
 	svc.registryURL = reg.URL + "/api"
 	svc.mu.Unlock()
@@ -2144,6 +2186,57 @@ func TestGetExtensionReadme_RejectsPrivateReadmeURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rejected") {
 		t.Errorf("error should report the SSRF rejection, got: %v", err)
+	}
+}
+
+func TestHTTPGetJSON_RejectsPrivateURLs(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	cases := []struct{ name, rawURL string }{
+		{"loopback ipv4", "http://127.0.0.1:9/api/-/search"},
+		{"loopback hostname", "http://localhost:9/api/-/search"},
+		{"link-local metadata", "https://169.254.169.254/latest/meta-data/"},
+		{"rfc1918 private", "https://10.1.2.3/api/-/search"},
+		{"cgnat metadata", "https://100.100.100.200/latest/meta-data/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.httpGetJSON(tc.rawURL)
+			if err == nil {
+				t.Fatalf("JSON fetch URL %q must be rejected", tc.rawURL)
+			}
+			if !strings.Contains(err.Error(), "rejected") {
+				t.Errorf("error should report the SSRF rejection, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestHTTPGetJSON_DoesNotFollowRedirects(t *testing.T) {
+	svc, _ := newTestMarketplaceService(t)
+	allowLoopbackDownloadURLs(t)
+	var privateHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, "/private/search.json", http.StatusFound)
+		case "/private/search.json":
+			atomic.AddInt32(&privateHits, 1)
+			_, _ = w.Write([]byte(`{"extensions":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	_, err := svc.httpGetJSON(srv.URL)
+	if err == nil {
+		t.Fatal("redirected JSON fetch must be rejected")
+	}
+	if !strings.Contains(err.Error(), "302") {
+		t.Errorf("error should report the 3xx status, got: %v", err)
+	}
+	if atomic.LoadInt32(&privateHits) != 0 {
+		t.Error("redirect target must never be contacted")
 	}
 }
 
@@ -2212,6 +2305,7 @@ func TestDownloadAndInstallExtension_RejectsPrivateDownloadURL(t *testing.T) {
 		})
 	}))
 	defer reg.Close()
+	admitLoopbackRegistryOnly(t, reg.URL)
 	svc.mu.Lock()
 	svc.registryURL = reg.URL + "/api"
 	svc.mu.Unlock()

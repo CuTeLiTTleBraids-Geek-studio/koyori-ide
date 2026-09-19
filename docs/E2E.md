@@ -108,7 +108,7 @@ The harness performs the following stages:
 | Build the frontend with the E2E Monaco marker                                                            | implemented |
 | Build with `wails3 build -tags desktop,production,e2e`                                                   | implemented |
 | Record artifact hash, source commit when available, otherwise source fingerprint                         | implemented |
-| Launch the native artifact and authenticate a loopback-only driver                                       | implemented |
+| Launch the native artifact and authenticate a loopback-only driver                                       | implemented (Linux GHA: WebKitGTK bubblewrap sandbox disabled in the qualification job only; still `U` until three consecutive dispatch greens) |
 | Capture runner metadata, logs, screenshot metadata, fixture results, and goal-specific evidence          | implemented |
 | Kill and restart the artifact to verify recovery                                                         | implemented |
 | Verify retained fresh Windows evidence against the current artifact and source tree without launching it | implemented |
@@ -197,8 +197,8 @@ node scripts/packaged-e2e.mjs                  # strict artifact reuse; not fres
 ### Independent Windows x64 qualification checklist
 
 Run this only in an independent Windows x64 GUI environment with WebView2. Do
-not run it from the current DSH Web GUI process. The runner needs Go 1.25 or
-newer, Node 20, npm, Git, and the pinned tools below. NSIS is not required
+	not run it from the current DSH Web GUI process. The runner needs Go 1.26 or
+	newer, Node 20.19, npm, Git, and the pinned tools below. NSIS is not required
 because this harness qualifies the test-tagged desktop executable, not an
 installer or release artifact.
 
@@ -304,14 +304,15 @@ has produced activation evidence.
 
 ## CI qualification and platform status
 
-The Linux job remains `workflow_dispatch`-only until three consecutive runs on
-three distinct commits pass and retain manifests. Source tests and `--dry-run`
-do not count. No qualifying CI run IDs exist in this workspace.
+The Linux job remains `workflow_dispatch`-only. Three consecutive real
+packaged runs on three distinct commits have passed and retained manifests.
+Source tests and `--dry-run` do not count. Making the job required is a
+separate default-branch policy change; it is not implied by these three runs.
 
 | Platform    | Status                                                                                |
 | ----------- | ------------------------------------------------------------------------------------- |
 | Windows x64 | current authoritative manifest is partial (11/24); refreshed packaged evidence is `U` |
-| Linux       | source and CI configuration exist; real packaged run `U`                              |
+| Linux       | three consecutive 24/24 dispatches retained: [35436654565](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35436654565) `45af0c0`, [35437538679](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35437538679) `0f44373`, [35438391717](https://github.com/CuTeLiTTleBraids-Geek-studio/koyori-ide/actions/runs/35438391717) `993ba08` (each `status=passed` / `phase=complete` / `sourceFingerprintStableAfterBuild=true`; screenshots 295 bytes, not visual proof). Job still dispatch-only. Windows/macOS remain `U`. |
 | macOS       | source and CI configuration exist; real packaged run `U`                              |
 
 Linux CI starts a dedicated loopback-only virtual display before the artifact:

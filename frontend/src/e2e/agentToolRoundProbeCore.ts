@@ -384,7 +384,10 @@ export async function clickManualAgentToolDecision({
         root.querySelectorAll<HTMLButtonElement>("button[data-agent-tool-action]"),
       );
       const sameCallControls = controls.filter(
-        (button) => button.dataset.agentToolCallId === expectedToolCallId,
+        (button) =>
+          button.dataset.agentToolCallId === expectedToolCallId &&
+          (button.dataset.agentToolAction === "approve" ||
+            button.dataset.agentToolAction === "reject"),
       );
       const wrongKind = sameCallControls.find(
         (button) => button.dataset.agentToolKind !== toolKind,

@@ -1,4 +1,5 @@
 import { Events } from "@wailsio/runtime";
+import type { AgentPermissionMode } from "@/types";
 import {
   clickManualAgentToolDecision,
   waitForAgentToolRoundCompletion,
@@ -55,6 +56,7 @@ export interface AgentToolRoundProbeResult {
   rendererSubmitted: boolean;
   agentModeConfigured: boolean;
   agentPermissionModeConfigured: boolean;
+  sessionPermissionMode?: AgentPermissionMode;
   storedProviderLoaded: boolean;
   nativeToolCallObserved: boolean;
   decisionObserved: boolean;
@@ -254,6 +256,10 @@ async function runProbe(
       ? "assist"
       : "always-ask";
     app.appState.agentPermissionMode = expectedPermissionMode;
+    app.saveSettings();
+    await app.flushSettingsSave();
+    await app.loadSettings();
+    app.appState.agentPermissionMode = expectedPermissionMode;
     agentPermissionModeConfigured = app.appState.agentPermissionMode === expectedPermissionMode;
     if (!agentPermissionModeConfigured) {
       throw new Error(
@@ -268,6 +274,12 @@ async function runProbe(
     agent.clearPendingToolCalls();
     agent.setMode("agent");
     agentModeConfigured = agent.agentState.mode === "agent";
+    await agent.ensureAgentSession();
+    if (agent.getAgentPermissionMode() !== expectedPermissionMode) {
+      throw new Error(
+        `Agent session permission mode was ${agent.getAgentPermissionMode()}; expected ${expectedPermissionMode}`,
+      );
+    }
     if (config.approvalMode === "ask") {
       manualSurface = await mountManualApprovalSurface();
     }
@@ -311,6 +323,7 @@ async function runProbe(
       rendererSubmitted,
       agentModeConfigured,
       agentPermissionModeConfigured,
+      sessionPermissionMode: agent.getAgentPermissionMode(),
       storedProviderLoaded,
       expectedOutcome,
       manualControlRequired: config.approvalMode === "ask",
@@ -334,6 +347,7 @@ async function runProbe(
       rendererSubmitted,
       agentModeConfigured,
       agentPermissionModeConfigured,
+      sessionPermissionMode: agent.getAgentPermissionMode(),
       storedProviderLoaded,
       nativeToolCallObserved: readSnapshot().toolCalls.some(
         (call) => call.id === config.expectedToolCallId && call.kind === config.toolKind,

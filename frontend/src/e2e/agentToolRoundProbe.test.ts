@@ -725,6 +725,42 @@ describe("packaged Agent tool-round evidence", () => {
     host.remove();
   });
 
+  it("ignores write apply-selected when clicking the matching approve control", async () => {
+    const host = document.createElement("div");
+    host.innerHTML = `
+      <article data-agent-tool-call-id="call_packaged_agent_write_approve" data-agent-tool-kind="write" data-agent-tool-status="pending">
+        <button type="button" data-agent-tool-action="approve" data-agent-tool-call-id="call_packaged_agent_write_approve" data-agent-tool-kind="write">Accept all</button>
+        <button type="button" data-agent-tool-action="apply-selected" data-agent-tool-call-id="call_packaged_agent_write_approve">Apply selected</button>
+        <button type="button" data-agent-tool-action="reject" data-agent-tool-call-id="call_packaged_agent_write_approve" data-agent-tool-kind="write">Reject</button>
+      </article>`;
+    document.body.append(host);
+    const observed = vi.fn();
+    host.querySelector("[data-agent-tool-action='approve']")?.addEventListener("click", observed);
+
+    const evidence = await clickManualAgentToolDecision({
+      root: host,
+      toolKind: "write",
+      expectedToolCallId: "call_packaged_agent_write_approve",
+      expectedDecision: "approve",
+      readSnapshot: () => ({
+        streaming: false,
+        globalStreamBusy: false,
+        error: null,
+        messages: [],
+        toolCalls: [{ id: "call_packaged_agent_write_approve", kind: "write", status: "pending" }],
+        timeline: [],
+      }),
+      timeoutMs: 100,
+      pollIntervalMs: 25,
+      ...fakeClock(),
+    });
+
+    expect(observed).toHaveBeenCalledOnce();
+    expect(evidence.manualControlAction).toBe("approve");
+    expect(evidence.manualControlKind).toBe("write");
+    host.remove();
+  });
+
   it("fails closed for a wrong manual tool kind", async () => {
     await expect(
       clickManualAgentToolDecision({

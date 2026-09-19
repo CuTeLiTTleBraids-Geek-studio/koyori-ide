@@ -247,3 +247,17 @@ func TestProfileService_RejectsDotDotTraversalOutput(t *testing.T) {
 		t.Fatal("profile file must not be created outside the workspace root")
 	}
 }
+
+func TestProfileService_AnalyzeProfileRejectsInputOutsideWorkspaceRoot(t *testing.T) {
+	s := newTestPProfService(t)
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(outside, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AnalyzeProfile(outside); err == nil || !strings.Contains(err.Error(), "rejected by workspace sandbox") {
+		t.Fatalf("AnalyzeProfile outside root: err=%v, want sandbox rejection", err)
+	}
+	if _, err := s.AnalyzeTrace(outside, "net"); err == nil || !strings.Contains(err.Error(), "rejected by workspace sandbox") {
+		t.Fatalf("AnalyzeTrace outside root: err=%v, want sandbox rejection", err)
+	}
+}

@@ -279,6 +279,9 @@ const zh: MessageDict = {
   "mainLayout.commandOpenHttpClient": "查看：HTTP 客户端",
   "mainLayout.commandOpenInspections": "查看：检查",
   "mainLayout.commandOpenCallHierarchy": "查看：调用层次",
+  "mainLayout.commandOpenRemoteView": "查看：远程",
+  "mainLayout.commandOpenProfileView": "查看：性能分析",
+  "mainLayout.commandOpenPluginsView": "查看：插件",
   // 优先级 10：自动更新 + 崩溃报告
   "mainLayout.commandCheckUpdates": "检查更新",
   "mainLayout.commandViewCrashReports": "查看崩溃报告",

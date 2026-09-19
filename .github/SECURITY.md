@@ -27,9 +27,9 @@ supports those claims, so they have been removed rather than kept as unverified
 support commitments. Restoring any line requires real tag and artifact evidence
 first.
 
-`main` 和未发布版本仅接受尽力而为的修复，不等同于受支持的稳定发行版。当前 0.2.x 开发线基于 Wails v3 beta.8 预发布版；本表不构成 SLA 或企业支持承诺。项目当前无响应或修复 SLO、无产品可靠性 SLO 数据，且未接受独立外部安全审计、独立供应链审计或独立可访问性审计；这些状态均为 `U`。
+`main` 和未发布版本仅接受尽力而为的修复，不等同于受支持的稳定发行版。当前 0.2.x 开发线基于 Wails v3 alpha2.111 预发布版；本表不构成 SLA 或企业支持承诺。项目当前无响应或修复 SLO、无产品可靠性 SLO 数据，且未接受独立外部安全审计、独立供应链审计或独立可访问性审计；这些状态均为 `U`。
 
-`main` and unreleased versions receive best-effort fixes only and are not supported stable releases. The current 0.2.x development line uses the Wails v3 beta.8 pre-release; this table is not an SLA or an enterprise-support commitment. There is no response or remediation SLO and no product-reliability SLO data. The project has not undergone an independent external security audit, supply-chain audit, or accessibility audit; all of these statuses are `U`.
+`main` and unreleased versions receive best-effort fixes only and are not supported stable releases. The current 0.2.x development line uses the Wails v3 alpha2.111 pre-release; this table is not an SLA or an enterprise-support commitment. There is no response or remediation SLO and no product-reliability SLO data. The project has not undergone an independent external security audit, supply-chain audit, or accessibility audit; all of these statuses are `U`.
 
 ### 发版周期 / Release cadence
 
@@ -90,7 +90,7 @@ Include: description, steps to reproduce, affected components, potential impact,
 
 ## CI 安全门禁 / Continuous Integration Security Gates
 
-`.github/workflows/ci.yml` 为推送/PR 配置下列门禁。仓库没有可核验的 CI 历史，因此下表是源码级 `S` 证据，不是某次 run 已通过的声明。
+`.github/workflows/ci.yml` 为推送/PR 配置下列门禁。`main` 上 required checks 已有可核验的成功 run；下表仍区分「源码配置」与「packaged / 外审仍为 `U`」的边界，不得把 required CI 绿写成 packaged E2E 已通过。
 
 | 门禁 / Gate | 要求 / Requirement |
 |---|---|
@@ -100,7 +100,7 @@ Include: description, steps to reproduce, affected components, potential impact,
 | go vet / golangci-lint | 三平台 vet；Ubuntu golangci-lint |
 | Frontend coverage | Ubuntu Vitest 四项 50% 门禁；报告作为 artifact |
 | Wails build | 仅 Ubuntu 配置 `wails3 build -tags desktop,production`；不是三平台 artifact 验证 |
-| Packaged E2E | 仅 `workflow_dispatch` Linux qualification；尚非 required，真实运行 U |
+| Packaged E2E | 仅 `workflow_dispatch` Linux qualification；Linux 三次连续 24/24 已保留，尚非 required；Windows/macOS 与 tag-release packaged 仍 U |
 | Release supply chain | tag workflow 源码强制 NOTICE/许可证、SPDX SBOM、未签名 provenance 与最终校验和；真实 tag run U |
 
 Go 与前端 matrix 覆盖 Ubuntu / Windows / macOS；Wails build、coverage、govulncheck 与 packaged qualification 的平台范围如上。没有 workflow run URL 时，不得把配置写成 CI 已通过。
@@ -112,7 +112,7 @@ Go 与前端 matrix 覆盖 Ubuntu / Windows / macOS；Wails build、coverage、g
 | G-SEC-01 | AI BaseURL 校验，防 SSRF / 禁 userinfo；非回环强制 HTTPS | BaseURL validation; SSRF / credential-leak prevention |
 | G-SEC-02 | Agent 命令强制人工审批，无 run 自动批准 | All agent shell commands require manual approval |
 | G-SEC-03 | 项目级工作流不可信，启动类不自动执行 | Untrusted workflows never auto-run on load |
-| G-SEC-04 | CI 源码配置 race + govulncheck；真实 run 待证据 | Race detector + govulncheck configured; run evidence pending |
+| G-SEC-04 | CI 配置 race + govulncheck；required run 已绿；Linux packaged qualification 24/24 已保留但仍非 required；Windows/macOS packaged 仍 U | Race + govulncheck required-run green; Linux packaged qualification retained but not required; Windows/macOS packaged still U |
 | G-SEC-05 | iframe `sandbox="allow-scripts"`，无 allow-same-origin | Extension iframes without same-origin |
 | G-SEC-06 | 路径双侧 EvalSymlinks，防符号链接逃逸 | Symlink-aware path sandbox |
 | G-SEC-07 | API Key 加密存储且不回传前端明文 | Encrypted API keys; never returned to frontend |

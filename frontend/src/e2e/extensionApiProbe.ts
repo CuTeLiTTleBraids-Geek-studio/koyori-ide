@@ -5,7 +5,9 @@
  *     save bridge is wired;
  *   - window.showInputBox / window.showQuickPick fail closed (no fake
  *     default/first-item result);
- *   - workspace.saveAll calls the injected bridge (real save) when wired.
+ *   - workspace.saveAll calls the injected bridge (real save) when wired;
+ *   - window.createOutputChannel is fail-closed without onOutput and is
+ *     operable only when the host Output panel is wired.
  * Opt-in via VITE_KOYORI_IDE_E2E_MONACO=1 like the G10 Monaco probe.
  */
 // Koyori IDE 模块 · Extension Api Probe。
@@ -38,7 +40,7 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function runProbe(config: ExtensionApiProbeConfig): Promise<ExtensionApiProbeResult> {
+export async function runExtensionApiProbe(config: ExtensionApiProbeConfig): Promise<ExtensionApiProbeResult> {
   const { ExtensionHost } = await import("@/lib/extensionHost/extensionHost");
   const descriptor: ExtensionDescriptor = {
     id: "g13.ext",
@@ -127,23 +129,37 @@ async function runProbe(config: ExtensionApiProbeConfig): Promise<ExtensionApiPr
     }
   }
 
-  // output: createOutputChannel must return an operable in-memory channel.
+  // output: createOutputChannel is fail-closed without a host Output panel
+  // (no in-memory fake success). The packaged probe must wire onOutput and
+  // grant ui.notifications, then assert the host received the lifecycle.
   let outputChannelOperable = false;
   {
-    const host = new ExtensionHost();
-    let api: { window: { createOutputChannel: (name: string) => { appendLine: (v: string) => void; dispose: () => void; show: () => void; clear: () => void } } } | undefined;
-    await host.activateWithModule(descriptor, {
-      activate: (value: unknown) => {
-        api = value as { window: { createOutputChannel: (name: string) => { appendLine: (v: string) => void; dispose: () => void; show: () => void; clear: () => void } } };
+    const actions: string[] = [];
+    const host = new ExtensionHost({
+      onOutput: (_channel, action) => {
+        actions.push(action);
       },
     });
+    let api: { window: { createOutputChannel: (name: string) => { appendLine: (v: string) => void; dispose: () => void; show: () => void; clear: () => void } } } | undefined;
+    await host.activateWithModule(
+      { ...descriptor, permissions: ["ui.notifications"] } as ExtensionDescriptor,
+      {
+        activate: (value: unknown) => {
+          api = value as { window: { createOutputChannel: (name: string) => { appendLine: (v: string) => void; dispose: () => void; show: () => void; clear: () => void } } };
+        },
+      },
+    );
     try {
       const channel = api!.window.createOutputChannel("g13-output");
       channel.appendLine("hello g13");
       channel.show();
       channel.clear();
       channel.dispose();
-      outputChannelOperable = true;
+      outputChannelOperable =
+        actions.includes("appendLine") &&
+        actions.includes("show") &&
+        actions.includes("clear") &&
+        actions.includes("dispose");
     } catch {
       outputChannelOperable = false;
     }
@@ -222,7 +238,7 @@ export function installExtensionApiProbe(): void {
   target.__koyoriIdeRunG13ExtensionApiProbe = async (config) => {
     let result: ExtensionApiProbeResult;
     try {
-      result = await runProbe(config);
+      result = await runExtensionApiProbe(config);
     } catch (error: unknown) {
       result = {
         runId: config.runId,

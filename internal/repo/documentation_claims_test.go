@@ -17,7 +17,9 @@ func TestG18ReadmeCapabilityMatrixAndBoundaries(t *testing.T) {
 		"`V` = 本机实际命令通过",
 		"本地编辑与保存", "Git", "LSP", "AI", "Agent", "Recovery",
 		"最小 Remote", "Debug / Test", "插件 / VSIX", "发布供应链",
-		"gopls`、`typescript-language-server`、`vtsls` 均未安装",
+		"`vtsls` 未安装",
+		"无外部 SSH 主机",
+		"未调用真实 provider",
 		"不是 VS Code、Cursor 或 IntelliJ 的替代品",
 		"不宣称生产级或企业就绪",
 	} {
@@ -38,6 +40,20 @@ func TestG18ReadmeCapabilityMatrixAndBoundaries(t *testing.T) {
 	}
 }
 
+func TestG18CodeOfConductUsesVerifiedMaintainerContact(t *testing.T) {
+	raw, err := os.ReadFile("../../.github/CODE_OF_CONDUCT.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(raw)
+	if !strings.Contains(doc, "dianasoylu423@gmail.com") {
+		t.Error("CODE_OF_CONDUCT.md must use the verified public maintainer email")
+	}
+	if strings.Contains(doc, "at **security@koyori-ide.dev**") {
+		t.Error("CODE_OF_CONDUCT.md must not advertise an unverified koyori-ide.dev mailbox as the report address")
+	}
+}
+
 func TestG18SecurityPolicyHasNoUnverifiedSLOOrAuditClaim(t *testing.T) {
 	raw, err := os.ReadFile("../../.github/SECURITY.md")
 	if err != nil {
@@ -45,7 +61,7 @@ func TestG18SecurityPolicyHasNoUnverifiedSLOOrAuditClaim(t *testing.T) {
 	}
 	doc := string(raw)
 	for _, required := range []string{
-		"Wails v3 beta.8", "best-effort", "无响应或修复 SLO", "未接受独立外部安全审计",
+		"Wails v3 alpha2.111", "best-effort", "无响应或修复 SLO", "未接受独立外部安全审计",
 		"No response or remediation SLO", "has not undergone an independent external security audit",
 		"security/advisories/new", "dianasoylu423@gmail.com",
 	} {

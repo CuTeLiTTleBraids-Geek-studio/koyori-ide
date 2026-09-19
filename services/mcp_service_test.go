@@ -3145,19 +3145,31 @@ func TestConnectDeleteRace(t *testing.T) {
 		t.Fatalf("SetServerEnabled: %v", err)
 	}
 
-	// 启动 ConnectServer（StartServer 会阻塞在 fake server 的 300ms delay 上）
+	started := make(chan struct{})
+	releaseStart := make(chan struct{})
+	s.testConnectStarted = func(name string) {
+		if name != "race-srv" {
+			return
+		}
+		close(started)
+		<-releaseStart
+	}
+
 	connectErr := make(chan error, 1)
 	go func() {
 		connectErr <- s.ConnectServer(context.Background(), "race-srv")
 	}()
 
-	// 等待 ConnectServer 进入 StartServer
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ConnectServer did not reach StartServer")
+	}
 
-	// 在 StartServer 期间删除 server 配置
 	if err := s.DeleteServer("race-srv"); err != nil {
 		t.Fatalf("DeleteServer: %v", err)
 	}
+	close(releaseStart)
 
 	// 等待 ConnectServer 完成
 	err := <-connectErr
