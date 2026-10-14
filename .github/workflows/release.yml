@@ -258,7 +258,7 @@ jobs:
 
       - name: Upload packaged E2E evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualification-packaged-e2e-evidence
           path: build/e2e-evidence/
@@ -538,7 +538,7 @@ jobs:
 
       - name: Upload unsigned portable payload
         if: matrix.os != 'ubuntu-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-portable-${{ matrix.os }}-${{ matrix.arch }}
           path: unsigned-portable/
@@ -547,7 +547,7 @@ jobs:
 
       - name: Upload Linux portable artifact
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-portable-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -579,7 +579,7 @@ jobs:
       ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
     steps:
       - name: Download unsigned portable payload
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-portable-${{ matrix.os }}-${{ matrix.arch }}
           path: unsigned-portable
@@ -731,7 +731,7 @@ jobs:
           printf '%s  %s\n' "$digest" "$artifact_name" > "$artifact_name.sha256"
 
       - name: Upload signed portable artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-portable-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -785,7 +785,7 @@ jobs:
           node scripts/check-release-assets.mjs --check
 
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*
           path: artifacts

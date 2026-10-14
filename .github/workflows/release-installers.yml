@@ -189,7 +189,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path unsigned-app | Out-Null
           Copy-Item -LiteralPath $artifacts[0].FullName -Destination unsigned-app/koyori-ide.exe
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-installer-windows-app
           path: unsigned-app/koyori-ide.exe
@@ -203,7 +203,7 @@ jobs:
     environment: release
     steps:
       - name: Download unsigned Windows app
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-installer-windows-app
           path: app
@@ -250,7 +250,7 @@ jobs:
             Remove-Item Env:WINDOWS_CERT_PFX, Env:WINDOWS_CERT_PASSWORD -ErrorAction SilentlyContinue
           }
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed-installer-windows-app
           path: app/koyori-ide.exe
@@ -271,7 +271,7 @@ jobs:
         run: choco install wixtoolset --version=3.14.1.20250415 -y --no-progress --allow-downgrade
 
       - name: Download signed Windows app
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signed-installer-windows-app
           path: bin
@@ -288,7 +288,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path unsigned-msi | Out-Null
           Copy-Item -LiteralPath $artifacts[0].FullName -Destination "unsigned-msi/$($artifacts[0].Name).payload"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-installer-windows-msi
           path: unsigned-msi/*.payload
@@ -302,7 +302,7 @@ jobs:
     environment: release
     steps:
       - name: Download unsigned Windows MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-installer-windows-msi
           path: unsigned-msi
@@ -367,7 +367,7 @@ jobs:
           $checksumPath = "$($artifacts[0].FullName).sha256"
           [IO.File]::WriteAllText($checksumPath, "$hash  $($artifacts[0].Name)`n", [Text.Encoding]::ASCII)
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-installer-windows-amd64
           path: |
@@ -448,7 +448,7 @@ jobs:
             cp "$artifact" "$artifact.sha256" release-linux/
           done
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-installer-linux-${{ matrix.arch }}
           path: release-linux/
@@ -511,7 +511,7 @@ jobs:
           tar -cf "unsigned-app/koyori-ide-${{ matrix.arch }}.payload" -C bin koyori-ide.app
           cp VERSION unsigned-app/VERSION
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-installer-macos-${{ matrix.arch }}
           path: unsigned-app/
@@ -533,7 +533,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Download unsigned macOS app
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-installer-macos-${{ matrix.arch }}
           path: unsigned-app
@@ -686,7 +686,7 @@ jobs:
           artifact_name="$(basename "${artifacts[0]}")"
           (cd "$(dirname "${artifacts[0]}")" && shasum -a 256 "$artifact_name" > "$artifact_name.sha256")
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-installer-macos-${{ matrix.arch }}
           path: |
